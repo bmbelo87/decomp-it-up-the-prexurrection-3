@@ -385,10 +385,12 @@ static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX,
     float drawY = hotY + (tile->srcY + posY - hotY) * sy;
 
     if (rotation != 0.0f) {
+        float hotScreenX = hotX + posX * sx;
+        float hotScreenY = hotY + posY * sy;
         glPushMatrix();
-        glTranslatef(drawX + destW * 0.5f, drawY + destH * 0.5f, 0.0f);
+        glTranslatef(hotScreenX, hotScreenY, 0.0f);
         glRotatef(-rotation, 0.0f, 0.0f, 1.0f);
-        glTranslatef(-(drawX + destW * 0.5f), -(drawY + destH * 0.5f), 0.0f);
+        glTranslatef(-hotScreenX, -hotScreenY, 0.0f);
     }
 
     float uvV1 = (float)(256 - tile->v1);
@@ -433,28 +435,21 @@ static bool isMenuTextLayer(BGALayer* layer) {
            strstr(layer->filename, "12.") || strstr(layer->filename, "13.");
 }
 
+static bool isMenuCenterLayer(BGALayer* layer) {
+    return strstr(layer->filename, "15.") || strstr(layer->filename, "16.");
+}
+
 static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion) {
     if (!state || state->type == 0 || state->a <= 0.01f) return;
     float alpha = state->a;
     float renderR = state->r, renderG = state->g, renderB = state->b;
 
     if (layer->isSPR) {
-        if (layer->aniFrameCount > 1) {
-            int aniIdx = (g_game.frameCounter / 2) % layer->aniFrameCount;
-            if (aniIdx < layer->sprTileCount) {
-                int tileIdx = layer->sprTileStart + aniIdx;
-                if (tileIdx >= 0 && tileIdx < g_game.sprTileCount) {
-                    SPRTileDef* tile = &g_game.sprTiles[tileIdx];
-                    renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha, picVersion);
-                }
-            }
-        } else {
-            for (int t = 0; t < layer->sprTileCount; t++) {
-                int tileIdx = layer->sprTileStart + t;
-                if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) continue;
-                SPRTileDef* tile = &g_game.sprTiles[tileIdx];
-                renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha, picVersion);
-            }
+        for (int t = 0; t < layer->sprTileCount; t++) {
+            int tileIdx = layer->sprTileStart + t;
+            if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) continue;
+            SPRTileDef* tile = &g_game.sprTiles[tileIdx];
+            renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha, picVersion);
         }
     } else if (layer->texId >= 0) {
         Texture* tex = &g_game.textures[layer->texId];
@@ -486,13 +481,27 @@ void BGA_Render(int bgaIndex, int frame) {
                    g_game.state == STATE_MENU_IDLE ||
                    g_game.state == STATE_MENU_INPUT);
 
-    // Base pass: render all layers except arrows/text for menu states
+    // Base pass: render background layers and text at original colors
     for (int i = 0; i < pic->layerCount; i++) {
         BGALayer* layer = &pic->layers[i];
         if (layer->kfCount == 0) continue;
-        if (isMenu && (isMenuArrowLayer(layer) || isMenuTextLayer(layer))) continue;
+        if (isMenu && isMenuArrowLayer(layer)) continue;
+        if (isMenu && isMenuCenterLayer(layer)) continue;
 
-        BGAKeyframe* state = interpolate_layer(layer, frame);
+        BGAKeyframe* state = NULL;
+        if (isMenu && isMenuTextLayer(layer)) {
+            state = interpolate_layer(layer, 1020);
+            if (!state || state->type == 0 || state->a <= 0.01f) {
+                for (int k = layer->kfCount - 1; k >= 0; k--) {
+                    if (layer->keyframes[k].type != 0 && layer->keyframes[k].a > 0.01f) {
+                        state = &layer->keyframes[k];
+                        break;
+                    }
+                }
+            }
+        } else {
+            state = interpolate_layer(layer, frame);
+        }
         if (!state) {
             if (g_game.bgaLoop && layer->kfCount > 0) {
                 state = &layer->keyframes[0];
@@ -509,6 +518,27 @@ void BGA_Render(int bgaIndex, int frame) {
         state->a = alpha;
 
         renderOneLayer(layer, state, pic->version);
+    }
+
+    // Center pulse overlay (15.spr idle, 16.spr on select)
+    if (isMenu) {
+        int centerFrame = (int)(g_game.frameCounter % 120);
+        for (int i = 0; i < pic->layerCount; i++) {
+            BGALayer* layer = &pic->layers[i];
+            if (layer->kfCount == 0) continue;
+            if (!isMenuCenterLayer(layer)) continue;
+            if (g_menuSelection == 0) {
+                if (strstr(layer->filename, "15.")) {
+                    BGAKeyframe* state = interpolate_layer(layer, 780 + centerFrame);
+                    if (state) renderOneLayer(layer, state, pic->version);
+                }
+            } else {
+                if (strstr(layer->filename, "16.")) {
+                    BGAKeyframe* state = interpolate_layer(layer, 900 + centerFrame);
+                    if (state) renderOneLayer(layer, state, pic->version);
+                }
+            }
+        }
     }
 
     // Overlay pass: render matching direction arrow + text for menu
@@ -530,12 +560,16 @@ void BGA_Render(int bgaIndex, int frame) {
             // Arrow: use animation frame
             if (isMenuArrowLayer(layer)) {
                 BGAKeyframe* state = interpolate_layer(layer, aniFrame);
-                if (state) renderOneLayer(layer, state, pic->version);
+                if (state) {
+                    if (strstr(layer->filename, "06.") && layer->kfCount > 0)
+                        state->rotation = layer->keyframes[0].rotation;
+                    renderOneLayer(layer, state, pic->version);
+                }
             }
 
-            // Text: use frame 1020 (white)
+            // Text: use frame 0 (black) when selected
             if (isMenuTextLayer(layer)) {
-                BGAKeyframe* state = interpolate_layer(layer, 1020);
+                BGAKeyframe* state = interpolate_layer(layer, 0);
                 if (state) renderOneLayer(layer, state, pic->version);
             }
         }

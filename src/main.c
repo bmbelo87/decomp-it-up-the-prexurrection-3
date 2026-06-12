@@ -31,6 +31,7 @@ static bool isMenuOverlayLayer(BGALayer* layer) {
     if (strstr(layer->filename, "06.") && layer->kfCount > 0) return true;
     if (strstr(layer->filename, "10.") || strstr(layer->filename, "11.")) return true;
     if (strstr(layer->filename, "12.") || strstr(layer->filename, "13.")) return true;
+    if (strstr(layer->filename, "15.") || strstr(layer->filename, "16.")) return true;
     return false;
 }
 
@@ -68,6 +69,7 @@ static int findBGALoopEnd(void) {
                     break;
                 }
             }
+            if (layerFirstHidden == 0) continue;
             if (layerFirstHidden < firstHidden) firstHidden = layerFirstHidden;
         }
     }
@@ -99,11 +101,13 @@ static void LoadBGAForState(GameState state) {
                       state == STATE_MENU_INPUT || state == STATE_SONG_SELECT ||
                       state == STATE_SONG_SELECT_B);
     if (g_game.bgaLoop) {
-        if (g_game.bgaPicCount == 0 || (bgaName && _stricmp(g_game.bgaPics[0].name, bgaName) != 0)) {
-            g_game.bgaLoopStart = findBGALoopStart();
-            g_game.bgaLoopEnd = findBGALoopEnd();
-            g_game.bgaFrame = g_game.bgaLoopStart;
-        }
+        g_game.bgaLoopStart = findBGALoopStart();
+        g_game.bgaLoopEnd = findBGALoopEnd();
+        g_game.bgaFrame = g_game.bgaLoopStart;
+        Log_Print("BGA: loop range %d -> %d (maxFrame=%d, layers=%d)\n",
+                  g_game.bgaLoopStart, g_game.bgaLoopEnd,
+                  g_game.bgaMaxFrame,
+                  g_game.bgaPicCount > 0 ? g_game.bgaPics[0].layerCount : 0);
     } else {
         g_game.bgaLoop = false;
     }
@@ -195,6 +199,7 @@ void Game_Update(float dt) {
             if (g_game.bgaLoop && g_game.bgaLoopEnd > g_game.bgaLoopStart) {
                 g_game.bgaFrame++;
                 if (g_game.bgaFrame > g_game.bgaLoopEnd) {
+                    Log_Print("BGA: wrap %d -> %d\n", g_game.bgaFrame, g_game.bgaLoopStart);
                     g_game.bgaFrame = g_game.bgaLoopStart;
                 }
             } else {

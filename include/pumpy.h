@@ -170,7 +170,7 @@ typedef struct {
     bool flipH, flipV;
 } SPRTileDef;
 
-#define MAX_BGA_LAYERS 16
+#define MAX_BGA_LAYERS 64
 #define MAX_BGA_KEYFRAMES 256
 
 typedef struct {
