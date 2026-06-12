@@ -82,7 +82,8 @@ static void LoadBGAForState(GameState state) {
     switch (state) {
     case STATE_INIT_WARNING: bgaName = "R_WARN"; break;
     case STATE_LOGO_ANIM:    bgaName = "81"; break;
-    case STATE_MENU_TRANSITION: bgaName = "82w"; break;
+    case STATE_MENU_TRANSITION:
+    case STATE_LOGO_SKIP:      bgaName = "82w"; break;
     //case STATE_SONG_SELECT:  bgaName = "099"; break;
     case STATE_GAMEPLAY_PREP:
     case STATE_GAMEPLAY:     bgaName = "00"; break;
@@ -98,8 +99,8 @@ static void LoadBGAForState(GameState state) {
     }
     
     g_game.bgaLoop = (state == STATE_MENU_TRANSITION || state == STATE_MENU_IDLE ||
-                      state == STATE_MENU_INPUT || state == STATE_SONG_SELECT ||
-                      state == STATE_SONG_SELECT_B);
+                      state == STATE_MENU_INPUT || state == STATE_MENU_FADE ||
+                      state == STATE_SONG_SELECT || state == STATE_SONG_SELECT_B);
     if (g_game.bgaLoop) {
         g_game.bgaLoopStart = findBGALoopStart();
         g_game.bgaLoopEnd = findBGALoopEnd();
@@ -218,12 +219,13 @@ void Game_Update(float dt) {
         Gamestate_UpdateWarning(dt);
         break;
     case STATE_LOGO_ANIM:
-    case STATE_LOGO_WAIT:
+    case STATE_LOGO_SKIP:
         Gamestate_UpdateLogo(dt);
         break;
     case STATE_MENU_TRANSITION:
     case STATE_MENU_IDLE:
     case STATE_MENU_INPUT:
+    case STATE_MENU_FADE:
         Gamestate_UpdateMenu(dt);
         break;
     case STATE_SONG_SELECT:
@@ -298,19 +300,18 @@ void Game_Render(void) {
 
     // No background fill for states that have full-screen BGA
     if (g_game.state != STATE_INIT_WARNING && g_game.state != STATE_WARNING_ANIM && 
-        g_game.state != STATE_WARNING_WAIT && g_game.state != STATE_WARNING_END) {
+        g_game.state != STATE_WARNING_WAIT && g_game.state != STATE_WARNING_END &&
+        g_game.state != STATE_LOGO_ANIM && g_game.state != STATE_LOGO_SKIP) {
         float bgR = 0.2f, bgG = 0.2f, bgB = 0.4f;
         switch (g_game.state) {
-        case STATE_LOGO_ANIM:
-        case STATE_LOGO_WAIT:
-            bgR = 0.2f; bgG = 0.2f; bgB = 0.2f; break;
         case STATE_MENU_TRANSITION:
         case STATE_MENU_IDLE:
         case STATE_MENU_INPUT:
             bgR = 0.0f; bgG = 0.4f; bgB = 0.6f; break;
-        case STATE_SONG_SELECT:
         case STATE_SONG_SELECT_B:
-            bgR = 0.4f; bgG = 0.0f; bgB = 0.6f; break;
+            bgR = 0.0f; bgG = 0.0f; bgB = 0.0f; break;
+        case STATE_SONG_SELECT:
+            bgR = 0.0f; bgG = 0.0f; bgB = 0.6f; break;
         case STATE_GAMEPLAY_PREP:
         case STATE_GAMEPLAY:
             bgR = 0.1f; bgG = 0.1f; bgB = 0.3f; break;
@@ -327,7 +328,9 @@ void Game_Render(void) {
         glColor4f(1, 1, 1, 1);
     }
 
-    if (g_game.bgaPicCount > 0) {
+    if (g_game.bgaPicCount > 0 &&
+        g_game.state != STATE_SONG_SELECT && g_game.state != STATE_SONG_SELECT_B &&
+        g_game.state != STATE_LOGO_SKIP) {
         BGA_Render(0, g_game.bgaFrame);
     }
 
@@ -335,6 +338,7 @@ void Game_Render(void) {
     case STATE_MENU_TRANSITION:
     case STATE_MENU_IDLE:
     case STATE_MENU_INPUT:
+    case STATE_MENU_FADE:
         Gamestate_RenderMenu();
         break;
     case STATE_SONG_SELECT:
@@ -346,6 +350,17 @@ void Game_Render(void) {
         break;
     default:
         break;
+    }
+
+    if (g_game.fadeAlpha > 0.0f) {
+        glColor4f(0.0f, 0.0f, 0.0f, g_game.fadeAlpha);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0);
+        glVertex2f(640, 0);
+        glVertex2f(640, 480);
+        glVertex2f(0, 480);
+        glEnd();
+        glColor4f(1, 1, 1, 1);
     }
 
     Render_StateInfo();

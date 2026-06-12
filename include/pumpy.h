@@ -38,6 +38,7 @@ typedef enum {
     STATE_WARNING_END     = 0x03,
     STATE_LOGO_ANIM       = 0x04,
     STATE_LOGO_WAIT       = 0x05,
+    STATE_LOGO_SKIP       = 0x26,
     STATE_MENU_TRANSITION = 0x06,
     STATE_MENU_FADE       = 0x07,
     STATE_MENU_IDLE       = 0x08,
@@ -268,6 +269,7 @@ typedef struct {
     float globalScaleX;
     float globalScaleY;
     float globalAlpha;
+    float fadeAlpha;
     
     uint32_t timerId;
     uint32_t lastTime;

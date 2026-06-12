@@ -35,6 +35,7 @@ target_link_libraries(Pumpy
 )
 
 add_executable(dump_bga2 tools/dump_bga2.c)
+add_executable(dump_kf tools/dump_kf.c)
 
 add_custom_command(TARGET Pumpy POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Pumpy>/assets"

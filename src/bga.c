@@ -381,27 +381,43 @@ static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX,
     float destH = (float)tile->srcH * sy;
     if (destW <= 0 || destH <= 0) return;
 
-    float drawX = hotX + (tile->srcX + posX - hotX) * sx;
-    float drawY = hotY + (tile->srcY + posY - hotY) * sy;
-
     if (rotation != 0.0f) {
-        float hotScreenX = hotX + posX * sx;
-        float hotScreenY = hotY + posY * sy;
+        // Usa a matriz do original adaptada para Y-down
+        // O vertex (srcX, srcY) fica na posicao do atlas, a matriz transforma para tela
         glPushMatrix();
-        glTranslatef(hotScreenX, hotScreenY, 0.0f);
+        glTranslatef(posX, posY, 0.0f);
+        glTranslatef(hotX, hotY, 0.0f);
         glRotatef(-rotation, 0.0f, 0.0f, 1.0f);
-        glTranslatef(-hotScreenX, -hotScreenY, 0.0f);
-    }
+        glScalef(sx, sy, 1.0f);
+        glTranslatef(-hotX, -hotY, 0.0f);
 
-    float uvV1 = (float)(256 - tile->v1);
-    float uvV2 = (float)(256 - tile->v2);
+        glBindTexture(GL_TEXTURE_2D, tile->texId);
+        glColor4f(r, g, b, alpha);
 
-    Texture_DrawUV(tile->texId, drawX, drawY, destW, destH,
-                   (float)tile->u1, uvV1,
-                   (float)tile->u2, uvV2, r, g, b, alpha);
+        float uvV1 = (float)(256 - tile->v1) / 256.0f;
+        float uvV2 = (float)(256 - tile->v2) / 256.0f;
 
-    if (rotation != 0.0f) {
+        glBegin(GL_QUADS);
+        glTexCoord2f((float)tile->u1 / 256.0f, uvV1);
+        glVertex2f((float)tile->srcX, (float)tile->srcY);
+        glTexCoord2f((float)tile->u2 / 256.0f, uvV1);
+        glVertex2f((float)(tile->srcX + tile->srcW), (float)tile->srcY);
+        glTexCoord2f((float)tile->u2 / 256.0f, uvV2);
+        glVertex2f((float)(tile->srcX + tile->srcW), (float)(tile->srcY + tile->srcH));
+        glTexCoord2f((float)tile->u1 / 256.0f, uvV2);
+        glVertex2f((float)tile->srcX, (float)(tile->srcY + tile->srcH));
+        glEnd();
+
         glPopMatrix();
+        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+    } else {
+        float drawX = hotX + (tile->srcX + posX - hotX) * sx;
+        float drawY = hotY + (tile->srcY + posY - hotY) * sy;
+        float uvV1 = (float)(256 - tile->v1);
+        float uvV2 = (float)(256 - tile->v2);
+        Texture_DrawUV(tile->texId, drawX, drawY, destW, destH,
+                       (float)tile->u1, uvV1,
+                       (float)tile->u2, uvV2, r, g, b, alpha);
     }
 }
 
@@ -445,11 +461,22 @@ static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion) 
     float renderR = state->r, renderG = state->g, renderB = state->b;
 
     if (layer->isSPR) {
-        for (int t = 0; t < layer->sprTileCount; t++) {
-            int tileIdx = layer->sprTileStart + t;
-            if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) continue;
-            SPRTileDef* tile = &g_game.sprTiles[tileIdx];
-            renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha, picVersion);
+            if (layer->aniFrameCount > 1) {
+            int aniIdx = (g_game.frameCounter / 2) % layer->aniFrameCount;
+            if (aniIdx < layer->sprTileCount) {
+                int tileIdx = layer->sprTileStart + aniIdx;
+                if (tileIdx >= 0 && tileIdx < g_game.sprTileCount) {
+                    SPRTileDef* tile = &g_game.sprTiles[tileIdx];
+                    renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha, picVersion);
+                }
+            }
+        } else {
+            for (int t = 0; t < layer->sprTileCount; t++) {
+                int tileIdx = layer->sprTileStart + t;
+                if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) continue;
+                SPRTileDef* tile = &g_game.sprTiles[tileIdx];
+                renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha, picVersion);
+            }
         }
     } else if (layer->texId >= 0) {
         Texture* tex = &g_game.textures[layer->texId];
