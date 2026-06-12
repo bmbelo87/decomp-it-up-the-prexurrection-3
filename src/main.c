@@ -26,44 +26,53 @@ static void ShutdownSystems(void) {
     Log_Flush();
 }
 
+static bool isMenuOverlayLayer(BGALayer* layer) {
+    if (strstr(layer->filename, "05.") || strstr(layer->filename, "07.")) return true;
+    if (strstr(layer->filename, "06.") && layer->kfCount > 0) return true;
+    if (strstr(layer->filename, "10.") || strstr(layer->filename, "11.")) return true;
+    if (strstr(layer->filename, "12.") || strstr(layer->filename, "13.")) return true;
+    return false;
+}
+
 static int findBGALoopStart(void) {
     int loopStart = 999999;
-    int loopEnd = 0;
     for (int p = 0; p < g_game.bgaPicCount; p++) {
         BGAPicture* pic = &g_game.bgaPics[p];
         for (int l = 0; l < pic->layerCount; l++) {
             BGALayer* layer = &pic->layers[l];
+            if (isMenuOverlayLayer(layer)) continue;
             for (int k = 0; k < layer->kfCount; k++) {
                 BGAKeyframe* kf = &layer->keyframes[k];
                 if (kf->type != 0 && kf->a > 0.01f) {
                     if (kf->frame < loopStart) loopStart = kf->frame;
-                    if (kf->frame > loopEnd) loopEnd = kf->frame;
+                    break;
                 }
             }
         }
     }
-    if (loopStart > loopEnd) return 0;
-    return loopStart;
+    return (loopStart > 999990) ? 0 : loopStart;
 }
 
 static int findBGALoopEnd(void) {
-    int loopStart = 999999;
-    int loopEnd = 0;
+    int firstHidden = 999999;
     for (int p = 0; p < g_game.bgaPicCount; p++) {
         BGAPicture* pic = &g_game.bgaPics[p];
         for (int l = 0; l < pic->layerCount; l++) {
             BGALayer* layer = &pic->layers[l];
+            if (isMenuOverlayLayer(layer)) continue;
+            int layerFirstHidden = 999999;
             for (int k = 0; k < layer->kfCount; k++) {
                 BGAKeyframe* kf = &layer->keyframes[k];
-                if (kf->type != 0 && kf->a > 0.01f) {
-                    if (kf->frame < loopStart) loopStart = kf->frame;
-                    if (kf->frame > loopEnd) loopEnd = kf->frame;
+                if (kf->type == 0 || kf->a <= 0.01f) {
+                    layerFirstHidden = kf->frame;
+                    break;
                 }
             }
+            if (layerFirstHidden < firstHidden) firstHidden = layerFirstHidden;
         }
     }
-    if (loopStart > loopEnd) return g_game.bgaMaxFrame;
-    return loopEnd;
+    if (firstHidden > 999990) return g_game.bgaMaxFrame;
+    return firstHidden - 1;
 }
 
 static void LoadBGAForState(GameState state) {
@@ -229,6 +238,7 @@ void Game_Update(float dt) {
     default:
         break;
     }
+    memcpy(g_game.input.prevKeys, g_game.input.keys, sizeof(g_game.input.keys));
 }
 
 static void Render_StateInfo(void) {
@@ -312,15 +322,8 @@ void Game_Render(void) {
         glColor4f(1, 1, 1, 1);
     }
 
-    if (g_game.state == STATE_INIT_WARNING || g_game.state == STATE_WARNING_ANIM ||
-        g_game.state == STATE_WARNING_WAIT || g_game.state == STATE_WARNING_END) {
-        if (g_game.bgaPicCount > 0) {
-            BGA_Render(0, g_game.bgaFrame);
-        }
-    } else {
-        if (g_game.bgaPicCount > 0) {
-            BGA_Render(0, g_game.bgaFrame);
-        }
+    if (g_game.bgaPicCount > 0) {
+        BGA_Render(0, g_game.bgaFrame);
     }
 
     switch (g_game.state) {

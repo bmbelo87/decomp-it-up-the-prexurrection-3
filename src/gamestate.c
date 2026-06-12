@@ -1,8 +1,7 @@
 #include "pumpy.h"
 
 static int g_menuOption = 0;
-static const char* MENU_OPTIONS[] = { "START GAME", "OPTIONS", "CREDITS", "EXIT" };
-#define MENU_OPTION_COUNT 4
+int g_menuSelection = 0; // 0=none, 1=UL(Start), 2=UR(Options), 3=DL(Credits), 4=DR(Exit)
 
 void Gamestate_Enter(GameState state) {
     g_game.stateFrame = 0;
@@ -25,6 +24,10 @@ static bool padHit(int player, PadButton btn) {
 
 void Gamestate_UpdateWarning(float dt) {
     (void)dt;
+    if (Input_IsKeyHit(VK_ESCAPE)) {
+        Game_ChangeState(STATE_LOGO_ANIM);
+        return;
+    }
     switch (g_game.state) {
     case STATE_INIT_WARNING:
         if (g_game.stateFrame > 60) subEnter(STATE_WARNING_ANIM);
@@ -40,6 +43,14 @@ void Gamestate_UpdateWarning(float dt) {
 
 void Gamestate_UpdateLogo(float dt) {
     (void)dt;
+    if (Input_IsKeyHit(VK_ESCAPE)) {
+        Game_ChangeState(STATE_LOGO_ANIM);
+        return;
+    }
+    if (padHit(0, PAD_C)) {
+        Game_ChangeState(STATE_MENU_TRANSITION);
+        return;
+    }
     switch (g_game.state) {
     case STATE_LOGO_ANIM:
         if (g_game.stateFrame > 60) subEnter(STATE_LOGO_WAIT);
@@ -58,23 +69,42 @@ void Gamestate_UpdateMenu(float dt) {
     case STATE_MENU_TRANSITION:
         if (g_game.stateFrame > 30) {
             g_menuOption = 0;
+            g_menuSelection = 0;
             subEnter(STATE_MENU_IDLE);
         }
         break;
     case STATE_MENU_IDLE:
-        if (g_game.stateFrame > 60) subEnter(STATE_MENU_INPUT);
+        if (g_game.stateFrame > 60) {
+            g_game.input.padPrevState[0] = 0;
+            g_game.input.padPrevState[1] = 0;
+            g_game.input.padState[0] = 0;
+            g_game.input.padState[1] = 0;
+            subEnter(STATE_MENU_INPUT);
+        }
         break;
     case STATE_MENU_INPUT:
-        if (padHit(0, PAD_UL)) {
-            Game_ChangeState(STATE_SONG_SELECT);
-        } else if (padHit(0, PAD_UR)) {
-            Log_Print("Menu: OPTIONS (not implemented)\n");
-        } else if (padHit(0, PAD_DL)) {
-            Log_Print("Menu: CREDITS (not implemented)\n");
-        } else if (padHit(0, PAD_DR)) {
-            Game_ChangeState(STATE_EXIT);
-        } else if (Input_IsKeyHit(VK_ESCAPE)) {
-            Game_ChangeState(STATE_EXIT);
+        if (g_menuSelection == 0) {
+            if (padHit(0, PAD_UL)) { g_menuSelection = 1; return; }
+            if (padHit(0, PAD_UR)) { g_menuSelection = 2; return; }
+            if (padHit(0, PAD_DL)) { g_menuSelection = 3; return; }
+            if (padHit(0, PAD_DR)) { g_menuSelection = 4; return; }
+        } else {
+            if (padHit(0, PAD_UL)) {
+                if (g_menuSelection == 1) { Game_ChangeState(STATE_SONG_SELECT); return; }
+                g_menuSelection = 1; return;
+            }
+            if (padHit(0, PAD_UR)) {
+                if (g_menuSelection == 2) { Game_ChangeState(STATE_SONG_SELECT); return; }
+                g_menuSelection = 2; return;
+            }
+            if (padHit(0, PAD_DL)) {
+                if (g_menuSelection == 3) { Game_ChangeState(STATE_SONG_SELECT); return; }
+                g_menuSelection = 3; return;
+            }
+            if (padHit(0, PAD_DR)) {
+                if (g_menuSelection == 4) { Game_ChangeState(STATE_EXIT); return; }
+                g_menuSelection = 4; return;
+            }
         }
         break;
     default:
@@ -160,18 +190,6 @@ void Gamestate_UpdateSongSelect(float dt) {
 void Gamestate_RenderMenu(void) {
     if (g_game.state != STATE_MENU_INPUT && g_game.state != STATE_MENU_IDLE &&
         g_game.state != STATE_MENU_TRANSITION) return;
-
-    glColor3f(1.0f, 1.0f, 1.0f);
-    Font_DrawStringCentered(g_game.screenWidth / 2, 120,
-        "PUMP IT UP - PREX3", 1.0f, 1.0f, 1.0f, 1.0f);
-
-    const char* labels[] = { "UL - START GAME", "UR - OPTIONS", "DL - CREDITS", "DR - EXIT" };
-    int startY = 220;
-    for (int i = 0; i < MENU_OPTION_COUNT; i++) {
-        int y = startY + i * 30;
-        Font_DrawStringCentered(g_game.screenWidth / 2, y,
-            labels[i], 0.7f, 0.7f, 0.7f, 1.0f);
-    }
 }
 
 void Gamestate_RenderSongSelect(void) {

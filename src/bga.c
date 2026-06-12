@@ -1,5 +1,6 @@
 #include "pumpy.h"
 
+extern int g_menuSelection;
 static int bga_activePic = -1;
 
 static float lerp(float a, float b, float t) {
@@ -17,12 +18,14 @@ static BGAKeyframe lerp_kf(BGAKeyframe* a, BGAKeyframe* b, float t) {
     if (a->scaleY == 0.0f && b->scaleY == 0.0f) r.scaleY = r.scaleX;
     else if (a->scaleY == 0.0f) r.scaleY = b->scaleY;
     else if (b->scaleY == 0.0f) r.scaleY = a->scaleY;
+    r.rotation = lerp(a->rotation, b->rotation, t);
     r.r = lerp(a->r, b->r, t);
     r.g = lerp(a->g, b->g, t);
     r.b = lerp(a->b, b->b, t);
     r.a = lerp(a->a, b->a, t);
     r.frame = a->frame;
     r.type = a->type;
+    r.z_order = b->z_order;
     return r;
 }
 
@@ -68,12 +71,13 @@ typedef struct {
     float hoty;
     float scaleX;
     float scaleY;
-    float unk3;
+    float rotation;
     float r;
     float g;
     float b;
     float a;
     uint32_t timestamp;
+    uint32_t z_order;
 } BGA2KFRaw;
 #pragma pack(pop)
 
@@ -167,10 +171,12 @@ static bool parseBGA2(const uint8_t* bgaData, uint32_t bgaSize, BGAPicture* pic)
         kf->hoty = raw->hoty;
         kf->scaleX = raw->scaleX;
         kf->scaleY = raw->scaleY;
+        kf->rotation = raw->rotation;
         kf->r = raw->r;
         kf->g = raw->g;
         kf->b = raw->b;
         kf->a = raw->a;
+        kf->z_order = (int)raw->z_order;
 
         layer->kfCount++;
     }
@@ -362,7 +368,7 @@ void BGA_Reset(void) {
     Log_Print("BGA: reset, maxFrame=%d\n", g_game.bgaMaxFrame);
 }
 
-static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX, float scaleY, float hotX, float hotY, float r, float g, float b, float alpha, int version) {
+static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX, float scaleY, float hotX, float hotY, float rotation, float r, float g, float b, float alpha, int version) {
     if (!tile || tile->texId < 0) return;
     if (alpha <= 0.01f) return;
 
@@ -371,7 +377,6 @@ static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX,
     if (sy == 0.0f) sy = sx;
     if (sx == 0.0f) sx = 1.0f;
 
-    // O tamanho na tela é baseado no dstW/dstH do SPR (armazenados em srcW/srcH)
     float destW = (float)tile->srcW * sx;
     float destH = (float)tile->srcH * sy;
     if (destW <= 0 || destH <= 0) return;
@@ -379,28 +384,116 @@ static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX,
     float drawX = hotX + (tile->srcX + posX - hotX) * sx;
     float drawY = hotY + (tile->srcY + posY - hotY) * sy;
 
+    if (rotation != 0.0f) {
+        glPushMatrix();
+        glTranslatef(drawX + destW * 0.5f, drawY + destH * 0.5f, 0.0f);
+        glRotatef(-rotation, 0.0f, 0.0f, 1.0f);
+        glTranslatef(-(drawX + destW * 0.5f), -(drawY + destH * 0.5f), 0.0f);
+    }
+
     float uvV1 = (float)(256 - tile->v1);
     float uvV2 = (float)(256 - tile->v2);
 
     Texture_DrawUV(tile->texId, drawX, drawY, destW, destH,
                    (float)tile->u1, uvV1,
                    (float)tile->u2, uvV2, r, g, b, alpha);
+
+    if (rotation != 0.0f) {
+        glPopMatrix();
+    }
+}
+
+static bool layerMatchesDirection(BGALayer* layer, int sel) {
+    if (sel == 1)
+        return strstr(layer->filename, "05.") || strstr(layer->filename, "10.");
+    if (sel == 2)
+        return strstr(layer->filename, "07.") || strstr(layer->filename, "11.");
+    if (sel == 3) {
+        if (strstr(layer->filename, "12.")) return true;
+        if (strstr(layer->filename, "06.") && layer->kfCount > 0)
+            return fabs(layer->keyframes[0].rotation - 90.0f) < 1.0f;
+        return false;
+    }
+    if (sel == 4) {
+        if (strstr(layer->filename, "13.")) return true;
+        if (strstr(layer->filename, "06.") && layer->kfCount > 0)
+            return fabs(layer->keyframes[0].rotation - 180.0f) < 1.0f;
+        return false;
+    }
+    return false;
+}
+
+static bool isMenuArrowLayer(BGALayer* layer) {
+    return strstr(layer->filename, "05.") || strstr(layer->filename, "07.") ||
+           (strstr(layer->filename, "06.") && layer->kfCount > 0);
+}
+
+static bool isMenuTextLayer(BGALayer* layer) {
+    return strstr(layer->filename, "10.") || strstr(layer->filename, "11.") ||
+           strstr(layer->filename, "12.") || strstr(layer->filename, "13.");
+}
+
+static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion) {
+    if (!state || state->type == 0 || state->a <= 0.01f) return;
+    float alpha = state->a;
+    float renderR = state->r, renderG = state->g, renderB = state->b;
+
+    if (layer->isSPR) {
+        if (layer->aniFrameCount > 1) {
+            int aniIdx = (g_game.frameCounter / 2) % layer->aniFrameCount;
+            if (aniIdx < layer->sprTileCount) {
+                int tileIdx = layer->sprTileStart + aniIdx;
+                if (tileIdx >= 0 && tileIdx < g_game.sprTileCount) {
+                    SPRTileDef* tile = &g_game.sprTiles[tileIdx];
+                    renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha, picVersion);
+                }
+            }
+        } else {
+            for (int t = 0; t < layer->sprTileCount; t++) {
+                int tileIdx = layer->sprTileStart + t;
+                if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) continue;
+                SPRTileDef* tile = &g_game.sprTiles[tileIdx];
+                renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha, picVersion);
+            }
+        }
+    } else if (layer->texId >= 0) {
+        Texture* tex = &g_game.textures[layer->texId];
+        if (!tex->inUse) return;
+        float sclY = (state->scaleY != 0.0f) ? state->scaleY : state->scaleX;
+        glPushMatrix();
+        glTranslatef(state->x + state->hotx, state->y + state->hoty, 0.0f);
+        glScalef(state->scaleX, sclY, 1.0f);
+        glBindTexture(GL_TEXTURE_2D, tex->id);
+        glColor4f(renderR, renderG, renderB, alpha);
+        glBegin(GL_QUADS);
+        float hx = state->hotx;
+        float hy = state->hoty;
+        glTexCoord2f(0, 1); glVertex2f(0 - hx, 0 - hy);
+        glTexCoord2f(1, 1); glVertex2f(tex->width - hx, 0 - hy);
+        glTexCoord2f(1, 0); glVertex2f(tex->width - hx, tex->height - hy);
+        glTexCoord2f(0, 0); glVertex2f(0 - hx, tex->height - hy);
+        glEnd();
+        glPopMatrix();
+        glColor4f(1, 1, 1, 1);
+    }
 }
 
 void BGA_Render(int bgaIndex, int frame) {
     if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
     BGAPicture* pic = &g_game.bgaPics[bgaIndex];
 
-    static int logOnce = 0;
+    bool isMenu = (g_game.state == STATE_MENU_TRANSITION ||
+                   g_game.state == STATE_MENU_IDLE ||
+                   g_game.state == STATE_MENU_INPUT);
 
+    // Base pass: render all layers except arrows/text for menu states
     for (int i = 0; i < pic->layerCount; i++) {
         BGALayer* layer = &pic->layers[i];
         if (layer->kfCount == 0) continue;
+        if (isMenu && (isMenuArrowLayer(layer) || isMenuTextLayer(layer))) continue;
 
         BGAKeyframe* state = interpolate_layer(layer, frame);
-        
         if (!state) {
-            // If state is NULL, we try to recover the first keyframe for looping BGAs
             if (g_game.bgaLoop && layer->kfCount > 0) {
                 state = &layer->keyframes[0];
             } else {
@@ -410,63 +503,42 @@ void BGA_Render(int bgaIndex, int frame) {
 
         float vis = (state->type == 0) ? 0.0f : 1.0f;
         float alpha = state->a * vis;
-        
-        // No loop: use original fades. In loop: force full visibility.
-        if (g_game.bgaLoop) {
-            vis = 1.0f;
-            alpha = 1.0f;
+        if (g_game.bgaLoop && state->type != 0) {
+            if (alpha < 0.1f) alpha = 1.0f;
         }
+        state->a = alpha;
 
-        if (alpha <= 0.01f) continue;
-
-        if (layer->isSPR) {
-            if (layer->aniFrameCount > 1) {
-                int aniIdx = (g_game.bgaFrame / 2) % layer->aniFrameCount;
-                if (aniIdx < layer->sprTileCount) {
-                    int tileIdx = layer->sprTileStart + aniIdx;
-                    if (tileIdx >= 0 && tileIdx < g_game.sprTileCount) {
-                        SPRTileDef* tile = &g_game.sprTiles[tileIdx];
-                        renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->r, state->g, state->b, alpha, pic->version);
-                    }
-                }
-            } else {
-                for (int t = 0; t < layer->sprTileCount; t++) {
-                    int tileIdx = layer->sprTileStart + t;
-                    if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) continue;
-                    SPRTileDef* tile = &g_game.sprTiles[tileIdx];
-                    renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->r, state->g, state->b, alpha, pic->version);
-                }
-            }
-        } else if (layer->texId >= 0) {
-            Texture* tex = &g_game.textures[layer->texId];
-            if (!tex->inUse) continue;
-
-            float sclY = (state->scaleY != 0.0f) ? state->scaleY : state->scaleX;
-            
-            glPushMatrix();
-            // Pivot point translation
-            glTranslatef(state->x + state->hotx, state->y + state->hoty, 0.0f);
-            glScalef(state->scaleX, sclY, 1.0f);
-
-            glBindTexture(GL_TEXTURE_2D, tex->id);
-            glColor4f(state->r, state->g, state->b, alpha);
-            glBegin(GL_QUADS);
-            // Vertices relative to the pivot (hotspot)
-            float hx = state->hotx;
-            float hy = state->hoty;
-            glTexCoord2f(0, 1); glVertex2f(0 - hx, 0 - hy);
-            glTexCoord2f(1, 1); glVertex2f(tex->width - hx, 0 - hy);
-            glTexCoord2f(1, 0); glVertex2f(tex->width - hx, tex->height - hy);
-            glTexCoord2f(0, 0); glVertex2f(0 - hx, tex->height - hy);
-            glEnd();
-            glPopMatrix();
-            glColor4f(1, 1, 1, 1);
-        }
+        renderOneLayer(layer, state, pic->version);
     }
 
-    if (!logOnce) {
-        Log_Print("BGA_Render frame %d: layers=%d\n", frame, pic->layerCount);
-        logOnce = 1;
+    // Overlay pass: render matching direction arrow + text for menu
+    if (isMenu && g_menuSelection > 0) {
+        int baseFrame = 0;
+        switch (g_menuSelection) {
+            case 1: baseFrame = 300; break;
+            case 2: baseFrame = 540; break;
+            case 3: baseFrame = 420; break;
+            case 4: baseFrame = 660; break;
+        }
+        int aniFrame = (int)(g_game.frameCounter % 120) + baseFrame;
+
+        for (int i = 0; i < pic->layerCount; i++) {
+            BGALayer* layer = &pic->layers[i];
+            if (layer->kfCount == 0) continue;
+            if (!layerMatchesDirection(layer, g_menuSelection)) continue;
+
+            // Arrow: use animation frame
+            if (isMenuArrowLayer(layer)) {
+                BGAKeyframe* state = interpolate_layer(layer, aniFrame);
+                if (state) renderOneLayer(layer, state, pic->version);
+            }
+
+            // Text: use frame 1020 (white)
+            if (isMenuTextLayer(layer)) {
+                BGAKeyframe* state = interpolate_layer(layer, 1020);
+                if (state) renderOneLayer(layer, state, pic->version);
+            }
+        }
     }
 }
 

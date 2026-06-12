@@ -386,7 +386,7 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
     snprintf(bga->name, sizeof(bga->name), "%s", bgaName);
 
     if (isBGA2) {
-        typedef struct { float xPos, yPos, hotx, hoty, scaleX, scaleY, unk3, r, g, b, a; uint32_t ts; } BGA2KFRaw;
+        typedef struct { float xPos, yPos, hotx, hoty, scaleX, scaleY, rotation, r, g, b, a; uint32_t ts; uint32_t z_order; } BGA2KFRaw;
 
         bga->version = 2;
 
@@ -443,35 +443,37 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
                 }
             }
 
-            if (numKF > 0 && dataOff > 0) {
-                BGALayer* layer = &bga->layers[bga->layerCount];
-                strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
+                if (numKF > 0 && dataOff > 0) {
+                    BGALayer* layer = &bga->layers[bga->layerCount];
+                    strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
 
-                char* dot = strrchr(filename, '.');
-                layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
+                    char* dot = strrchr(filename, '.');
+                    layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
 
-                int kfSize = 64;
-                layer->kfCount = 0;
-                for (int i = 0; i < numKF && layer->kfCount < MAX_BGA_KEYFRAMES; i++) {
-                    uint32_t ofs = dataOff + i * kfSize;
-                    if (ofs + kfSize > bgaSize) break;
+                    int kfSize = 64;
+                    layer->kfCount = 0;
+                    for (int i = 0; i < numKF && layer->kfCount < MAX_BGA_KEYFRAMES; i++) {
+                        uint32_t ofs = dataOff + i * kfSize;
+                        if (ofs + kfSize > bgaSize) break;
 
-                    BGA2KFRaw* raw = (BGA2KFRaw*)(bgaData + ofs);
-                    BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
+                        BGA2KFRaw* raw = (BGA2KFRaw*)(bgaData + ofs);
+                        BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
 
-                    uint32_t ts = raw->ts;
-                    kf->frame = (int)(ts & 0xFFFF);
-                    kf->type = (int)((ts >> 16) & 0xFFFF);
-        kf->x = raw->xPos;
-        kf->y = raw->yPos;
-        kf->hotx = raw->hotx;
-        kf->hoty = raw->hoty;
-        kf->scaleX = raw->scaleX;
-        kf->scaleY = raw->scaleY;
-        kf->r = raw->r;
-                    kf->g = raw->g;
-                    kf->b = raw->b;
-                    kf->a = raw->a;
+                        uint32_t ts = raw->ts;
+                        kf->frame = (int)(ts & 0xFFFF);
+                        kf->type = (int)((ts >> 16) & 0xFFFF);
+                        kf->x = raw->xPos;
+                        kf->y = raw->yPos;
+                        kf->hotx = raw->hotx;
+                        kf->hoty = raw->hoty;
+                        kf->scaleX = raw->scaleX;
+                        kf->scaleY = raw->scaleY;
+                        kf->rotation = raw->rotation;
+                        kf->r = raw->r;
+                        kf->g = raw->g;
+                        kf->b = raw->b;
+                        kf->a = raw->a;
+                        kf->z_order = (int)raw->z_order;
 
                     layer->kfCount++;
                 }
@@ -576,6 +578,8 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
                     kf->g = floats[7];
                     kf->b = floats[8];
                     kf->a = floats[9];
+                    kf->rotation = 0.0f;
+                    kf->z_order = 0;
 
                     layer->kfCount++;
                 }

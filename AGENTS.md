@@ -9,7 +9,7 @@
 - Compilação: `cmake --build build` (a partir da raiz do repositório).
 - Os recursos (*assets*) são copiados automaticamente para o diretório de compilação (*build*).
 - Lembre-se de sempre fazer a cópia do arquivo buildado (PUMPY.EXE), renomea-la para PUMPYTESTE.EXE e enviar para a pasta root do projeto "E:\Pumps\PREX3-Original" para testarmos com os itens originais do jogo.
-- Lembre-se de quando usar terminal, estamos em ambiente Windows, terminal aqui é só com códigos powershell, nunca coloque comandos terminal linux pois não vai rodar.
+- Lembre-se de quando usar terminal, estamos em ambiente Windows, terminal aqui é só com códigos powershell, nunca coloque comandos terminal linux pois não vai rodar, o mesmo para comandos cmd.
 
 ## Peculiaridades Técnicas
 

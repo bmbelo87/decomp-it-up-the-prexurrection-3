@@ -151,13 +151,14 @@ typedef struct {
     float hoty;
     float scaleX;
     float scaleY;
-    float unk3;
+    float rotation;
     float r;
     float g;
     float b;
     float a;
     int frame;
     int type;
+    int z_order;
 } BGAKeyframe;
 
 typedef struct {
