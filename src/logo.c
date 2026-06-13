@@ -12,21 +12,20 @@ static void subEnter(GameState state) {
 void Gamestate_UpdateLogo(float dt) {
     (void)dt;
     if (Input_IsKeyHit(VK_ESCAPE)) {
-        Game_ChangeState(STATE_LOGO_ANIM);
+        Game_ChangeState(STATE_LOGO_ENTER);
         return;
     }
     switch (g_game.state) {
-    case STATE_LOGO_ANIM:
+    case STATE_LOGO_ENTER:
         if (padHit(0, PAD_C)) {
             Game_ChangeState(STATE_LOGO_SKIP);
             return;
         }
         if (g_game.bgaFrame >= g_game.bgaMaxFrame && g_game.stateFrame > 60)
-            Game_ChangeState(STATE_MENU_TRANSITION);
+            Game_ChangeState(STATE_RESET_FLOW);
         break;
     case STATE_LOGO_SKIP:
-        if (g_game.stateFrame > 15)
-            Game_ChangeState(STATE_MENU_INPUT);
+        Game_ChangeState(STATE_MENU_INPUT);
         break;
     default:
         break;

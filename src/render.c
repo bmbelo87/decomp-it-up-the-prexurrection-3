@@ -49,5 +49,27 @@ void Render_BeginScene(void) {
 }
 
 void Render_EndScene(void) {
+    if (g_game.globalColorA > 0.0f) {
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glColor4f(g_game.globalColorR, g_game.globalColorG, g_game.globalColorB, g_game.globalColorA);
+        glBegin(GL_QUADS);
+        glVertex2f(0, 0);
+        glVertex2f(640, 0);
+        glVertex2f(640, 480);
+        glVertex2f(0, 480);
+        glEnd();
+        glColor4f(1, 1, 1, 1);
+    }
     Window_SwapBuffers();
+}
+
+void Render_SetGlobalColor(float r, float g, float b, float a) {
+    g_game.globalColorR = r;
+    g_game.globalColorG = g;
+    g_game.globalColorB = b;
+    g_game.globalColorA = a;
+}
+
+int Math_ROUND(float x) {
+    return (int)(x + 0.5f);
 }

@@ -17,8 +17,8 @@
 #include "song.h"
 #include "step.h"
 
-#define GAME_VERSION "0.1"
-#define GAME_BUILD_DATE "Oct 31 2003"
+#define GAME_VERSION "0.3"
+#define GAME_BUILD_DATE "Jun 12 2026"
 #define GAME_BUILD_TIME "15:13:38"
 #define TARGET_FPS 60
 #define FRAME_TIME_MS (1000 / TARGET_FPS)
@@ -32,27 +32,27 @@
 #define PAD_BUTTONS_PER_PLAYER 5
 
 typedef enum {
-    STATE_INIT_WARNING    = 0x00,
-    STATE_WARNING_ANIM    = 0x01,
-    STATE_WARNING_WAIT    = 0x02,
+    // Original state values (from reverse engineering)
+    STATE_BOOT            = 0x00,
+    STATE_WARNING_INIT    = 0x01,
+    STATE_WARNING_ANIM    = 0x02,
     STATE_WARNING_END     = 0x03,
-    STATE_LOGO_ANIM       = 0x04,
-    STATE_LOGO_WAIT       = 0x05,
-    STATE_LOGO_SKIP       = 0x26,
-    STATE_MENU_TRANSITION = 0x06,
-    STATE_MENU_FADE       = 0x07,
+    STATE_LOGO_ENTER      = 0x04,
+    STATE_LOGO_UPDATE     = 0x05,
+    STATE_RESET_FLOW      = 0x06,
+    STATE_MENU_FADE_IN    = 0x07,
     STATE_MENU_IDLE       = 0x08,
-    STATE_MENU_INPUT      = 0x09,
-    STATE_SONG_SELECT     = 0x0A,
-    STATE_SONG_SELECT_B   = 0x0B,
-    STATE_OPTIONS         = 0x0C,
-    STATE_CREDITS         = 0x0D,
-    STATE_GAMEPLAY_PREP   = 0x0E,
+    STATE_MENU_INPUT_WAIT = 0x09,
+    STATE_MENU_ENTER      = 0x0A,
+    STATE_MENU_INPUT      = 0x0B,
+    STATE_RESET_WARNING   = 0x0C,
+    STATE_UNKNOWN_D       = 0x0D,
+    STATE_GAME_INIT       = 0x0E,
     STATE_GAMEPLAY        = 0x0F,
     STATE_GAMEOVER        = 0x10,
     STATE_RESULT          = 0x11,
-    STATE_CREDITS_2       = 0x12,
-    STATE_EXIT            = 0x13,
+    STATE_STAFF_ROLL      = 0x12,
+    STATE_AUTO_EXIT       = 0x13,
     STATE_RANKING         = 0x14,
     STATE_RANKING_IN      = 0x15,
     STATE_RANKING_OUT     = 0x16,
@@ -64,13 +64,19 @@ typedef enum {
     STATE_BATTLE_3        = 0x1C,
     STATE_BATTLE_4        = 0x1D,
     STATE_BATTLE_5        = 0x1E,
-    STATE_BATTLE_6        = 0x1F,
+    STATE_CREDITS         = 0x1F,
     STATE_BATTLE_7        = 0x20,
     STATE_BATTLE_8        = 0x21,
     STATE_BATTLE_9        = 0x22,
-    STATE_BATTLE_10       = 0x23,
-    STATE_BATTLE_11       = 0x24,
-    STATE_BATTLE_12       = 0x25,
+    STATE_GAMEPLAY_ENTER  = 0x23,
+    STATE_STAFF           = 0x24,
+    STATE_STAFF_END       = 0x25,
+
+    // Our custom additions (high range to avoid conflicts)
+    STATE_LOGO_SKIP       = 0x80,
+    STATE_SONG_SELECT     = 0x81,
+    STATE_SONG_SELECT_B   = 0x82,
+    STATE_EXIT            = 0xFF,
 } GameState;
 
 typedef enum {
@@ -269,6 +275,10 @@ typedef struct {
     float globalScaleX;
     float globalScaleY;
     float globalAlpha;
+    float globalColorR;
+    float globalColorG;
+    float globalColorB;
+    float globalColorA;
     float fadeAlpha;
     
     uint32_t timerId;
@@ -352,6 +362,8 @@ void Input_Shutdown(void);
 bool BGA_Load(const char* path);
 bool BGA_LoadFromMemory(const uint8_t* data, uint32_t size, bool isBGA2);
 void BGA_Render(int bgaIndex, int frame);
+void BGA_SetEventFrame(int bgaIndex, int frame);
+void BGA_SetEventLayer(int bgaIndex, int frame, int layerIdx);
 void BGA_Reset(void);
 void BGA_Shutdown(void);
 
@@ -361,7 +373,7 @@ void Gamestate_UpdateWarning(float dt);
 void Gamestate_UpdateLogo(float dt);
 void Gamestate_UpdateMenu(float dt);
 void Gamestate_UpdateSongSelect(float dt);
-void Gamestate_RenderMenu(void);
+void Gamestate_RenderMenu(int bgaIndex, int frame);
 void Gamestate_RenderSongSelect(void);
 
 void Gameplay_Enter(void);
@@ -375,6 +387,7 @@ void Render_Rect(float x, float y, float w, float h, uint8_t r, uint8_t g, uint8
 void Render_RectOutline(float x, float y, float w, float h, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 void Render_Line(float x1, float y1, float x2, float y2, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
 void Render_BeginScene(void);
+void Render_SetGlobalColor(float r, float g, float b, float a);
 
 int Sprite_FindTile(const char* name);
 void Sprite_DrawTile(int tileIdx, float x, float y, float scaleX, float scaleY, float alpha);
@@ -382,6 +395,7 @@ void Sprite_DrawTileUV(int tileIdx, float x, float y, float w, float h, float al
 int Sprite_GetTileW(int tileIdx);
 int Sprite_GetTileH(int tileIdx);
 void Render_EndScene(void);
+int Math_ROUND(float x);
 
 bool RES_Open(const char* path);
 int RES_GetCount(void);

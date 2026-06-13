@@ -235,21 +235,21 @@ int Texture_Load(const char* name) {
 }
 
 int Texture_LoadFromMemory(const uint8_t* buf, uint32_t bufSize, const char* debugName) {
-    const char* ext = strrchr(debugName, '.');
-    if (!ext) return -1;
+    char tmpDir[MAX_PATH];
+    GetTempPathA(MAX_PATH, tmpDir);
 
     char tmpName[MAX_PATH];
-    snprintf(tmpName, sizeof(tmpName), "_tmp_mem_%s", debugName);
+    snprintf(tmpName, sizeof(tmpName), "_tmp_%s", debugName);
 
     char tmpPath[MAX_PATH];
-    snprintf(tmpPath, sizeof(tmpPath), "%s\\%s", g_game.currentDirectory, tmpName);
+    snprintf(tmpPath, sizeof(tmpPath), "%s%s", tmpDir, tmpName);
 
     FILE* f = fopen(tmpPath, "wb");
     if (!f) return -1;
     fwrite(buf, 1, bufSize, f);
     fclose(f);
 
-    int id = Texture_Load(tmpName);
+    int id = Texture_Load(tmpPath);
     remove(tmpPath);
     return id;
 }

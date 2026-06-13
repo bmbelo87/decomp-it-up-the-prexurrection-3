@@ -162,11 +162,13 @@ int Resource_LoadTexture(int resId, const char* name) {
     void* data = Resource_Load(resId, "TEXTURE", &size);
     if (!data) return -1;
 
+    char tmpDir[MAX_PATH];
+    GetTempPathA(MAX_PATH, tmpDir);
     char tmpPath[MAX_PATH];
-    snprintf(tmpPath, sizeof(tmpPath), "%s\\_tmp_%s", g_game.currentDirectory, name);
+    snprintf(tmpPath, sizeof(tmpPath), "%s_tmp_%s", tmpDir, name);
 
     FILE* f = fopen(tmpPath, "wb");
-    if (!f) return -1;
+    if (!f) { free(data); return -1; }
     fwrite(data, 1, size, f);
     fclose(f);
 
@@ -214,8 +216,10 @@ static int loadTextureFromRES(const char* resName) {
     uint8_t* buf = RES_ReadAlloc(idx);
     if (!buf) return -1;
 
+    char tmpDir[MAX_PATH];
+    GetTempPathA(MAX_PATH, tmpDir);
     char tmpPath[MAX_PATH];
-    snprintf(tmpPath, sizeof(tmpPath), "%s\\_tmp_%s", g_game.currentDirectory, RES_GetName(idx));
+    snprintf(tmpPath, sizeof(tmpPath), "%s_tmp_%s", tmpDir, RES_GetName(idx));
 
     FILE* f = fopen(tmpPath, "wb");
     if (f) {
@@ -864,7 +868,7 @@ bool Resource_LoadBGADirect(const char* datPath) {
                     kf->hoty = kfData[3];
                     kf->scaleX = kfData[4];
                     kf->scaleY = kfData[5];
-                      kf->r = kfData[6];
+                    kf->rotation = kfData[6];
                     kf->r = kfData[7];
                     kf->g = kfData[8];
                     kf->b = kfData[9];

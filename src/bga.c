@@ -33,8 +33,7 @@ static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum) {
     static BGAKeyframe result;
     if (layer->kfCount == 0) return NULL;
     
-    // Se o frame for anterior ao primeiro, retorna o primeiro
-    if (frameNum < layer->keyframes[0].frame) return &layer->keyframes[0];
+    if (frameNum < layer->keyframes[0].frame) return NULL;
     
     int segIdx = -1;
     for (int i = 0; i < layer->kfCount - 1; i++) {
@@ -421,7 +420,7 @@ static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX,
     }
 }
 
-static bool layerMatchesDirection(BGALayer* layer, int sel) {
+bool layerMatchesDirection(BGALayer* layer, int sel) {
     if (sel == 1)
         return strstr(layer->filename, "05.") || strstr(layer->filename, "10.");
     if (sel == 2)
@@ -441,17 +440,17 @@ static bool layerMatchesDirection(BGALayer* layer, int sel) {
     return false;
 }
 
-static bool isMenuArrowLayer(BGALayer* layer) {
+bool isMenuArrowLayer(BGALayer* layer) {
     return strstr(layer->filename, "05.") || strstr(layer->filename, "07.") ||
            (strstr(layer->filename, "06.") && layer->kfCount > 0);
 }
 
-static bool isMenuTextLayer(BGALayer* layer) {
+bool isMenuTextLayer(BGALayer* layer) {
     return strstr(layer->filename, "10.") || strstr(layer->filename, "11.") ||
            strstr(layer->filename, "12.") || strstr(layer->filename, "13.");
 }
 
-static bool isMenuCenterLayer(BGALayer* layer) {
+bool isMenuCenterLayer(BGALayer* layer) {
     return strstr(layer->filename, "15.") || strstr(layer->filename, "16.");
 }
 
@@ -546,106 +545,42 @@ static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion) 
     }
 }
 
-void BGA_Render(int bgaIndex, int frame) {
+void BGA_SetEventLayer(int bgaIndex, int frame, int layerIdx) {
+    if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
+    BGAPicture* pic = &g_game.bgaPics[bgaIndex];
+    if (layerIdx < 0 || layerIdx >= pic->layerCount) return;
+
+    BGALayer* layer = &pic->layers[layerIdx];
+    if (layer->kfCount == 0) return;
+
+    BGAKeyframe* state = interpolate_layer(layer, frame);
+    if (!state) return;
+
+    if (state->type == 0 || state->a <= 0.01f) return;
+    renderOneLayer(layer, state, pic->version);
+}
+
+void BGA_SetEventFrame(int bgaIndex, int frame) {
     if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
     BGAPicture* pic = &g_game.bgaPics[bgaIndex];
 
-    bool isMenu = (g_game.state == STATE_MENU_TRANSITION ||
+    for (int i = 0; i < pic->layerCount; i++) {
+        BGA_SetEventLayer(bgaIndex, frame, i);
+    }
+}
+
+void BGA_Render(int bgaIndex, int frame) {
+    bool isMenu = (g_game.state == STATE_RESET_FLOW ||
+                   g_game.state == STATE_MENU_FADE_IN ||
                    g_game.state == STATE_MENU_IDLE ||
+                   g_game.state == STATE_MENU_INPUT_WAIT ||
+                   g_game.state == STATE_MENU_ENTER ||
                    g_game.state == STATE_MENU_INPUT);
 
-    // Base pass: render background layers and text at original colors
-    for (int i = 0; i < pic->layerCount; i++) {
-        BGALayer* layer = &pic->layers[i];
-        if (layer->kfCount == 0) continue;
-        if (isMenu && isMenuArrowLayer(layer)) continue;
-        if (isMenu && isMenuCenterLayer(layer)) continue;
-
-        BGAKeyframe* state = NULL;
-        if (isMenu && isMenuTextLayer(layer)) {
-            state = interpolate_layer(layer, 1020);
-            if (!state || state->type == 0 || state->a <= 0.01f) {
-                for (int k = layer->kfCount - 1; k >= 0; k--) {
-                    if (layer->keyframes[k].type != 0 && layer->keyframes[k].a > 0.01f) {
-                        state = &layer->keyframes[k];
-                        break;
-                    }
-                }
-            }
-        } else {
-            state = interpolate_layer(layer, frame);
-        }
-        if (!state) {
-            if (g_game.bgaLoop && layer->kfCount > 0) {
-                state = &layer->keyframes[0];
-            } else {
-                continue;
-            }
-        }
-
-        float vis = (state->type == 0) ? 0.0f : 1.0f;
-        float alpha = state->a * vis;
-        if (g_game.bgaLoop && state->type != 0) {
-            if (alpha < 0.1f) alpha = 1.0f;
-        }
-        state->a = alpha;
-
-        renderOneLayer(layer, state, pic->version);
-    }
-
-    // Center pulse overlay (15.spr idle, 16.spr on select)
     if (isMenu) {
-        int centerFrame = (int)(g_game.frameCounter % 120);
-        for (int i = 0; i < pic->layerCount; i++) {
-            BGALayer* layer = &pic->layers[i];
-            if (layer->kfCount == 0) continue;
-            if (!isMenuCenterLayer(layer)) continue;
-            if (g_menuSelection == 0) {
-                if (strstr(layer->filename, "15.")) {
-                    BGAKeyframe* state = interpolate_layer(layer, 780 + centerFrame);
-                    if (state) renderOneLayer(layer, state, pic->version);
-                }
-            } else {
-                if (strstr(layer->filename, "16.")) {
-                    BGAKeyframe* state = interpolate_layer(layer, 900 + centerFrame);
-                    if (state) renderOneLayer(layer, state, pic->version);
-                }
-            }
-        }
-    }
-
-    // Overlay pass: render matching direction arrow + text for menu
-    if (isMenu && g_menuSelection > 0) {
-        int baseFrame = 0;
-        switch (g_menuSelection) {
-            case 1: baseFrame = 300; break;
-            case 2: baseFrame = 540; break;
-            case 3: baseFrame = 420; break;
-            case 4: baseFrame = 660; break;
-        }
-        int aniFrame = (int)(g_game.frameCounter % 120) + baseFrame;
-
-        for (int i = 0; i < pic->layerCount; i++) {
-            BGALayer* layer = &pic->layers[i];
-            if (layer->kfCount == 0) continue;
-            if (!layerMatchesDirection(layer, g_menuSelection)) continue;
-
-            // Arrow: use animation frame
-            if (isMenuArrowLayer(layer)) {
-                BGAKeyframe* state = interpolate_layer(layer, aniFrame);
-                if (state) {
-                    if (strstr(layer->filename, "06.") && layer->kfCount > 0)
-                        state->rotation = layer->keyframes[0].rotation;
-                    renderOneLayer(layer, state, pic->version);
-                }
-            }
-
-            // Text: use frame 0 (black) when selected
-            if (isMenuTextLayer(layer)) {
-                BGAKeyframe* state = interpolate_layer(layer, 0);
-                if (state) renderOneLayer(layer, state, pic->version);
-            }
-        }
+        Gamestate_RenderMenu(bgaIndex, frame);
+    } else {
+        BGA_SetEventFrame(bgaIndex, frame);
     }
 }
 

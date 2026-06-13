@@ -1,11 +1,14 @@
 #include "pumpy.h"
 
 void Gamestate_UpdateSongSelect(float dt) {
-    (void)dt;
 
     if (g_game.state == STATE_SONG_SELECT_B) {
-        if (g_game.stateFrame > 60) {
-            g_game.state = STATE_SONG_SELECT;
+        float a = g_game.globalColorA - dt * 1.0f;
+        if (a <= 0.0f) {
+            Render_SetGlobalColor(0, 0, 0, 0);
+            if (g_game.stateFrame > 60) g_game.state = STATE_SONG_SELECT;
+        } else {
+            Render_SetGlobalColor(0, 0, 0, a);
         }
         return;
     }

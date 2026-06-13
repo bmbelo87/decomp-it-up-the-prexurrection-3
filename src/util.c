@@ -21,7 +21,7 @@ void Log_Print(const char* fmt, ...) {
     }
     OutputDebugStringA(g_game.logBuffer + g_game.logPos - written);
     if (!g_logFile) {
-        g_logFile = fopen("pumpy.log", "a");
+        g_logFile = fopen("pumpy.log", "w");
     }
     if (g_logFile) {
         vfprintf(g_logFile, fmt, args2);
@@ -62,22 +62,28 @@ void Timer_Wait(uint32_t ms) {
 
 const char* State_ToString(GameState state) {
     switch (state) {
-        case STATE_INIT_WARNING: return "INIT_WARNING";
+        case STATE_BOOT: return "BOOT";
+        case STATE_WARNING_INIT: return "WARNING_INIT";
         case STATE_WARNING_ANIM: return "WARNING_ANIM";
-        case STATE_WARNING_WAIT: return "WARNING_WAIT";
         case STATE_WARNING_END: return "WARNING_END";
-        case STATE_LOGO_ANIM: return "LOGO_ANIM";
-        case STATE_LOGO_WAIT: return "LOGO_WAIT";
-        case STATE_MENU_TRANSITION: return "MENU_TRANSITION";
+        case STATE_LOGO_ENTER: return "LOGO_ENTER";
+        case STATE_LOGO_UPDATE: return "LOGO_UPDATE";
+        case STATE_RESET_FLOW: return "RESET_FLOW";
+        case STATE_MENU_FADE_IN: return "MENU_FADE_IN";
         case STATE_MENU_IDLE: return "MENU_IDLE";
+        case STATE_MENU_INPUT_WAIT: return "MENU_INPUT_WAIT";
+        case STATE_MENU_ENTER: return "MENU_ENTER";
         case STATE_MENU_INPUT: return "MENU_INPUT";
-        case STATE_SONG_SELECT: return "SONG_SELECT";
-        case STATE_SONG_SELECT_B: return "SONG_SELECT_B";
-        case STATE_GAMEPLAY_PREP: return "GAMEPLAY_PREP";
+        case STATE_RESET_WARNING: return "RESET_WARNING";
+        case STATE_GAME_INIT: return "GAME_INIT";
         case STATE_GAMEPLAY: return "GAMEPLAY";
         case STATE_GAMEOVER: return "GAMEOVER";
         case STATE_RESULT: return "RESULT";
         case STATE_CREDITS: return "CREDITS";
+        case STATE_SONG_SELECT: return "SONG_SELECT";
+        case STATE_SONG_SELECT_B: return "SONG_SELECT_B";
+        case STATE_LOGO_SKIP: return "LOGO_SKIP";
+        case STATE_EXIT: return "EXIT";
         default: return "UNKNOWN";
     }
 }
