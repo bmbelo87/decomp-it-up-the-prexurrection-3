@@ -455,6 +455,52 @@ static bool isMenuCenterLayer(BGALayer* layer) {
     return strstr(layer->filename, "15.") || strstr(layer->filename, "16.");
 }
 
+bool isMenuOverlayLayer(BGALayer* layer) {
+    return isMenuArrowLayer(layer) || isMenuTextLayer(layer) || isMenuCenterLayer(layer);
+}
+
+int findBGALoopStart(void) {
+    int loopStart = 999999;
+    for (int p = 0; p < g_game.bgaPicCount; p++) {
+        BGAPicture* pic = &g_game.bgaPics[p];
+        for (int l = 0; l < pic->layerCount; l++) {
+            BGALayer* layer = &pic->layers[l];
+            if (isMenuOverlayLayer(layer)) continue;
+            for (int k = 0; k < layer->kfCount; k++) {
+                BGAKeyframe* kf = &layer->keyframes[k];
+                if (kf->type != 0 && kf->a > 0.01f) {
+                    if (kf->frame < loopStart) loopStart = kf->frame;
+                    break;
+                }
+            }
+        }
+    }
+    return (loopStart > 999990) ? 0 : loopStart;
+}
+
+int findBGALoopEnd(void) {
+    int firstHidden = 999999;
+    for (int p = 0; p < g_game.bgaPicCount; p++) {
+        BGAPicture* pic = &g_game.bgaPics[p];
+        for (int l = 0; l < pic->layerCount; l++) {
+            BGALayer* layer = &pic->layers[l];
+            if (isMenuOverlayLayer(layer)) continue;
+            int layerFirstHidden = 999999;
+            for (int k = 0; k < layer->kfCount; k++) {
+                BGAKeyframe* kf = &layer->keyframes[k];
+                if (kf->type == 0 || kf->a <= 0.01f) {
+                    layerFirstHidden = kf->frame;
+                    break;
+                }
+            }
+            if (layerFirstHidden == 0) continue;
+            if (layerFirstHidden < firstHidden) firstHidden = layerFirstHidden;
+        }
+    }
+    if (firstHidden > 999990) return g_game.bgaMaxFrame;
+    return firstHidden - 1;
+}
+
 static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion) {
     if (!state || state->type == 0 || state->a <= 0.01f) return;
     float alpha = state->a;

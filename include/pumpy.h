@@ -355,8 +355,8 @@ void BGA_Render(int bgaIndex, int frame);
 void BGA_Reset(void);
 void BGA_Shutdown(void);
 
-void Gamestate_Enter(GameState state);
-void Gamestate_Exit(void);
+extern int g_menuSelection;
+
 void Gamestate_UpdateWarning(float dt);
 void Gamestate_UpdateLogo(float dt);
 void Gamestate_UpdateMenu(float dt);

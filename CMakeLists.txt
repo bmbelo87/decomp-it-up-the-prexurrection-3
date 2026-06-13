@@ -12,7 +12,10 @@ endif()
 add_executable(Pumpy WIN32
     src/main.c
     src/window.c
-    src/gamestate.c
+    src/warning.c
+    src/logo.c
+    src/menu.c
+    src/song_select.c
     src/gameplay.c
     src/render.c
     src/texture.c
