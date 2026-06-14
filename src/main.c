@@ -53,7 +53,8 @@ static void LoadBGAForState(GameState state) {
     g_game.bgaLoop = (state == STATE_RESET_FLOW || state == STATE_MENU_FADE_IN ||
                       state == STATE_MENU_IDLE || state == STATE_MENU_INPUT_WAIT ||
                       state == STATE_MENU_ENTER || state == STATE_MENU_INPUT ||
-                      state == STATE_SONG_SELECT || state == STATE_SONG_SELECT_B);
+                      state == STATE_SONG_SELECT || state == STATE_SONG_SELECT_B ||
+                      state == STATE_EXIT);
     if (g_game.bgaLoop) {
         g_game.bgaLoopStart = findBGALoopStart();
         g_game.bgaLoopEnd = findBGALoopEnd();
@@ -73,6 +74,8 @@ void Game_ChangeState(GameState newState) {
     g_game.state = newState;
     g_game.nextState = newState;
     g_game.stateFrame = 0;
+    g_game.confirmActive = false;
+    g_game.confirmTimer = 0;
     LoadBGAForState(newState);
 }
 
@@ -81,9 +84,14 @@ void Game_Init(HINSTANCE hInstance) {
     g_game.hInstance = hInstance;
     g_game.screenWidth = 640;
     g_game.screenHeight = 480;
+    g_game.confirmActive = false;
+    g_game.confirmTimer = 0;
     g_game.globalScaleX = 1.0f;
     g_game.globalScaleY = 1.0f;
     g_game.globalAlpha = 1.0f;
+    g_game.showDebug = true;
+    g_game.stageBreak = 1;
+    g_game.showHelp = 0;
     Render_SetGlobalColor(0, 0, 0, 0);
     GetCurrentDirectoryA(MAX_PATH, g_game.currentDirectory);
     InitSystems();
@@ -135,23 +143,29 @@ void Game_Shutdown(void) {
 
 void Game_Update(float dt) {
     Input_Update();
-    g_game.frameCounter++;
+    if (Input_IsKeyHit(VK_F11)) g_game.showDebug = !g_game.showDebug;
     g_game.stateFrame++;
 
 
     if (g_game.bgaPicCount > 0 && g_game.state != STATE_WARNING_END) {
-        g_game.bgaTimer += dt;
-        if (g_game.bgaTimer >= 1.0f / 60.0f) {
-            g_game.bgaTimer -= 1.0f / 60.0f;
-            if (g_game.bgaLoop && g_game.bgaLoopEnd > g_game.bgaLoopStart) {
-                g_game.bgaFrame++;
-                if (g_game.bgaFrame > g_game.bgaLoopEnd) {
-                    Log_Print("BGA: wrap %d -> %d\n", g_game.bgaFrame, g_game.bgaLoopStart);
-                    g_game.bgaFrame = g_game.bgaLoopStart;
-                }
-            } else {
-                if (g_game.bgaFrame < g_game.bgaMaxFrame) {
+        bool manualBGA = (g_game.state == STATE_GAMEOPTION_ENTER ||
+                          g_game.state == STATE_GAMEOPTION_ANIM ||
+                          g_game.state == STATE_GAMEOPTION ||
+                          g_game.state == STATE_GAMEOPTION_EXIT);
+        if (!manualBGA) {
+            g_game.bgaTimer += dt;
+            if (g_game.bgaTimer >= 1.0f / 60.0f) {
+                g_game.bgaTimer -= 1.0f / 60.0f;
+                if (g_game.bgaLoop && g_game.bgaLoopEnd > g_game.bgaLoopStart) {
                     g_game.bgaFrame++;
+                    if (g_game.bgaFrame > g_game.bgaLoopEnd) {
+                        Log_Print("BGA: wrap %d -> %d\n", g_game.bgaFrame, g_game.bgaLoopStart);
+                        g_game.bgaFrame = g_game.bgaLoopStart;
+                    }
+                } else {
+                    if (g_game.bgaFrame < g_game.bgaMaxFrame) {
+                        g_game.bgaFrame++;
+                    }
                 }
             }
         }
@@ -187,8 +201,23 @@ void Game_Update(float dt) {
     case STATE_GAMEPLAY:
         Gameplay_Update(dt);
         break;
+    case STATE_GAMEOPTION_ENTER:
+    case STATE_GAMEOPTION_ANIM:
+    case STATE_GAMEOPTION:
+    case STATE_GAMEOPTION_EXIT:
+        Gamestate_UpdateGameOption(dt);
+        break;
+    case STATE_RESET_WARNING:
+        Game_ChangeState(STATE_WARNING_INIT);
+        break;
     case STATE_EXIT:
-        PostQuitMessage(0);
+        if (g_game.stateFrame < 30) {
+            float a = g_game.globalColorA + dt * 2.0f;
+            if (a > 1.0f) a = 1.0f;
+            Render_SetGlobalColor(0, 0, 0, a);
+        }
+        if (g_game.stateFrame >= 30)
+            PostQuitMessage(0);
         break;
     default:
         break;
@@ -197,18 +226,31 @@ void Game_Update(float dt) {
 }
 
 static void Render_StateInfo(void) {
+    static uint32_t lastFpsTime = 0;
+    static int fpsCount = 0;
+    static float currentFps = 0;
     char buf[256];
     int y = 8;
-    
-    // State info
+
+    fpsCount++;
+    uint32_t now = timeGetTime();
+    if (now - lastFpsTime >= 1000) {
+        currentFps = fpsCount / ((now - lastFpsTime) / 1000.0f);
+        fpsCount = 0;
+        lastFpsTime = now;
+    }
+
+    // FPS no canto inferior direito
+    snprintf(buf, sizeof(buf), "FPS: %.1f", currentFps);
+    int fw = (int)strlen(buf) * 8;
+    Font_DrawString(g_game.screenWidth - fw - 8, g_game.screenHeight - 24,
+                    buf, 1.0f, 1.0f, 0.0f, 1.0f);
+
     snprintf(buf, sizeof(buf), "State: %s  Frame: %u/%u",
              State_ToString(g_game.state), g_game.stateFrame, g_game.frameCounter);
     Font_DrawString(8, y, buf, 1.0f, 1.0f, 0.0f, 1.0f);
     y += 16;
     
-    snprintf(buf, sizeof(buf), "P1: Q(UL) E(UR) S(C) Z(DL) C(DR) | P2: NumPad7/9/5/1/3 (NumLock OFF)");
-    Font_DrawString(8, y, buf, 1.0f, 1.0f, 0.0f, 1.0f);
-    y += 16;
     
     if (g_game.bgaPicCount > 0) {
         BGAPicture* pic = &g_game.bgaPics[0];
@@ -251,27 +293,7 @@ void Game_Render(void) {
         g_game.state != STATE_WARNING_END &&
         g_game.state != STATE_LOGO_ENTER && g_game.state != STATE_LOGO_UPDATE &&
         g_game.state != STATE_LOGO_SKIP) {
-        float bgR = 0.2f, bgG = 0.2f, bgB = 0.4f;
-        switch (g_game.state) {
-        case STATE_MENU_FADE_IN:
-            bgR = 0.0f; bgG = 0.0f; bgB = 0.0f; break;
-        case STATE_RESET_FLOW:
-        case STATE_MENU_IDLE:
-        case STATE_MENU_INPUT_WAIT:
-        case STATE_MENU_ENTER:
-        case STATE_MENU_INPUT:
-            bgR = 0.0f; bgG = 0.4f; bgB = 0.6f; break;
-        case STATE_SONG_SELECT_B:
-            bgR = 0.0f; bgG = 0.0f; bgB = 0.0f; break;
-        case STATE_SONG_SELECT:
-            bgR = 0.0f; bgG = 0.0f; bgB = 0.6f; break;
-        case STATE_GAME_INIT:
-        case STATE_GAMEPLAY:
-            bgR = 0.1f; bgG = 0.1f; bgB = 0.3f; break;
-        default:
-            break;
-        }
-        glColor4f(bgR, bgG, bgB, 1.0f);
+        glColor4f(0.0f, 0.0f, 0.0f, 1.0f);
         glBegin(GL_QUADS);
         glVertex2f(0, 0);
         glVertex2f(640, 0);
@@ -283,19 +305,24 @@ void Game_Render(void) {
 
     if (g_game.bgaPicCount > 0 &&
         g_game.state != STATE_SONG_SELECT && g_game.state != STATE_SONG_SELECT_B &&
-        g_game.state != STATE_LOGO_SKIP) {
+        g_game.state != STATE_LOGO_SKIP &&
+        g_game.state != STATE_GAMEOPTION_ENTER &&
+        g_game.state != STATE_GAMEOPTION_ANIM &&
+        g_game.state != STATE_GAMEOPTION &&
+        g_game.state != STATE_GAMEOPTION_EXIT) {
         BGA_Render(0, g_game.bgaFrame);
     }
 
     switch (g_game.state) {
-    case STATE_RESET_FLOW:
-    case STATE_MENU_FADE_IN:
-    case STATE_MENU_IDLE:
-    case STATE_MENU_INPUT_WAIT:
-    case STATE_MENU_ENTER:
-    case STATE_MENU_INPUT:
-        Gamestate_RenderMenu(0, g_game.bgaFrame);
-        break;
+        case STATE_RESET_FLOW:
+        case STATE_MENU_FADE_IN:
+        case STATE_MENU_IDLE:
+        case STATE_MENU_INPUT_WAIT:
+        case STATE_MENU_ENTER:
+        case STATE_MENU_INPUT:
+        case STATE_EXIT:
+            Gamestate_RenderMenu(0, g_game.bgaFrame);
+            break;
     case STATE_SONG_SELECT:
     case STATE_SONG_SELECT_B:
         Gamestate_RenderSongSelect();
@@ -303,28 +330,37 @@ void Game_Render(void) {
     case STATE_GAMEPLAY:
         Gameplay_Render();
         break;
+    case STATE_GAMEOPTION_ENTER:
+    case STATE_GAMEOPTION_ANIM:
+    case STATE_GAMEOPTION:
+    case STATE_GAMEOPTION_EXIT:
+        Gamestate_RenderGameOption();
+        break;
     default:
         break;
     }
 
-    Render_StateInfo();
+    if (g_game.showDebug) Render_StateInfo();
     Render_EndScene();
 }
 
 void Game_MainLoop(void) {
     bool running = true;
+    uint32_t lastTick = (timeGetTime() * 240) / 1000;
+
     while (running) {
-        uint32_t frameStart = timeGetTime();
         if (!Window_ProcessMessages()) {
             running = false;
             break;
         }
-        float dt = Timer_GetDelta();
-        Game_Update(dt);
-        Game_Render();
-        uint32_t elapsed = timeGetTime() - frameStart;
-        if (elapsed < FRAME_TIME_MS) {
-            Sleep(FRAME_TIME_MS - elapsed);
+
+        uint32_t tick = (timeGetTime() * 240) / 1000;
+
+        if (3 < tick - lastTick) {
+            lastTick = tick;
+            g_game.frameCounter++;
+            Game_Update(1.0f / 60.0f);
+            Game_Render();
         }
     }
 }

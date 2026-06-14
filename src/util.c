@@ -79,7 +79,10 @@ const char* State_ToString(GameState state) {
         case STATE_GAMEPLAY: return "GAMEPLAY";
         case STATE_GAMEOVER: return "GAMEOVER";
         case STATE_RESULT: return "RESULT";
-        case STATE_CREDITS: return "CREDITS";
+        case STATE_GAMEOPTION_ENTER: return "GAMEOPTION_ENTER";
+        case STATE_GAMEOPTION_ANIM: return "GAMEOPTION_ANIM";
+        case STATE_GAMEOPTION: return "GAMEOPTION";
+        case STATE_GAMEOPTION_EXIT: return "GAMEOPTION_EXIT";
         case STATE_SONG_SELECT: return "SONG_SELECT";
         case STATE_SONG_SELECT_B: return "SONG_SELECT_B";
         case STATE_LOGO_SKIP: return "LOGO_SKIP";

@@ -205,7 +205,10 @@ static int loadTextureFromRES(const char* resName) {
             snprintf(tryName, sizeof(tryName), "%s.%s", base, exts[ei]);
             idx = RES_Find(tryName);
             Log_Print("RES: tex try '%s' -> %d\n", tryName, idx);
-            if (idx >= 0) break;
+            if (idx >= 0) {
+                Log_Print("RES: tex matched entry name='%s'\n", RES_GetName(idx));
+                break;
+            }
         }
         if (idx < 0) return -1;
     }
@@ -390,111 +393,90 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
     snprintf(bga->name, sizeof(bga->name), "%s", bgaName);
 
     if (isBGA2) {
-        typedef struct { float xPos, yPos, hotx, hoty, scaleX, scaleY, rotation, r, g, b, a; uint32_t ts; uint32_t z_order; } BGA2KFRaw;
-
         bga->version = 2;
-
-        int scanStart = 4;
-        while (scanStart < (int)bgaSize - 4 && bga->layerCount < MAX_BGA_LAYERS) {
+        int evPos = 16;
+        int maxEvents = 50;
+        for (int evt = 0; evt < maxEvents && evPos + 68 <= (int)bgaSize && bga->layerCount < MAX_BGA_LAYERS; evt++)
+        {
             char filename[64];
-            int nameStart = -1;
-            int nameEnd = -1;
-
-            for (int i = scanStart; i + 4 < (int)bgaSize; i++) {
-                if (bgaData[i] == '.') {
-                    char ext[5];
-                    memcpy(ext, bgaData + i, 4);
-                    ext[4] = '\0';
-                    if (_stricmp(ext, ".spr") == 0 || _stricmp(ext, ".sp2") == 0 ||
-                        _stricmp(ext, ".tga") == 0 || _stricmp(ext, ".TGA") == 0) {
-                        int s = i;
-                        while (s > 0 && bgaData[s - 1] >= 0x20 && bgaData[s - 1] < 0x7F) s--;
-                        int len = (i + 4 - s);
-                        if (len < 64) {
-                            memcpy(filename, bgaData + s, len);
-                            filename[len] = '\0';
-                            nameStart = s;
-                            nameEnd = i + 4;
-                            break;
-                        }
-                    }
+            memset(filename, 0, sizeof(filename));
+            int nameLen = 0;
+            for (int i = 0; i < 64 && evPos + i < (int)bgaSize; i++)
+            {
+                char c = bgaData[evPos + i];
+                if (c >= 0x20 && c <= 0x7E)
+                {
+                    if (nameLen < 63) filename[nameLen++] = c;
                 }
+                else break;
             }
+            filename[nameLen] = '\0';
 
-            if (nameStart < 0) break;
+            int count = 0;
+            if (evPos + 68 <= (int)bgaSize)
+                count = *(int*)(bgaData + evPos + 64);
 
-            for (int ci = 0; filename[ci]; ci++) {
-                if (filename[ci] >= 'A' && filename[ci] <= 'Z')
-                    filename[ci] = (char)(filename[ci] + 32);
-            }
+            BGALayer* layer = &bga->layers[bga->layerCount];
 
-            if (bga->layerCount == 0) {
-                strncpy(bga->name, filename, sizeof(bga->name) - 1);
-            }
+            if (count > 0 && nameLen > 0)
+            {
+                for (int ci = 0; filename[ci]; ci++)
+                    if (filename[ci] >= 'A' && filename[ci] <= 'Z')
+                        filename[ci] = (char)(filename[ci] + 32);
 
-            int ptr = nameEnd;
-            while (ptr < (int)bgaSize && bgaData[ptr] == 0) ptr++;
-            int aligned = ((ptr + 3) / 4) * 4;
+                strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
+                char* dot = strrchr(filename, '.');
+                layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
 
-            int numKF = 0;
-            int dataOff = 0;
-            for (int scan = aligned; scan < (int)bgaSize - 4; scan += 4) {
-                uint32_t val = *(uint32_t*)(bgaData + scan);
-                if (val >= 1 && val <= 5000) {
-                    numKF = (int)val;
-                    dataOff = scan + 4;
-                    break;
-                }
-            }
+                int kfDataOff = evPos + 68;
+                layer->kfCount = 0;
+                for (int i = 0; i < count && layer->kfCount < MAX_BGA_KEYFRAMES; i++)
+                {
+                    uint32_t ofs = kfDataOff + i * 64;
+                    if (ofs + 64 > bgaSize) break;
+                    uint8_t* raw = bgaData + ofs;
 
-                if (numKF > 0 && dataOff > 0) {
-                    BGALayer* layer = &bga->layers[bga->layerCount];
-                    strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
+                    float* floats = (float*)raw;
+                    uint32_t ts = *(uint32_t*)(raw + 44);
+                    uint32_t z_order = *(uint32_t*)(raw + 48);
 
-                    char* dot = strrchr(filename, '.');
-                    layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
-
-                    int kfSize = 64;
-                    layer->kfCount = 0;
-                    for (int i = 0; i < numKF && layer->kfCount < MAX_BGA_KEYFRAMES; i++) {
-                        uint32_t ofs = dataOff + i * kfSize;
-                        if (ofs + kfSize > bgaSize) break;
-
-                        BGA2KFRaw* raw = (BGA2KFRaw*)(bgaData + ofs);
-                        BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
-
-                        uint32_t ts = raw->ts;
-                        kf->frame = (int)(ts & 0xFFFF);
-                        kf->type = (int)((ts >> 16) & 0xFFFF);
-                        kf->x = raw->xPos;
-                        kf->y = raw->yPos;
-                        kf->hotx = raw->hotx;
-                        kf->hoty = raw->hoty;
-                        kf->scaleX = raw->scaleX;
-                        kf->scaleY = raw->scaleY;
-                        kf->rotation = raw->rotation;
-                        kf->r = raw->r;
-                        kf->g = raw->g;
-                        kf->b = raw->b;
-                        kf->a = raw->a;
-                        kf->z_order = (int)raw->z_order;
-
+                    BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
+                    kf->frame = (int)(ts & 0xFFFF);
+                    kf->type = (int)((ts >> 16) & 0xFFFF);
+                    kf->x = floats[0];
+                    kf->y = floats[1];
+                    kf->hotx = floats[2];
+                    kf->hoty = floats[3];
+                    kf->scaleX = floats[4];
+                    kf->scaleY = floats[5];
+                    kf->rotation = floats[6];
+                    kf->r = floats[7];
+                    kf->g = floats[8];
+                    kf->b = floats[9];
+                    kf->a = floats[10];
+                    kf->z_order = (int)z_order;
                     layer->kfCount++;
                 }
 
-                if (layer->kfCount > 0) {
+                if (layer->kfCount > 0)
+                {
                     int maxF = layer->keyframes[layer->kfCount - 1].frame;
                     if (maxF > bga->maxFrame) bga->maxFrame = maxF;
                 }
 
-                Log_Print("BGA2: '%s' %s kf=%d maxFrame=%d\n",
-                    filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, bga->maxFrame);
-
-                bga->layerCount++;
-                scanStart = dataOff + numKF * kfSize;
-            } else {
-                break;
+                Log_Print("BGA2: evt[%d] '%s' %s kf=%d maxFrame=%d\n",
+                    evt, filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, bga->maxFrame);
             }
+            else
+            {
+                layer->filename[0] = '\0';
+                layer->isSPR = false;
+                layer->kfCount = 0;
+                Log_Print("BGA2: evt[%d] (empty)\n", evt);
+            }
+
+            bga->layerCount++;
+            evPos += 64 + 4 + (count > 0 ? count * 64 : 0);
         }
     } else {
         bga->version = 0;
@@ -680,6 +662,13 @@ static int loadSPRFromRES(const char* sprName) {
 
         t->texId = loadTextureFromRES(texName);
 
+        if (strstr(sprFileName, "go_c04") || strstr(sprFileName, "GO_C04")) {
+            Log_Print("SPR: '%s' tile='%s' tex='%s' texId=%d src=(%d,%d,%d,%d) uv=(%d,%d,%d,%d)\n",
+                      sprFileName, t->name, t->texture, t->texId,
+                      t->srcX, t->srcY, t->srcW, t->srcH,
+                      t->u1, t->v1, t->u2, t->v2);
+        }
+
         g_game.sprTileCount++;
     }
 
@@ -733,11 +722,11 @@ bool Resource_LoadBGAByName(const char* datName) {
         }
 
         BGAPicture* bga = &g_game.bgaPics[g_game.bgaPicCount - 1];
-        loadAllSPRsFromRES();
 
         for (int i = 0; i < bga->layerCount; i++) {
             BGALayer* layer = &bga->layers[i];
             const char* srcName = layer->filename;
+            if (srcName[0] == '\0') continue;
             if (*srcName == '?') srcName++;
             if (layer->isSPR && layer->sprTileCount == 0) {
                 layer->sprTileStart = g_game.sprTileCount;
@@ -914,6 +903,7 @@ bool Resource_LoadBGADirect(const char* datPath) {
     for (int i = 0; i < bga->layerCount; i++) {
         BGALayer* layer = &bga->layers[i];
         const char* srcName = layer->filename;
+        if (srcName[0] == '\0') continue;
         if (*srcName == '?') srcName++;
         if (layer->isSPR) {
             layer->sprTileStart = g_game.sprTileCount;

@@ -18,6 +18,8 @@
   - `BGA2`: Versão 2, identificada pelos bytes mágicos "BGA2".
   - `BGA`: Versão 0, identificada pelos bytes mágicos "BGA".
 - **Logs (Registros)**: Use `Log_Print` para depuração; a saída pode ser encontrada em `build/Debug/pumpy.log`.
+- Toda tela de algum STATE, deve ter o background totalmente preto RGBA(0,0,0,1) por padrão.
+- Sempre que houver mensão a extensão .tga, se for buscar nos folders a extensão tem que ser trocada pra .png
 
 ## Estilo e Convenções
 
@@ -28,47 +30,47 @@
 
 ## Funções Renomeadas no Ghidra
 
-| Endereço | Nome | Descrição |
-|----------|------|-----------|
-| 0x00402850 | `Game_MainLoop` | Loop principal: `Render_ClearScreen()` → `switch(g_dwState)` com 26+ cases → `SwapBuffers()` |
-| 0x004014d0 | (anônima) | Pipeline de negação Y nas coordenadas de renderização |
-| 0x004012e0 | `BGA_LoadFile` | Carrega BGA: lê magic BGA2/BGA, roteia para parser v0 ou v2, carrega SPR por layer |
-| 0x004190f0 | `Audio_LoadADPCM` | Carrega AUDIO\\%s.AUD, escreve temp, decodifica ADPCM |
-| 0x00403f30 | `Warning_Animate` | `BGA_SetEventFrame(events, g_dwFrameCounter++)`; se >899 → state=3 |
-| 0x00404320 | `Menu_UpdateInput` | Input + multi-pass render (7 layers estáticas + background + overlay + modo) |
-| 0x004191a0 | `Anim_ConfirmEnter` | Animação de confirmação (enter) |
-| 0x004191c0 | `Anim_ConfirmLeave` | Animação de confirmação (leave) |
-| 0x00401890 | `Render_SetGlobalColor` | Seta cor global de renderização |
-| 0x004269b0 | `Math_ROUND` | Arredondamento matemático |
-| 0x0040c0f0 | (anônima) | Desenha retângulo preto/branco (fade overlay?) |
-| 0x00403e50 | (anônima) | Desenha texto na tela (usado no menu para copyright) |
+| Endereço   | Nome                    | Descrição                                                                                    |
+| ---------- | ----------------------- | -------------------------------------------------------------------------------------------- |
+| 0x00402850 | `Game_MainLoop`         | Loop principal: `Render_ClearScreen()` → `switch(g_dwState)` com 26+ cases → `SwapBuffers()` |
+| 0x004014d0 | (anônima)               | Pipeline de negação Y nas coordenadas de renderização                                        |
+| 0x004012e0 | `BGA_LoadFile`          | Carrega BGA: lê magic BGA2/BGA, roteia para parser v0 ou v2, carrega SPR por layer           |
+| 0x004190f0 | `Audio_LoadADPCM`       | Carrega AUDIO\\%s.AUD, escreve temp, decodifica ADPCM                                        |
+| 0x00403f30 | `Warning_Animate`       | `BGA_SetEventFrame(events, g_dwFrameCounter++)`; se >899 → state=3                           |
+| 0x00404320 | `Menu_UpdateInput`      | Input + multi-pass render (7 layers estáticas + background + overlay + modo)                 |
+| 0x004191a0 | `Anim_ConfirmEnter`     | Animação de confirmação (enter)                                                              |
+| 0x004191c0 | `Anim_ConfirmLeave`     | Animação de confirmação (leave)                                                              |
+| 0x00401890 | `Render_SetGlobalColor` | Seta cor global de renderização                                                              |
+| 0x004269b0 | `Math_ROUND`            | Arredondamento matemático                                                                    |
+| 0x0040c0f0 | (anônima)               | Desenha retângulo preto/branco (fade overlay?)                                               |
+| 0x00403e50 | (anônima)               | Desenha texto na tela (usado no menu para copyright)                                         |
 
 ## Mapeamento de Estados (g_dwState)
 
-| State | Nome | Função | Descrição |
-|-------|------|--------|-----------|
-| 0x00 | `STATE_BOOT` | `State_Branch()` (FUN_00409380?) | Boot: decide se vai para Warning, Logo ou Menu (baseado em `g_dwBootCounter`) |
-| 0x01 | `STATE_WARNING_INIT` | `Warning_Enter()` (FUN_00409720) | Inicializa Warning (carrega BGA, configura) |
-| 0x02 | `STATE_WARNING_ANIM` | `Warning_Animate()` (00403f30) | Anima: `BGA_SetEventFrame(events, frame++)`, max 900 → state 3 |
-| 0x03 | `STATE_WARNING_END` | `Warning_End()` (FUN_004054c0) | Finaliza Warning |
-| 0x04 | `STATE_LOGO_ENTER` | `Logo_Enter()` (FUN_00403a80?) | Inicializa Logo |
-| 0x05 | `STATE_LOGO_UPDATE` | `Logo_Update()` | Atualiza Logo, transiciona para ResetFlow |
-| 0x06 | `STATE_RESET_FLOW` | `State_ResetFlow()` | Reset do fluxo (carrega 82W, configura menu) |
-| 0x07 | `STATE_MENU_FADE_IN` | `Menu_FadeEnter()` | Fade in do menu |
-| 0x08 | `STATE_MENU_IDLE` | `Menu_IdleUpdate()` | Menu idle (60f) |
-| 0x09 | `STATE_MENU_INPUT_WAIT` | `Menu_InputReset()` | Aguarda input (30f) |
-| 0x0A | `STATE_MENU_ENTER` | `Menu_Enter()` | Menu inicializando (82W resetando) |
-| 0x0B | `STATE_MENU_INPUT` | `Menu_UpdateInput()` (00404320) | Menu real: loop eterno, input + multi-pass render |
-| 0x0C | (reset) | `State_ResetToWarning()` | Volta ao Warning |
-| 0x0D | TryNextStage | `FUN_00412750` | Vídeo de Try Next Stage |
-| 0x0F | Gameplay | `FUN_00414820` | Carrega 00.DAT, XXX.DAT, XXX.AUD, XXX.STX |
-| 0x19 | DanceGradeResult | `FUN_00415020` | Resultado normal de dança |
-| 0x1E | Title | `FUN_004091a0` | Title.PNZ da música selecionada |
-| 0x16 | Stage Break | `FUN_00412480` | Tela de Stage Break |
-| 0x1F | GameOption transição | `FUN_00415ad0` | Saindo do Menu, entrando no GameOption |
-| 0x20 | GameOption sequência | `FUN_00415b30` | Sequência de entrada no GameOption |
-| 0x21 | GameOption inside | `FUN_00415ba0` | Dentro do GameOption |
-| 0x23 | GameplayEnter | `GameplayEnter()` | Entrada no gameplay |
+| State | Nome                    | Função                           | Descrição                                                                     |
+| ----- | ----------------------- | -------------------------------- | ----------------------------------------------------------------------------- |
+| 0x00  | `STATE_BOOT`            | `State_Branch()` (FUN_00409380?) | Boot: decide se vai para Warning, Logo ou Menu (baseado em `g_dwBootCounter`) |
+| 0x01  | `STATE_WARNING_INIT`    | `Warning_Enter()` (FUN_00409720) | Inicializa Warning (carrega BGA, configura)                                   |
+| 0x02  | `STATE_WARNING_ANIM`    | `Warning_Animate()` (00403f30)   | Anima: `BGA_SetEventFrame(events, frame++)`, max 900 → state 3                |
+| 0x03  | `STATE_WARNING_END`     | `Warning_End()` (FUN_004054c0)   | Finaliza Warning                                                              |
+| 0x04  | `STATE_LOGO_ENTER`      | `Logo_Enter()` (FUN_00403a80?)   | Inicializa Logo                                                               |
+| 0x05  | `STATE_LOGO_UPDATE`     | `Logo_Update()`                  | Atualiza Logo, transiciona para ResetFlow                                     |
+| 0x06  | `STATE_RESET_FLOW`      | `State_ResetFlow()`              | Reset do fluxo (carrega 82W, configura menu)                                  |
+| 0x07  | `STATE_MENU_FADE_IN`    | `Menu_FadeEnter()`               | Fade in do menu                                                               |
+| 0x08  | `STATE_MENU_IDLE`       | `Menu_IdleUpdate()`              | Menu idle (60f)                                                               |
+| 0x09  | `STATE_MENU_INPUT_WAIT` | `Menu_InputReset()`              | Aguarda input (30f)                                                           |
+| 0x0A  | `STATE_MENU_ENTER`      | `Menu_Enter()`                   | Menu inicializando (82W resetando)                                            |
+| 0x0B  | `STATE_MENU_INPUT`      | `Menu_UpdateInput()` (00404320)  | Menu real: loop eterno, input + multi-pass render                             |
+| 0x0C  | (reset)                 | `State_ResetToWarning()`         | Volta ao Warning                                                              |
+| 0x0D  | TryNextStage            | `FUN_00412750`                   | Vídeo de Try Next Stage                                                       |
+| 0x0F  | Gameplay                | `FUN_00414820`                   | Carrega 00.DAT, XXX.DAT, XXX.AUD, XXX.STX                                     |
+| 0x19  | DanceGradeResult        | `FUN_00415020`                   | Resultado normal de dança                                                     |
+| 0x1E  | Title                   | `FUN_004091a0`                   | Title.PNZ da música selecionada                                               |
+| 0x16  | Stage Break             | `FUN_00412480`                   | Tela de Stage Break                                                           |
+| 0x1F  | GameOption transição    | `FUN_00415ad0`                   | Saindo do Menu, entrando no GameOption                                        |
+| 0x20  | GameOption sequência    | `FUN_00415b30`                   | Sequência de entrada no GameOption                                            |
+| 0x21  | GameOption inside       | `FUN_00415ba0`                   | Dentro do GameOption                                                          |
+| 0x23  | StaffEnter              | `StaffEnter()`                   | Carrega STAFF.DAT (staff roll)                                                |
 
 ## Arquitetura de Renderização Multi-Pass (ORIGINAL)
 
@@ -87,6 +89,7 @@ O original NÃO renderiza em um único passe. `Menu_UpdateInput` (00404320) faz 
    - DR (default): `BGA_SetEventFrame(events, (frameCounter % 120) + 780)` (780-899)
 
 ### Faixas de frame do 82W.DAT:
+
 - 0-299: ?
 - 300-419: Center (int_c/int_d? layers 21,32)
 - 420-539: UL (Start)
@@ -97,19 +100,20 @@ O original NÃO renderiza em um único passe. `Menu_UpdateInput` (00404320) faz 
 - 1020+: Background continuation
 
 ### Warning_Animate (00403f30):
+
 - Apenas `BGA_SetEventFrame(events, g_dwFrameCounter++)` — playback linear de TODOS os eventos (frame 0 → 899)
 - Quando > 899 → state 3 (Warning_End)
 
 ## Globais Importantes
 
-| Endereço | Nome | Descrição |
-|----------|------|-----------|
+| Endereço   | Nome               | Descrição                                                              |
+| ---------- | ------------------ | ---------------------------------------------------------------------- |
 | 0x00d387f0 | `g_dwFrameCounter` | Contador de frames (incrementado em Warning_Animate, Menu_UpdateInput) |
-| 0x008bbf40 | `g_dwBootCounter` | Contador de boot (decide Warning/Logo/Menu) |
-| 0x00d387e0 | `g_dwMenuMode` | Modo do menu (1=UL, 3=UR, 7=Center, 9=DL, outros=DR) |
-| 0x00d387ec | `g_dwConfirmTimer` | Timer de confirmação (60 frames após segundo toque) |
-| (flag) | `g_bConfirmActive` | Flag de confirmação ativa |
-| (HWND) | `g_dwHWnd` | Handle da janela |
+| 0x008bbf40 | `g_dwBootCounter`  | Contador de boot (decide Warning/Logo/Menu)                            |
+| 0x00d387e0 | `g_dwMenuMode`     | Modo do menu (1=UL, 3=UR, 7=Center, 9=DL, outros=DR)                   |
+| 0x00d387ec | `g_dwConfirmTimer` | Timer de confirmação (60 frames após segundo toque)                    |
+| (flag)     | `g_bConfirmActive` | Flag de confirmação ativa                                              |
+| (HWND)     | `g_dwHWnd`         | Handle da janela                                                       |
 
 ## Estruturas BGA
 
@@ -125,3 +129,6 @@ O original NÃO renderiza em um único passe. `Menu_UpdateInput` (00404320) faz 
 - `g_bootCounter%3==0` → Logo, `%3==1` → Menu, `%3==2` → ???
 - Projeção OpenGL: Y-down (`gluOrtho2D(0, 640, 480, 0)`)
 - 81.DAT maxFrame=465; R_WARN maxFrame=900; 82W.DAT maxFrame=1140+
+- TODOS OS ARQUIVOS .DAT JÁ ESTÃO DESCOMPACTADOS NA PASTA BGA_extracted. Não precisa extrair de .DAT, os arquivos .BGA, .SPR, .TGA/.PNG já estão lá.
+
+- SPR são arquivos TEXTO apenas com COORDENADAS de posições de sprites.

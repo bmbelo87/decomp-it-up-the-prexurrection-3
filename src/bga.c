@@ -11,8 +11,8 @@ static BGAKeyframe lerp_kf(BGAKeyframe* a, BGAKeyframe* b, float t) {
     BGAKeyframe r;
     r.x = lerp(a->x, b->x, t);
     r.y = lerp(a->y, b->y, t);
-    r.hotx = lerp(a->hotx, b->hotx, t);
-    r.hoty = lerp(a->hoty, b->hoty, t);
+    r.hotx = a->hotx;
+    r.hoty = a->hoty;
     r.scaleX = lerp(a->scaleX, b->scaleX, t);
     r.scaleY = lerp(a->scaleY, b->scaleY, t);
     if (a->scaleY == 0.0f && b->scaleY == 0.0f) r.scaleY = r.scaleX;
@@ -54,6 +54,7 @@ static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum) {
     BGAKeyframe* b = &layer->keyframes[segIdx + 1];
     int span = b->frame - a->frame;
     float t = (span > 0) ? (float)(frameNum - a->frame) / span : 0.0f;
+
     result = lerp_kf(a, b, t);
 
     if (a->type == 0) result.a = 0;
@@ -381,8 +382,6 @@ static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX,
     if (destW <= 0 || destH <= 0) return;
 
     if (rotation != 0.0f) {
-        // Usa a matriz do original adaptada para Y-down
-        // O vertex (srcX, srcY) fica na posicao do atlas, a matriz transforma para tela
         glPushMatrix();
         glTranslatef(posX, posY, 0.0f);
         glTranslatef(hotX, hotY, 0.0f);
@@ -390,7 +389,8 @@ static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX,
         glScalef(sx, sy, 1.0f);
         glTranslatef(-hotX, -hotY, 0.0f);
 
-        glBindTexture(GL_TEXTURE_2D, tile->texId);
+        GLuint glTexId = (tile->texId >= 0 && tile->texId < MAX_TEXTURES && g_game.textures[tile->texId].inUse) ? g_game.textures[tile->texId].id : 0;
+        glBindTexture(GL_TEXTURE_2D, glTexId);
         glColor4f(r, g, b, alpha);
 
         float uvV1 = (float)(256 - tile->v1) / 256.0f;
@@ -516,7 +516,7 @@ static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion) 
                 }
             }
         } else {
-            for (int t = 0; t < layer->sprTileCount; t++) {
+            for (int t = layer->sprTileCount - 1; t >= 0; t--) {
                 int tileIdx = layer->sprTileStart + t;
                 if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) continue;
                 SPRTileDef* tile = &g_game.sprTiles[tileIdx];

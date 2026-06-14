@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>State List - Pump It Up PREX 3</title>
+<style>
+body { font-family: 'Segoe UI', Arial, sans-serif; background: #1a1a2e; color: #eee; padding: 20px; }
+h1 { color: #e94560; text-align: center; }
+h2 { color: #0f3460; background: #e94560; display: inline-block; padding: 6px 16px; border-radius: 4px; margin-top: 30px; }
+table { border-collapse: collapse; width: 100%; margin: 10px 0 30px 0; background: #16213e; border-radius: 6px; overflow: hidden; }
+th { background: #0f3460; color: #fff; padding: 10px 12px; text-align: left; font-size: 13px; }
+td { padding: 8px 12px; border-bottom: 1px solid #1a1a3e; font-size: 13px; vertical-align: top; }
+tr:hover { background: #1a1a4e; }
+.hex { color: #e94560; font-weight: bold; font-family: monospace; }
+.enum { color: #4fc3f7; font-family: monospace; }
+.empty { color: #666; }
+.note { color: #aaa; font-style: italic; margin-top: 20px; text-align: center; }
+.tag { display: inline-block; font-size: 11px; padding: 2px 6px; border-radius: 3px; margin-left: 4px; }
+.tag-ok { background: #27ae60; color: #fff; }
+.tag-warn { background: #e67e22; color: #fff; }
+.tag-fail { background: #e94560; color: #fff; }
+.tag-info { background: #2980b9; color: #fff; }
+.tag-off { background: #555; color: #ccc; }
+</style>
+</head>
+<body>
+
+<h1>PUMP IT UP PREX 3 - State Machine</h1>
+
+<h2>Dispatch Completo (Ghidra Game_MainLoop @ 0x00402850)</h2>
+<table>
+<tr><th>Hex</th><th>Num</th><th>Funcao Ghidra</th><th>Nome</th><th>Descricao</th></tr>
+<tr><td class="hex">0x00</td><td>0</td><td>State_Branch</td><td>Boot</td><td>Roteador central. Decide proximo estado baseado em g_dwBootCounter.</td></tr>
+<tr><td class="hex">0x01</td><td>1</td><td>Warning_Enter</td><td>Warning_Enter</td><td>Inicializa Warning. <span class="tag tag-off">Desativado PC</span></td></tr>
+<tr><td class="hex">0x02</td><td>2</td><td>Warning_Animate</td><td>Warning_Anim</td><td>Animacao Warning. <span class="tag tag-off">Desativado PC</span></td></tr>
+<tr><td class="hex">0x03</td><td>3</td><td>Warning_End</td><td>Warning_End</td><td>Fim Warning. <span class="tag tag-off">Desativado PC</span></td></tr>
+<tr><td class="hex">0x04</td><td>4</td><td>Logo_Enter</td><td>Logo_Enter</td><td>Prepara 81.DAT (logo Andamiro).</td></tr>
+<tr><td class="hex">0x05</td><td>5</td><td>Logo_Update</td><td>Logo_Update</td><td>Executa animacao 81.DAT. Transita para 0x0A.</td></tr>
+<tr><td class="hex">0x06</td><td>6</td><td>State_ResetFlow</td><td>ResetFlow</td><td class="empty">Nao usado no fluxo normal.</td></tr>
+<tr><td class="hex">0x07</td><td>7</td><td>Menu_FadeEnter</td><td>MenuFadeIn</td><td class="empty">Nao usado no fluxo normal.</td></tr>
+<tr><td class="hex">0x08</td><td>8</td><td>Menu_IdleUpdate</td><td>MenuIdle</td><td class="empty">Nao usado no fluxo normal.</td></tr>
+<tr><td class="hex">0x09</td><td>9</td><td>Menu_InputReset</td><td>MenuInputReset</td><td class="empty">Nao usado no fluxo normal.</td></tr>
+<tr><td class="hex">0x0A</td><td>10</td><td>Menu_Enter</td><td>Menu_Enter</td><td>Transicao breve pos-logo. Vai direto para 0x0B.</td></tr>
+<tr><td class="hex">0x0B</td><td>11</td><td>Menu_UpdateInput</td><td>Menu_UpdateInput</td><td>Loop principal do menu. UL=28, UR=31, DL=35, DR=Exit.</td></tr>
+<tr><td class="hex">0x0C</td><td>12</td><td>State_ResetToWarning</td><td>ResetToWarning</td><td class="empty">Nao usado (Warning desativado).</td></tr>
+<tr><td class="hex">0x0D</td><td>13</td><td>TryNextStage</td><td>TryNextStage</td><td>Transicao de 40 frames, carrega LT01/LT03. Vai para 0x1B.</td></tr>
+<tr><td class="hex">0x0E</td><td>14</td><td>GameInit</td><td>GameInit</td><td>Inicializa gameplay: parse args (-n,-h,-c,-d), carrega XXX.DAT e XXX.AUD, seta 0x0F.</td></tr>
+<tr><td class="hex">0x0F</td><td>15</td><td>GameplayUpdate</td><td>GameplayUpdate</td><td>Gameplay ativo: renderiza setas, notas, life gauge, combo. Detecta fim (→18) ou fail (→16).</td></tr>
+<tr><td class="hex">0x10</td><td>16</td><td>Gameplay_Cleanup</td><td>Gameplay_Cleanup</td><td>Limpa estado e volta para Boot (0x00). Usado como estado transiente.</td></tr>
+<tr><td class="hex">0x11</td><td>17</td><td>FUN_00404ee0</td><td>ServiceMenu_Enter</td><td>Entrada do Service Menu (arcade).</td></tr>
+<tr><td class="hex">0x12</td><td>18</td><td>FUN_004066e0</td><td>ServiceMenu</td><td>Service Menu ativo.</td></tr>
+<tr><td class="hex">0x13</td><td>19</td><td>FUN_00404f30</td><td>AutoExit</td><td>Tela preta com 81.DAT resetando.</td></tr>
+<tr><td class="hex">0x14</td><td>20</td><td>DanceGradeWait</td><td>DanceGradeWait</td><td>Transicao pre-DanceGrade: avanca BGA com offset +180 por 163 frames → 0x18.</td></tr>
+<tr><td class="hex">0x15</td><td>21</td><td>StageFail</td><td>StageFail</td><td>Animacao 118 frames → 0x17 (GameOver).</td></tr>
+<tr><td class="hex">0x16</td><td>22</td><td>StageBreak</td><td>StageBreak</td><td>Carrega 083.DAT, 250 frames → 0x17 (GameOver).</td></tr>
+<tr><td class="hex">0x17</td><td>23</td><td>GameOver_Enter</td><td>GameOver_Enter</td><td>Carrega 84.DAT, 241 frames (ou pulavel) → 0x00 (Boot). Reseta life/scores.</td></tr>
+<tr><td class="hex">0x18</td><td>24</td><td>DanceGrade_Enter</td><td>DanceGrade_Enter</td><td>Carrega 83.DAT e 83.AUD, processa scores, seta 0x19 e chama DanceGradeDisplay.</td></tr>
+<tr><td class="hex">0x19</td><td>25</td><td>DanceGradeDisplay</td><td>DanceGradeDisplay</td><td>Exibe nota (S/D/F), combo, score. 601 frames → 0x1A (StageTransition).</td></tr>
+<tr><td class="hex">0x1A</td><td>26</td><td>StageTransition</td><td>StageTransition</td><td>Decide: proxima musica (→0x0D), GameOver (→0x17), ou Boot (→0x00).</td></tr>
+<tr><td class="hex">0x1B</td><td>27</td><td>FUN_0040abe0</td><td>SongReload</td><td>Carrega 099.DAT (SongSelect) sem parar.</td></tr>
+<tr><td class="hex">0x1C</td><td>28</td><td>FUN_004092e0</td><td>SongSelect</td><td>SongSelect com animacoes instaveis.</td></tr>
+<tr><td class="hex">0x1D</td><td>29</td><td>FUN_00409720</td><td>SongSelectReady</td><td>SongSelect estavel.</td></tr>
+<tr><td class="hex">0x1E</td><td>30</td><td>FUN_004091a0</td><td>Title</td><td>Title.PNZ da musica selecionada.</td></tr>
+<tr><td class="hex">0x1F</td><td>31</td><td>FUN_00415ad0</td><td>GameOption_Enter</td><td>Entrada do GameOption.</td></tr>
+<tr><td class="hex">0x20</td><td>32</td><td>FUN_00415b30</td><td>GameOption</td><td>Sequencia de GameOption.</td></tr>
+<tr><td class="hex">0x21</td><td>33</td><td>FUN_00415ba0</td><td>GameOptionInternal</td><td>Interno do GameOption.</td></tr>
+<tr><td class="hex">0x22</td><td>34</td><td>FUN_00415b70</td><td>GameOptionExit</td><td>Saida do GameOption.</td></tr>
+<tr><td class="hex">0x23</td><td>35</td><td>StaffEnter</td><td>StaffEnter</td><td>Carrega STAFF.DAT.</td></tr>
+<tr><td class="hex">0x24</td><td>36</td><td>FUN_00404c20</td><td>Staff</td><td>Staff roll ativo.</td></tr>
+<tr><td class="hex">0x25</td><td>37</td><td>FUN_00404240</td><td>StaffEnd</td><td>Saida do staff.</td></tr>
+</table>
+
+<h2>Transicoes Reais (mapeadas via Ghidra + CE)</h2>
+<table>
+<tr><th>Sequencia</th><th>Fluxo</th></tr>
+<tr><td>Boot</td><td class="enum">State_Branch (0) → Logo_Enter (4) → Logo_Update (5) → Menu_Enter (0A) → Menu_UpdateInput (0B)</td></tr>
+<tr><td>Menu UL 2x</td><td class="enum">Menu_UpdateInput (0B) → SongSelect (1C) → SongSelectReady (1D) → Title (1E) → GameInit (0E) → GameplayUpdate (0F)</td></tr>
+<tr><td>Menu UR 2x</td><td class="enum">Menu_UpdateInput (0B) → GameOption_Enter (1F) → GameOption (20) → GameOptionInternal (21) → GameOptionExit (22)</td></tr>
+<tr><td>Menu DL 2x</td><td class="enum">Menu_UpdateInput (0B) → StaffEnter (23) → Staff (24) → StaffEnd (25)</td></tr>
+<tr><td>Menu DR 2x</td><td class="enum">Exit (fadeout + PostQuitMessage)</td></tr>
+<tr><td>Musica OK</td><td class="enum">GameplayUpdate (0F) → DanceGradeWait (14) → DanceGrade_Enter (18) → DanceGradeDisplay (19) → StageTransition (1A) → TryNextStage (0D) → SongReload (1B)</td></tr>
+<tr><td>Nota F</td><td class="enum">DanceGradeDisplay (19) → StageTransition (1A) → GameOver_Enter (17) → State_Branch (0)</td></tr>
+<tr><td>StageBreak</td><td class="enum">GameplayUpdate (0F) → StageBreak (16) → GameOver_Enter (17) → State_Branch (0)</td></tr>
+<tr><td>Fim de credito</td><td class="enum">StageTransition (1A) → State_Branch (0) → Logo_Enter (4)</td></tr>
+</table>
+
+<h2>Estados Customizados (0x80+)</h2>
+<table>
+<tr><th>Hex</th><th>Nome</th><th>Descricao</th></tr>
+<tr><td class="hex">0x80</td><td>STATE_LOGO_SKIP</td><td>Pular logo (transicao direta para menu)</td></tr>
+<tr><td class="hex">0x81</td><td>STATE_SONG_SELECT</td><td>Tela de selecao de musicas (wrapper)</td></tr>
+<tr><td class="hex">0x82</td><td>STATE_SONG_SELECT_B</td><td>Fade in para song select</td></tr>
+<tr><td class="hex">0xFF</td><td>STATE_EXIT</td><td>Fechar o jogo (fadeout + quit)</td></tr>
+</table>
+
+<h2>Resumo do Fluxo (Visao Geral)</h2>
+<pre>
+Boot (0) → Logo (4-5) → Menu (A-B)
+                              ├─ UL → SongSelect (1C-1E) → GameInit (E) → Gameplay (F)
+                              │                                             ├─ DanceGrade (14→18→19) → StageTransition (1A)
+                              │                                             │                              ├─ TryNextStage (D) → SongReload (1B)
+                              │                                             │                              └─ GameOver (17) → Boot (0)
+                              │                                             └─ StageBreak (16) → GameOver (17) → Boot (0)
+                              ├─ UR → GameOption (1F-22) → Menu (A)
+                              ├─ DL → Staff (23-25) → Menu (A)
+                              └─ DR → Exit (FF)
+</pre>
+
+<h2>Globais Importantes</h2>
+<table>
+<tr><th>Endereco</th><th>Nome</th><th>Tipo</th><th>Descricao</th></tr>
+<tr><td class="hex">0x00d387f0</td><td>g_dwFrameCounter</td><td>uint32</td><td>Contador de frames</td></tr>
+<tr><td class="hex">0x008bbf40</td><td>g_dwBootCounter</td><td>uint32</td><td>Contador de boot (State_Branch usa modulo 3)</td></tr>
+<tr><td class="hex">0x00d387e0</td><td>g_dwMenuMode</td><td>uint32</td><td>Modo do menu</td></tr>
+<tr><td class="hex">0x00d387ec</td><td>g_dwConfirmTimer</td><td>uint32</td><td>Timer de confirmacao</td></tr>
+<tr><td class="hex">0x00d35ebc</td><td>DAT_00d35ebc</td><td>int32</td><td>Contador de stages (0-3)</td></tr>
+<tr><td class="hex">0x00d39040</td><td>DAT_00d39040</td><td>byte</td><td>Creditos restantes (1 = tem credito)</td></tr>
+<tr><td class="hex">0x00d39041</td><td>DAT_00d39041</td><td>byte</td><td>Dificuldade? (0=Easy, 1=Normal?, 2=Hard?)</td></tr>
+<tr><td class="hex">0x00442728</td><td>DAT_00442728</td><td>uint32</td><td>Flags de modo: bit0=P1, bit1=P2, bit4=N, bit5=H, bit9=C, bit8=HD, etc</td></tr>
+<tr><td class="hex">0x00da2490</td><td>DAT_00da2490</td><td>int32</td><td>Contador de estado/temporizador generico</td></tr>
+<tr><td class="hex">0x00da23f8</td><td>DAT_00da23f8</td><td>int32</td><td>Contador do DanceGrade (223 = ativa sons, 601 = fim)</td></tr>
+</table>
+
+<p class="note">Atualizado em 13/06/2026 - Pump It Up PREX 3 Reverse Engineering<br>
+Funcoes renomeadas no Ghidra: StageBreak, GameOver_Enter, StageTransition, DanceGradeWait, StageFail,<br>
+DanceGrade_Enter, DanceGradeDisplay, GameInit, GameplayUpdate, Gameplay_Cleanup, TryNextStage</p>
+
+</body>
+</html>

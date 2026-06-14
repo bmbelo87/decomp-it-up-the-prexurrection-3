@@ -20,6 +20,8 @@ void Gamestate_UpdateMenu(float dt) {
         if (g_game.stateFrame > 30) {
             g_menuOption = 0;
             g_menuSelection = 0;
+            g_game.confirmActive = false;
+            g_game.confirmTimer = 0;
             subEnter(STATE_MENU_IDLE);
         }
         break;
@@ -48,11 +50,11 @@ void Gamestate_UpdateMenu(float dt) {
             if (padHit(0, PAD_DR)) { g_menuSelection = 4; return; }
         } else {
             if (padHit(0, PAD_UL)) {
-                if (g_menuSelection == 1) { Render_SetGlobalColor(0,0,0,0); Game_ChangeState(STATE_MENU_FADE_IN); return; }
+                if (g_menuSelection == 1) { g_game.fadeTarget = STATE_SONG_SELECT; Render_SetGlobalColor(0,0,0,0); Game_ChangeState(STATE_MENU_FADE_IN); return; }
                 g_menuSelection = 1; return;
             }
             if (padHit(0, PAD_UR)) {
-                if (g_menuSelection == 2) { return; }
+                if (g_menuSelection == 2) { g_game.fadeTarget = STATE_GAMEOPTION_ENTER; Render_SetGlobalColor(0,0,0,0); Game_ChangeState(STATE_MENU_FADE_IN); return; }
                 g_menuSelection = 2; return;
             }
             if (padHit(0, PAD_DL)) {
@@ -60,15 +62,22 @@ void Gamestate_UpdateMenu(float dt) {
                 g_menuSelection = 3; return;
             }
             if (padHit(0, PAD_DR)) {
-                if (g_menuSelection == 4) { Game_ChangeState(STATE_EXIT); return; }
+                if (g_menuSelection == 4) { Render_SetGlobalColor(0,0,0,0.01f); Game_ChangeState(STATE_EXIT); return; }
                 g_menuSelection = 4; return;
             }
         }
         break;
     case STATE_MENU_FADE_IN: {
         float a = g_game.globalColorA + dt * 1.0f;
-        if (a >= 1.0f) { Render_SetGlobalColor(0, 0, 0, 0); Game_ChangeState(STATE_SONG_SELECT); }
-        else Render_SetGlobalColor(0, 0, 0, a);
+        if (a >= 1.0f) {
+            GameState target = g_game.fadeTarget;
+            Render_SetGlobalColor(0, 0, 0, 0);
+            g_game.fadeTarget = 0;
+            Game_ChangeState(target);
+        } else {
+            Render_SetGlobalColor(0, 0, 0, a);
+        }
+        break;
     }
     default:
         break;
@@ -109,7 +118,8 @@ void Gamestate_RenderMenu(int bgaIndex, int frame) {
     if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
     if (g_game.state != STATE_RESET_FLOW && g_game.state != STATE_MENU_FADE_IN &&
         g_game.state != STATE_MENU_IDLE && g_game.state != STATE_MENU_INPUT_WAIT &&
-        g_game.state != STATE_MENU_ENTER && g_game.state != STATE_MENU_INPUT) return;
+        g_game.state != STATE_MENU_ENTER && g_game.state != STATE_MENU_INPUT &&
+        g_game.state != STATE_EXIT) return;
 
     BGAPicture* pic = &g_game.bgaPics[bgaIndex];
     int sel = g_menuSelection;
@@ -178,4 +188,5 @@ void Gamestate_RenderMenu(int bgaIndex, int frame) {
         if (renderFrame >= 0)
             BGA_SetEventLayer(bgaIndex, renderFrame, i);
     }
+
 }

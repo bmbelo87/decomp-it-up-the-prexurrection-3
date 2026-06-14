@@ -64,11 +64,11 @@ typedef enum {
     STATE_BATTLE_3        = 0x1C,
     STATE_BATTLE_4        = 0x1D,
     STATE_BATTLE_5        = 0x1E,
-    STATE_CREDITS         = 0x1F,
-    STATE_BATTLE_7        = 0x20,
-    STATE_BATTLE_8        = 0x21,
-    STATE_BATTLE_9        = 0x22,
-    STATE_GAMEPLAY_ENTER  = 0x23,
+    STATE_GAMEOPTION_ENTER = 0x1F,
+    STATE_GAMEOPTION_ANIM  = 0x20,
+    STATE_GAMEOPTION       = 0x21,
+    STATE_GAMEOPTION_EXIT  = 0x22,
+    STATE_STAFF_ENTER     = 0x23,
     STATE_STAFF           = 0x24,
     STATE_STAFF_END       = 0x25,
 
@@ -251,6 +251,7 @@ typedef struct {
     
     GameState state;
     GameState nextState;
+    GameState fadeTarget;
     uint32_t frameCounter;
     uint32_t stateFrame;
     uint32_t flags;
@@ -281,6 +282,17 @@ typedef struct {
     float globalColorA;
     float fadeAlpha;
     
+    bool confirmActive;
+    uint32_t confirmTimer;
+
+    int optionDifficulty; // 0=Easy, 1=Normal, 2=Hard
+    int optionToggle1;    // opcao toggle 1
+    int optionToggle2;    // opcao toggle 2
+    int optionCurrentItem; // 0-4
+    int stageBreak;       // Stage Break global (0=OFF, 1=ON)
+    int showHelp;         // Show Help global (0=OFF, 1=ON)
+    
+    bool showDebug;
     uint32_t timerId;
     uint32_t lastTime;
     float deltaTime;
@@ -380,6 +392,10 @@ void Gameplay_Enter(void);
 void Gameplay_Exit(void);
 void Gameplay_Update(float dt);
 void Gameplay_Render(void);
+
+void Gamestate_UpdateGameOption(float dt);
+void Gamestate_RenderGameOption(void);
+void Gamestate_InitGameOption(void);
 
 void Render_Clear(uint8_t r, uint8_t g, uint8_t b);
 void Render_SetOrtho(int width, int height);
