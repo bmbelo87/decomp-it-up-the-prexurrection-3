@@ -22,10 +22,10 @@ void Gamestate_UpdateLogo(float dt) {
             return;
         }
         if (g_game.bgaFrame >= g_game.bgaMaxFrame && g_game.stateFrame > 60)
-            Game_ChangeState(STATE_RESET_FLOW);
+            Game_ChangeState(STATE_MENU_ENTER);
         break;
     case STATE_LOGO_SKIP:
-        Game_ChangeState(STATE_MENU_INPUT);
+        Game_ChangeState(STATE_MENU_ENTER);
         break;
     default:
         break;

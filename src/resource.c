@@ -253,6 +253,9 @@ typedef struct {
 typedef struct {
     bool isAni;
     int tileCount;
+    int patCols;
+    int patRows;
+    int patFlags;
     SPRTile tiles[SPR_MAX_TILES];
 } SPRFile;
 
@@ -276,6 +279,19 @@ static bool parseSPR(const uint8_t* data, uint32_t size, SPRFile* spr) {
                 (rest[1] == 'n' || rest[1] == 'N') &&
                 (rest[2] == 'i' || rest[2] == 'I')) {
                 spr->isAni = true;
+            } else if ((rest[0] == 'p' || rest[0] == 'P') &&
+                       (rest[1] == 'a' || rest[1] == 'A') &&
+                       (rest[2] == 't' || rest[2] == 'T')) {
+                // TYPE PATTERN <flag> <cols> <rows>
+                const char* p = rest + 7;
+                while (*p == ' ' || *p == '\t') p++;
+                spr->patFlags = atoi(p);
+                while (*p >= '0' && *p <= '9') p++;
+                while (*p == ' ' || *p == '\t') p++;
+                spr->patCols = atoi(p);
+                while (*p >= '0' && *p <= '9') p++;
+                while (*p == ' ' || *p == '\t') p++;
+                spr->patRows = atoi(p);
             }
         } else if ((text[i+0] == 'N' || text[i+0] == 'n') &&
                    (text[i+1] == 'U' || text[i+1] == 'u') &&
@@ -438,7 +454,8 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
 
                     float* floats = (float*)raw;
                     uint32_t ts = *(uint32_t*)(raw + 44);
-                    uint32_t z_order = *(uint32_t*)(raw + 48);
+                    int32_t blendMode = *(int16_t*)(raw + 48);
+                    uint32_t z_order = *(uint32_t*)(raw + 52);
 
                     BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
                     kf->frame = (int)(ts & 0xFFFF);
@@ -454,6 +471,7 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
                     kf->g = floats[8];
                     kf->b = floats[9];
                     kf->a = floats[10];
+                    kf->blendMode = (int)blendMode;
                     kf->z_order = (int)z_order;
                     layer->kfCount++;
                 }
@@ -466,123 +484,101 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
 
                 Log_Print("BGA2: evt[%d] '%s' %s kf=%d maxFrame=%d\n",
                     evt, filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, bga->maxFrame);
+
+                bga->layerCount++;
             }
             else
             {
-                layer->filename[0] = '\0';
-                layer->isSPR = false;
-                layer->kfCount = 0;
                 Log_Print("BGA2: evt[%d] (empty)\n", evt);
             }
 
-            bga->layerCount++;
             evPos += 64 + 4 + (count > 0 ? count * 64 : 0);
         }
     } else {
         bga->version = 0;
+        int kfSize = 44;
 
-        int scanStart = 4;
-        while (scanStart < (int)bgaSize - 4 && bga->layerCount < MAX_BGA_LAYERS) {
+        // Fixed-record format: [64 bytes name][4 bytes count][count * 44 bytes keyframes]
+        // Matches original EXE's sequential file read (FUN_00401020)
+        int entryPos = 16;  // skip 16-byte header
+        while (entryPos + 64 + 4 <= (int)bgaSize && bga->layerCount < MAX_BGA_LAYERS) {
             char filename[64];
-            int nameStart = -1;
-            int nameEnd = -1;
+            memcpy(filename, bgaData + entryPos, 64);
+            filename[63] = '\0';
 
-            for (int i = scanStart; i + 4 < (int)bgaSize; i++) {
-                if (bgaData[i] == '.') {
-                    char ext[5];
-                    memcpy(ext, bgaData + i, 4);
-                    ext[4] = '\0';
-                    if (_stricmp(ext, ".spr") == 0 || _stricmp(ext, ".sp2") == 0 ||
-                        _stricmp(ext, ".tga") == 0 || _stricmp(ext, ".TGA") == 0) {
-                        int s = i;
-                        while (s > 0 && bgaData[s - 1] >= 0x20 && bgaData[s - 1] < 0x7F) s--;
-                        int len = (i + 4 - s);
-                        if (len < 64) {
-                            memcpy(filename, bgaData + s, len);
-                            filename[len] = '\0';
-                            nameStart = s;
-                            nameEnd = i + 4;
-                            break;
-                        }
-                    }
-                }
+            int nameLen = (int)strlen(filename);
+            if (nameLen == 0) {
+                // Empty slot, no keyframe data
+                int count = *(int*)(bgaData + entryPos + 64);
+                entryPos += 68 + count * kfSize;
+                continue;
             }
 
-            if (nameStart < 0) break;
+            int count = *(int*)(bgaData + entryPos + 64);
+            if (count == 0) {
+                entryPos += 68;
+                continue;
+            }
 
             for (int ci = 0; filename[ci]; ci++) {
                 if (filename[ci] >= 'A' && filename[ci] <= 'Z')
                     filename[ci] = (char)(filename[ci] + 32);
             }
 
+            BGALayer* layer = &bga->layers[bga->layerCount];
+            strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
+
+            char* dot = strrchr(filename, '.');
+            layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
+
             if (bga->layerCount == 0) {
                 strncpy(bga->name, filename, sizeof(bga->name) - 1);
             }
 
-            int ptr = nameEnd;
-            while (ptr < (int)bgaSize && bgaData[ptr] == 0) ptr++;
-            int aligned = ((ptr + 3) / 4) * 4;
+            int dataOff = entryPos + 68;
+            layer->kfCount = 0;
+            for (int i = 0; i < count && layer->kfCount < MAX_BGA_KEYFRAMES; i++) {
+                uint32_t ofs = dataOff + i * kfSize;
+                if (ofs + kfSize > bgaSize) break;
 
-            int numKF = 0;
-            int dataOff = 0;
-            for (int scan = aligned; scan < (int)bgaSize - 4; scan += 4) {
-                uint32_t val = *(uint32_t*)(bgaData + scan);
-                if (val >= 1 && val <= 5000) {
-                    numKF = (int)val;
-                    dataOff = scan + 4;
-                    break;
-                }
+                int16_t frame = *(int16_t*)(bgaData + ofs);
+                int16_t spriteID = *(int16_t*)(bgaData + ofs + 2);
+                float* floats = (float*)(bgaData + ofs + 4);
+                BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
+
+                kf->frame = frame;
+                kf->type = (spriteID != 0) ? 1 : 0;
+                kf->x = floats[0];
+                kf->y = floats[1];
+                kf->hotx = floats[2];
+                kf->hoty = floats[3];
+                kf->scaleX = floats[4];
+                kf->scaleY = floats[4];
+                kf->rotation = floats[5];
+                kf->r = floats[6];
+                kf->g = floats[7];
+                kf->b = floats[8];
+                kf->a = floats[9];
+                kf->blendMode = 0;
+
+                Log_Print("  BGA0 kf[%d]: frame=%d spriteID=%d x=%.1f y=%.1f sc=%.2f rot=%.2f r=%.2f g=%.2f b=%.2f a=%.2f\n",
+                          i, frame, spriteID,
+                          floats[0], floats[1], floats[4], floats[5],
+                          floats[6], floats[7], floats[8], floats[9]);
+
+                layer->kfCount++;
             }
 
-            if (numKF > 0 && dataOff > 0) {
-                BGALayer* layer = &bga->layers[bga->layerCount];
-                strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
-
-                char* dot = strrchr(filename, '.');
-                layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
-
-                int kfSize = 44;
-                layer->kfCount = 0;
-                for (int i = 0; i < numKF && layer->kfCount < MAX_BGA_KEYFRAMES; i++) {
-                    uint32_t ofs = dataOff + i * kfSize;
-                    if (ofs + kfSize > bgaSize) break;
-
-                    uint32_t ts = *(uint32_t*)(bgaData + ofs);
-                    float* floats = (float*)(bgaData + ofs + 4);
-                    BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
-
-                    kf->frame = (int)(ts & 0xFFFF);
-                    kf->type = (int)((ts >> 16) & 0xFFFF);
-                    kf->x = floats[0];
-                    kf->y = floats[1];
-                    kf->hotx = floats[2];
-                    kf->hoty = floats[3];
-                    kf->scaleX = floats[4];
-                    kf->scaleY = floats[5];
-                    
-                    kf->r = floats[6];
-                    kf->g = floats[7];
-                    kf->b = floats[8];
-                    kf->a = floats[9];
-                    kf->rotation = 0.0f;
-                    kf->z_order = 0;
-
-                    layer->kfCount++;
-                }
-
-                if (layer->kfCount > 0) {
-                    int maxF = layer->keyframes[layer->kfCount - 1].frame;
-                    if (maxF > bga->maxFrame) bga->maxFrame = maxF;
-                }
-
-                Log_Print("BGA0: '%s' %s kf=%d maxFrame=%d\n",
-                    filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, bga->maxFrame);
-
-                bga->layerCount++;
-                scanStart = dataOff + numKF * kfSize;
-            } else {
-                break;
+            if (layer->kfCount > 0) {
+                int maxF = layer->keyframes[layer->kfCount - 1].frame;
+                if (maxF > bga->maxFrame) bga->maxFrame = maxF;
             }
+
+            Log_Print("BGA0: '%s' %s kf=%d maxFrame=%d\n",
+                filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, bga->maxFrame);
+
+            bga->layerCount++;
+            entryPos += 68 + count * kfSize;
         }
     }
 
@@ -594,7 +590,7 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
     return true;
 }
 
-static int loadSPRFromRES(const char* sprName) {
+static int loadSPRFromRES(const char* sprName, int* outPatCols, int* outPatRows, int* outPatFlags) {
     char sprFileName[64];
     const char* ext = strrchr(sprName, '.');
     if (ext && (_stricmp(ext, ".spr") == 0 || _stricmp(ext, ".sp2") == 0)) {
@@ -673,6 +669,12 @@ static int loadSPRFromRES(const char* sprName) {
     }
 
     free(sprData);
+    if (spr.patCols > 0 && spr.patRows > 0) {
+        if (outPatCols) *outPatCols = spr.patCols;
+        if (outPatRows) *outPatRows = spr.patRows;
+        if (outPatFlags) *outPatFlags = spr.patFlags;
+        return spr.tileCount;
+    }
     return spr.isAni ? spr.tileCount : 0;
 }
 
@@ -686,7 +688,7 @@ static void loadAllSPRsFromRES(void) {
     for (int i = 0; i < count; i++) {
         const char* name = RES_GetName(i);
         if (name && (hasExt(name, ".spr") || hasExt(name, ".sp2"))) {
-            loadSPRFromRES(name);
+            loadSPRFromRES(name, NULL, NULL, NULL);
         }
     }
 }
@@ -730,9 +732,13 @@ bool Resource_LoadBGAByName(const char* datName) {
             if (*srcName == '?') srcName++;
             if (layer->isSPR && layer->sprTileCount == 0) {
                 layer->sprTileStart = g_game.sprTileCount;
-                int aniFrames = loadSPRFromRES(srcName);
+                int patC = 0, patR = 0, patF = 0;
+                int aniFrames = loadSPRFromRES(srcName, &patC, &patR, &patF);
                 layer->sprTileCount = g_game.sprTileCount - layer->sprTileStart;
                 layer->aniFrameCount = aniFrames;
+                layer->patCols = patC;
+                layer->patRows = patR;
+                layer->patFlags = patF;
             } else if (!layer->isSPR) {
                 layer->texId = loadTextureFromRES(srcName);
             }
@@ -768,15 +774,12 @@ bool Resource_LoadBGADirect(const char* datPath) {
     if (hasExt(bga->name, ".bga")) bga->name[strlen(bga->name) - 4] = '\0';
 
     int kfSize;
-    int scanStart;
     if (isBGA2) {
         bga->version = 2;
         kfSize = 64;
-        scanStart = 4;
     } else if (memcmp(bgaData, "BGA", 3) == 0) {
         bga->version = 0;
         kfSize = 44;
-        scanStart = 4;
     } else {
         Log_Print("BGA: unknown BGA format\n");
         free(bgaData);
@@ -784,117 +787,93 @@ bool Resource_LoadBGADirect(const char* datPath) {
         return false;
     }
 
-    while (scanStart < (int)bgaSize - 4 && bga->layerCount < MAX_BGA_LAYERS) {
+    int entryPos = 16;
+    while (entryPos + 64 + 4 <= (int)bgaSize && bga->layerCount < MAX_BGA_LAYERS) {
         char filename[64];
-        int nameStart = -1;
-        int nameEnd = -1;
+        memcpy(filename, bgaData + entryPos, 64);
+        filename[63] = '\0';
 
-        for (int i = scanStart; i + 4 < (int)bgaSize; i++) {
-            if (bgaData[i] == '.') {
-                char ext[5];
-                memcpy(ext, bgaData + i, 4);
-                ext[4] = '\0';
-                if (_stricmp(ext, ".spr") == 0 || _stricmp(ext, ".sp2") == 0 ||
-                    _stricmp(ext, ".tga") == 0 || _stricmp(ext, ".TGA") == 0) {
-                    int s = (int)i;
-                    while (s > 0 && bgaData[s - 1] >= 0x20 && bgaData[s - 1] < 0x7F) s--;
-                    int len = (int)(i + 4 - s);
-                    if (len < 64) {
-                        memcpy(filename, bgaData + s, len);
-                        filename[len] = '\0';
-                        nameStart = s;
-                        nameEnd = i + 4;
-                        break;
-                    }
-                }
-            }
+        int nameLen = (int)strlen(filename);
+        int count = *(int*)(bgaData + entryPos + 64);
+
+        if (nameLen == 0 && count == 0) {
+            entryPos += 68 + count * kfSize;
+            bga->layerCount++;
+            continue;
         }
-
-        if (nameStart < 0) break;
 
         for (int ci = 0; filename[ci]; ci++) {
             if (filename[ci] >= 'A' && filename[ci] <= 'Z')
                 filename[ci] = (char)(filename[ci] + 32);
         }
 
-        int ptr = nameEnd;
-        while (ptr < (int)bgaSize && bgaData[ptr] == 0) ptr++;
-        int aligned = ((ptr + 3) / 4) * 4;
+        BGALayer* layer = &bga->layers[bga->layerCount];
+        strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
 
-        int numKF = 0;
-        int dataOff = 0;
-        for (int scan = aligned; scan < (int)bgaSize - 4; scan += 4) {
-            uint32_t val = *(uint32_t*)(bgaData + scan);
-            if (val >= 1 && val <= 5000) {
-                numKF = (int)val;
-                dataOff = scan + 4;
-                break;
+        char* dot = strrchr(filename, '.');
+        layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
+
+        int dataOff = entryPos + 68;
+        int readCount = count;
+        if (readCount > MAX_BGA_KEYFRAMES)
+            readCount = MAX_BGA_KEYFRAMES;
+        layer->kfCount = 0;
+        for (int i = 0; i < readCount && layer->kfCount < MAX_BGA_KEYFRAMES; i++) {
+            uint32_t ofs = dataOff + i * kfSize;
+            if (ofs + (uint32_t)kfSize > bgaSize) break;
+
+            BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
+
+            if (kfSize == 64) {
+                float* kfData = (float*)(bgaData + ofs);
+                uint32_t ts = *(uint32_t*)(bgaData + ofs + 44);
+                kf->frame = (int)(ts & 0xFFFF);
+                kf->type = (int)((ts >> 16) & 0xFFFF);
+                kf->x = kfData[0];
+                kf->y = kfData[1];
+                kf->hotx = kfData[2];
+                kf->hoty = kfData[3];
+                kf->scaleX = kfData[4];
+                kf->scaleY = kfData[5];
+                kf->rotation = kfData[6];
+                kf->r = kfData[7];
+                kf->g = kfData[8];
+                kf->b = kfData[9];
+                kf->a = kfData[10];
+                kf->blendMode = (int)*(int16_t*)(bgaData + ofs + 48);
+                kf->z_order = (int)*(int32_t*)(bgaData + ofs + 52);
+            } else {
+                int16_t frame = *(int16_t*)(bgaData + ofs);
+                int16_t spriteID = *(int16_t*)(bgaData + ofs + 2);
+                float* floats = (float*)(bgaData + ofs + 4);
+                kf->frame = frame;
+                kf->type = (spriteID != 0) ? 1 : 0;
+                kf->x = floats[0];
+                kf->y = floats[1];
+                kf->hotx = floats[2];
+                kf->hoty = floats[3];
+                kf->scaleX = floats[4];
+                kf->scaleY = floats[4];
+                kf->rotation = floats[5];
+                kf->r = floats[6];
+                kf->g = floats[7];
+                kf->b = floats[8];
+                kf->a = floats[9];
+                kf->blendMode = 0;
             }
+            layer->kfCount++;
         }
 
-        if (numKF > 0 && dataOff > 0) {
-            BGALayer* layer = &bga->layers[bga->layerCount];
-            strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
-
-            char* dot = strrchr(filename, '.');
-            layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
-
-            layer->kfCount = 0;
-            for (int i = 0; i < numKF && layer->kfCount < MAX_BGA_KEYFRAMES; i++) {
-                uint32_t ofs = dataOff + i * kfSize;
-                if (ofs + (uint32_t)kfSize > bgaSize) break;
-
-                BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
-
-                if (isBGA2) {
-                    float* kfData = (float*)(bgaData + ofs);
-                    uint32_t ts = *(uint32_t*)(bgaData + ofs + 44);
-                    kf->frame = (int)(ts & 0xFFFF);
-                    kf->type = (int)((ts >> 16) & 0xFFFF);
-                    kf->x = kfData[0];
-                    kf->y = kfData[1];
-                    kf->hotx = kfData[2];
-                    kf->hoty = kfData[3];
-                    kf->scaleX = kfData[4];
-                    kf->scaleY = kfData[5];
-                    kf->rotation = kfData[6];
-                    kf->r = kfData[7];
-                    kf->g = kfData[8];
-                    kf->b = kfData[9];
-                    kf->a = kfData[10];
-                } else {
-                    uint32_t ts = *(uint32_t*)(bgaData + ofs);
-                    float* floats = (float*)(bgaData + ofs + 4);
-                    kf->frame = (int)(ts & 0xFFFF);
-                    kf->type = (int)((ts >> 16) & 0xFFFF);
-                    kf->x = floats[0];
-                    kf->y = floats[1];
-                    kf->hotx = floats[2];
-                    kf->hoty = floats[3];
-                    kf->scaleX = floats[4];
-                    kf->scaleY = floats[5];
-                    
-                    kf->r = floats[6];
-                    kf->g = floats[7];
-                    kf->b = floats[8];
-                    kf->a = floats[9];
-                }
-                layer->kfCount++;
-            }
-
-            if (layer->kfCount > 0) {
-                int maxF = layer->keyframes[layer->kfCount - 1].frame;
-                if (maxF > bga->maxFrame) bga->maxFrame = maxF;
-            }
-
-            Log_Print("BGA%d direct: '%s' %s kf=%d maxFrame=%d\n",
-                bga->version, layer->filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, bga->maxFrame);
-
-            bga->layerCount++;
-            scanStart = dataOff + numKF * kfSize;
-        } else {
-            break;
+        if (layer->kfCount > 0) {
+            int maxF = layer->keyframes[layer->kfCount - 1].frame;
+            if (maxF > bga->maxFrame) bga->maxFrame = maxF;
         }
+
+        Log_Print("BGA: '%s' %s kf=%d maxFrame=%d\n",
+            filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, bga->maxFrame);
+
+        bga->layerCount++;
+        entryPos += 68 + count * kfSize;
     }
 
     free(bgaData);
@@ -907,9 +886,13 @@ bool Resource_LoadBGADirect(const char* datPath) {
         if (*srcName == '?') srcName++;
         if (layer->isSPR) {
             layer->sprTileStart = g_game.sprTileCount;
-            int aniFrames = loadSPRFromRES(srcName);
+            int patC = 0, patR = 0, patF = 0;
+            int aniFrames = loadSPRFromRES(srcName, &patC, &patR, &patF);
             layer->sprTileCount = g_game.sprTileCount - layer->sprTileStart;
             layer->aniFrameCount = aniFrames;
+            layer->patCols = patC;
+            layer->patRows = patR;
+            layer->patFlags = patF;
         } else {
             layer->texId = loadTextureFromRES(srcName);
         }
@@ -947,6 +930,148 @@ bool Resource_LoadStage(const char* path) {
     fclose(f);
     Log_Print("Resource: loaded stage '%s'\n", path);
     return true;
+}
+
+// ─── ENC1 decryption ────────────────────────────────────────────────
+static const uint8_t ENC1_TABLE[1024] = {
+    0x38, 0x1e, 0xb7, 0x49, 0x69, 0x0c, 0x01, 0x88, 0xa5, 0xc8, 0x60, 0x00, 0x1a, 0x3b, 0x03, 0x91,
+    0x4c, 0x29, 0xc7, 0xcb, 0xbb, 0x77, 0xd8, 0x14, 0xa8, 0x11, 0x9b, 0xe9, 0xed, 0x97, 0xff, 0xab,
+    0xb9, 0xc5, 0xa4, 0x0c, 0x57, 0x32, 0xa0, 0xce, 0x90, 0x35, 0x6c, 0x37, 0x0a, 0xe0, 0x66, 0xa6,
+    0x8d, 0xce, 0x1a, 0xf3, 0xec, 0x9d, 0x2e, 0xea, 0xdc, 0x5d, 0x9e, 0x4a, 0x85, 0xa3, 0x17, 0x08,
+    0xc3, 0x56, 0x24, 0x18, 0xe8, 0xbe, 0x27, 0x94, 0x4d, 0xec, 0x71, 0x6e, 0x6f, 0xc8, 0x52, 0x12,
+    0x76, 0x17, 0xa2, 0xf2, 0x8c, 0x4a, 0x39, 0xcd, 0x50, 0x7e, 0x45, 0x3a, 0xd4, 0x71, 0x2a, 0x97,
+    0x89, 0x9b, 0x25, 0xfd, 0x30, 0x88, 0xab, 0xe8, 0x47, 0xae, 0x63, 0x0d, 0x8c, 0xf5, 0x79, 0x6d,
+    0xfb, 0x78, 0x56, 0x52, 0x12, 0xc1, 0xb0, 0xef, 0x72, 0x07, 0xcf, 0xc0, 0xcf, 0x4f, 0xbf, 0xaa,
+    0x98, 0x8b, 0xd5, 0x9e, 0x40, 0xe8, 0xaf, 0x36, 0x12, 0x10, 0x4c, 0xba, 0x43, 0x72, 0x7b, 0xda,
+    0xf3, 0x2d, 0x2d, 0x2d, 0x3c, 0x7d, 0xa4, 0x71, 0xcd, 0x59, 0xdb, 0x87, 0x08, 0x19, 0x95, 0x98,
+    0x5c, 0x5e, 0x5e, 0xaf, 0x90, 0xc7, 0x06, 0xcc, 0x2e, 0x7c, 0x6d, 0xf0, 0x47, 0x68, 0x36, 0xb2,
+    0x2d, 0x25, 0x2a, 0x53, 0xfe, 0x53, 0x5c, 0x39, 0xd0, 0x5d, 0xbd, 0xa9, 0xfa, 0x30, 0x86, 0x9d,
+    0xf2, 0xe1, 0xb5, 0xdf, 0x92, 0x60, 0xec, 0x24, 0x1c, 0x62, 0xab, 0x27, 0x0e, 0x02, 0x0d, 0x4d,
+    0xd7, 0x8b, 0x80, 0x82, 0x04, 0xd1, 0x99, 0x1c, 0xcb, 0xd9, 0xbd, 0xc7, 0x28, 0x21, 0x2b, 0xc5,
+    0x50, 0xde, 0xbd, 0x5a, 0xc5, 0xe2, 0x34, 0x3a, 0xbe, 0xff, 0xbb, 0xf2, 0x39, 0x22, 0x7c, 0x6c,
+    0xee, 0x83, 0x1a, 0xbf, 0xe9, 0x34, 0x81, 0x54, 0xd9, 0xd2, 0x41, 0x9d, 0x31, 0x68, 0xf9, 0x1e,
+    0xa5, 0x67, 0xa5, 0x82, 0xf5, 0x56, 0x9c, 0xda, 0xe4, 0x6f, 0xad, 0xa9, 0xf0, 0xc9, 0x71, 0x5c,
+    0x69, 0xce, 0x73, 0x23, 0x44, 0x9d, 0x64, 0xa7, 0x9c, 0x43, 0x20, 0x40, 0x73, 0x49, 0x0a, 0x34,
+    0x0a, 0x24, 0x48, 0xeb, 0x7c, 0x5d, 0x68, 0xf4, 0xfe, 0x29, 0xbc, 0x96, 0xf0, 0xe5, 0xc4, 0xc1,
+    0x44, 0x87, 0xff, 0x0d, 0x75, 0xa3, 0xa7, 0xc8, 0xd5, 0x6b, 0xd5, 0xd8, 0x16, 0x6b, 0xa6, 0xff,
+    0x6a, 0x6a, 0xb5, 0xf7, 0x38, 0x4e, 0xba, 0xa4, 0x3d, 0x41, 0x75, 0x5a, 0x54, 0xc6, 0x7d, 0x67,
+    0x09, 0x7d, 0xf7, 0xd7, 0x17, 0xc4, 0x94, 0x84, 0xe3, 0x0b, 0x0f, 0x01, 0x20, 0xab, 0xdb, 0x4d,
+    0x4f, 0x26, 0x93, 0xac, 0x15, 0x50, 0xf5, 0xc1, 0x95, 0x93, 0x01, 0xe7, 0x65, 0x83, 0xb6, 0xa0,
+    0xb1, 0x04, 0x64, 0xa8, 0xf4, 0x86, 0xa8, 0xc6, 0x21, 0xe1, 0x77, 0x4a, 0xa1, 0xf0, 0xdd, 0x6e,
+    0x63, 0x49, 0x07, 0x69, 0x83, 0xc6, 0xb0, 0xe0, 0x0d, 0xe4, 0x90, 0x9a, 0xa6, 0x8f, 0xd4, 0xb8,
+    0x04, 0x5b, 0x74, 0x48, 0xf9, 0xb6, 0x3f, 0x5e, 0xd6, 0x08, 0xfc, 0x1f, 0x3b, 0x2e, 0x2f, 0x05,
+    0xe6, 0xcf, 0xec, 0xae, 0xc2, 0xae, 0x66, 0xf3, 0x23, 0x06, 0xb2, 0xdb, 0x58, 0xaf, 0x38, 0x12,
+    0x98, 0x95, 0x10, 0x6c, 0xd6, 0xe7, 0x66, 0x7f, 0xe9, 0xc3, 0x51, 0x9f, 0xac, 0x7b, 0xae, 0x15,
+    0x65, 0x76, 0x11, 0x33, 0xf6, 0xfc, 0x93, 0x1f, 0x1e, 0x5c, 0xd2, 0xe1, 0xe7, 0x1b, 0x05, 0x9b,
+    0x3c, 0xde, 0x04, 0xac, 0x8c, 0x03, 0xf3, 0xfd, 0x2c, 0xfa, 0x51, 0x80, 0x57, 0x53, 0x43, 0xb8,
+    0xa3, 0x4a, 0x7e, 0x39, 0x61, 0xaf, 0x67, 0xbc, 0x92, 0x74, 0x9f, 0xa6, 0x59, 0xdf, 0x05, 0xde,
+    0x7b, 0x24, 0xa4, 0x19, 0x89, 0xaa, 0xdc, 0x99, 0x14, 0x23, 0x03, 0x4c, 0x48, 0x45, 0x32, 0x3f,
+    0x81, 0x64, 0x6d, 0x03, 0x22, 0x85, 0x09, 0xc0, 0x3d, 0x6c, 0x37, 0x62, 0xd8, 0xcf, 0xe6, 0xa8,
+    0xb8, 0x50, 0xc5, 0x35, 0xfa, 0x81, 0xca, 0x52, 0xe1, 0x77, 0x3e, 0xa7, 0xa7, 0x28, 0xbc, 0x5a,
+    0x31, 0x2f, 0x1d, 0xba, 0xb7, 0xfd, 0x8f, 0xca, 0x92, 0x48, 0x3f, 0xb9, 0x89, 0xe3, 0x41, 0x92,
+    0x37, 0xaa, 0x09, 0x06, 0x46, 0x7e, 0x40, 0xf7, 0x0f, 0xe5, 0x2b, 0x73, 0x6d, 0xca, 0x82, 0xf1,
+    0x53, 0x74, 0xc9, 0x58, 0x1c, 0x8a, 0xf4, 0x77, 0x76, 0xd3, 0xaa, 0x1b, 0x2a, 0x70, 0x3e, 0x9a,
+    0x96, 0x44, 0x78, 0xea, 0xb3, 0x34, 0x8d, 0x27, 0x42, 0xb7, 0x85, 0x7a, 0x28, 0xe8, 0xe4, 0xb8,
+    0xad, 0x16, 0x3d, 0x5f, 0xcc, 0x14, 0xf9, 0x91, 0x1c, 0x13, 0x49, 0xb3, 0xc2, 0x08, 0xdd, 0xa3,
+    0x7f, 0xac, 0x0e, 0xcc, 0xdc, 0x07, 0x10, 0xf8, 0x2f, 0xea, 0x83, 0xa5, 0xb3, 0xee, 0x74, 0x3b,
+    0x6f, 0x13, 0x2b, 0xd0, 0xf1, 0xb3, 0x6a, 0x35, 0xc0, 0xcb, 0xed, 0x46, 0x57, 0xdd, 0x20, 0x6b,
+    0x9f, 0xda, 0x79, 0x43, 0x38, 0x27, 0x3d, 0x32, 0x59, 0x18, 0xb0, 0x98, 0xbc, 0xef, 0x13, 0x5f,
+    0x2c, 0x2c, 0x41, 0x1b, 0x5f, 0xed, 0x11, 0xed, 0xc9, 0x75, 0x5d, 0x7a, 0x37, 0x73, 0x1a, 0xb6,
+    0xc8, 0xc2, 0xd4, 0x72, 0x8f, 0xf1, 0xa2, 0x88, 0x63, 0x72, 0x45, 0xe2, 0x26, 0x19, 0xfa, 0x5b,
+    0x0c, 0x54, 0x02, 0x02, 0x57, 0x62, 0xc4, 0xbf, 0xd6, 0xee, 0x82, 0x05, 0xa1, 0xa2, 0x8e, 0xef,
+    0x25, 0x76, 0xe0, 0x15, 0x7d, 0xe7, 0x58, 0x10, 0xeb, 0xfe, 0x3f, 0x87, 0x5f, 0xb4, 0x47, 0xee,
+    0x00, 0x29, 0x3c, 0xb9, 0xd9, 0x66, 0x01, 0x30, 0x8e, 0xcc, 0x84, 0xa9, 0x4e, 0xca, 0xbe, 0x13,
+    0xd1, 0xa9, 0x4d, 0xdd, 0xf8, 0x79, 0x94, 0xde, 0xd3, 0xf4, 0xf8, 0x59, 0x28, 0xd3, 0xd2, 0x80,
+    0xba, 0x11, 0x60, 0xd7, 0x80, 0x99, 0x87, 0x0f, 0x23, 0x97, 0xd7, 0x0b, 0x29, 0x84, 0xa1, 0xb1,
+    0xb0, 0x2c, 0x7b, 0xea, 0xc1, 0x8b, 0xa2, 0x2b, 0x78, 0x42, 0xbd, 0x26, 0x55, 0x70, 0xda, 0xf8,
+    0x0b, 0x6a, 0x68, 0x61, 0xe5, 0xd1, 0x40, 0xa1, 0x42, 0x36, 0xbf, 0xcd, 0x3e, 0x60, 0x52, 0x18,
+    0x02, 0x42, 0xad, 0x0c, 0x4e, 0x9a, 0xb9, 0x9e, 0xc3, 0x21, 0xcb, 0x51, 0x64, 0x1e, 0x45, 0x54,
+    0xeb, 0x94, 0xf6, 0x5a, 0x16, 0x06, 0x44, 0xd4, 0xf1, 0x62, 0xfc, 0x00, 0x65, 0x20, 0xc3, 0x0e,
+    0x3e, 0xe2, 0xef, 0xb1, 0x6b, 0x90, 0x85, 0x07, 0x70, 0x1b, 0xd5, 0x4b, 0xbe, 0x95, 0x25, 0x75,
+    0x26, 0x18, 0x0b, 0xe2, 0x8f, 0x4b, 0x7f, 0xf6, 0x22, 0xad, 0x3a, 0x96, 0x81, 0x15, 0x99, 0x0f,
+    0xcd, 0x47, 0x55, 0xeb, 0x09, 0xa0, 0x0a, 0xfe, 0xd9, 0x4f, 0x2a, 0x93, 0xdf, 0xdb, 0x7c, 0x31,
+    0xe3, 0xc7, 0xfb, 0x8d, 0x79, 0x1d, 0x35, 0x8b, 0x61, 0xd6, 0x46, 0x4f, 0x5b, 0xc9, 0x86, 0xc6,
+    0x2e, 0x86, 0x8d, 0xe0, 0x58, 0x30, 0xf7, 0x63, 0xc4, 0xb2, 0x1d, 0xe4, 0x51, 0xe6, 0x33, 0xb4,
+    0x6f, 0xd1, 0x9e, 0x69, 0x8e, 0x7f, 0xbb, 0x9f, 0xd2, 0x8c, 0x6e, 0x91, 0x9c, 0xb4, 0xe6, 0x7e,
+    0x9b, 0x00, 0x2f, 0x4b, 0xd3, 0x55, 0xb4, 0x46, 0x61, 0x4b, 0x4e, 0xf6, 0xfb, 0x17, 0x1f, 0x8a,
+    0x4c, 0xb5, 0x1d, 0x19, 0x14, 0xfc, 0xc2, 0xb5, 0xd0, 0x8e, 0x67, 0x0e, 0x5b, 0x36, 0x22, 0xdf,
+    0x3c, 0xf2, 0x7a, 0x56, 0x32, 0x6e, 0x70, 0xfb, 0x3b, 0x16, 0xe3, 0xd8, 0xbb, 0x89, 0x31, 0x21,
+    0xfd, 0x9a, 0xb7, 0x8a, 0x97, 0x78, 0x33, 0xd0, 0xb2, 0x33, 0xb6, 0xf5, 0x91, 0x9c, 0x7a, 0xce,
+    0xa0, 0x96, 0xb1, 0xdc, 0x8a, 0x3a, 0x1f, 0xf9, 0xc0, 0xe5, 0x65, 0x88, 0x55, 0x84, 0x5e, 0xe9,
+};
+
+static uint8_t bit_reverse(uint8_t b) {
+    uint8_t r = 0;
+    for (int i = 0; i < 8; i++) {
+        if (b & (1 << i))
+            r |= (1 << (7 - i));
+    }
+    return r;
+}
+
+uint8_t* Resource_DecryptENC1(const uint8_t* data, uint32_t dataSize, uint32_t* outSize) {
+    if (dataSize < 0x90 || memcmp(data, "ENC1", 4) != 0)
+        return NULL;
+
+    uint32_t payload_size;
+    uint32_t extra_skip;
+    memcpy(&payload_size, data + 0x84, 4);
+    memcpy(&extra_skip, data + 0x88, 4);
+
+    uint32_t seed_off = 0x8C + extra_skip;
+    if (seed_off + 4 + payload_size > dataSize)
+        return NULL;
+
+    uint32_t seed;
+    memcpy(&seed, data + seed_off, 4);
+
+    const uint8_t* payload = data + seed_off + 4;
+
+    uint8_t* out = (uint8_t*)malloc(payload_size);
+    if (!out) return NULL;
+
+    for (uint32_t i = 0; i < payload_size; i++) {
+        uint8_t step1 = bit_reverse(payload[i]);
+        uint32_t idx = (i + seed) & 0x3FF;
+        out[i] = ENC1_TABLE[idx] ^ step1;
+    }
+
+    *outSize = payload_size;
+    return out;
+}
+
+int Resource_LoadPNZ(const char* path) {
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        Log_Print("PNZ: cannot open '%s'\n", path);
+        return -1;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long fileSize = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    uint8_t* buf = (uint8_t*)malloc(fileSize);
+    if (!buf) { fclose(f); return -1; }
+    fread(buf, 1, fileSize, f);
+    fclose(f);
+
+    uint32_t decSize = 0;
+    uint8_t* dec = Resource_DecryptENC1(buf, (uint32_t)fileSize, &decSize);
+    free(buf);
+
+    if (!dec) {
+        Log_Print("PNZ: decryption failed for '%s'\n", path);
+        return -1;
+    }
+
+    int texId = Texture_LoadFromMemory(dec, decSize, "pnz_title.png");
+    free(dec);
+
+    if (texId < 0) {
+        Log_Print("PNZ: failed to load as texture: '%s'\n", path);
+    }
+    return texId;
 }
 
 void Resource_ClearBGA(void)

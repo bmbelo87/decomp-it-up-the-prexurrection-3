@@ -8,29 +8,31 @@ void Render_Clear(uint8_t r, uint8_t g, uint8_t b) {
 void Render_SetOrtho(int width, int height) {
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    gluOrtho2D(0, width, height, 0);
+    glOrtho(0, (GLdouble)width, 0, (GLdouble)height, 1.0, 0.0);
     glMatrixMode(GL_MODELVIEW);
 }
 
 void Render_Rect(float x, float y, float w, float h, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    float yUp = 480.0f - y - h;
     glBindTexture(GL_TEXTURE_2D, 0);
     glColor4f(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
     glBegin(GL_QUADS);
-    glVertex2f(x, y);
-    glVertex2f(x + w, y);
-    glVertex2f(x + w, y + h);
-    glVertex2f(x, y + h);
+    glVertex2f(x, yUp);
+    glVertex2f(x + w, yUp);
+    glVertex2f(x + w, yUp + h);
+    glVertex2f(x, yUp + h);
     glEnd();
 }
 
 void Render_RectOutline(float x, float y, float w, float h, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
+    float yUp = 480.0f - y - h;
     glBindTexture(GL_TEXTURE_2D, 0);
     glColor4f(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
     glBegin(GL_LINE_LOOP);
-    glVertex2f(x, y);
-    glVertex2f(x + w, y);
-    glVertex2f(x + w, y + h);
-    glVertex2f(x, y + h);
+    glVertex2f(x, yUp);
+    glVertex2f(x + w, yUp);
+    glVertex2f(x + w, yUp + h);
+    glVertex2f(x, yUp + h);
     glEnd();
 }
 

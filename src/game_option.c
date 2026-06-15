@@ -36,12 +36,13 @@ void Gamestate_UpdateGameOption(float dt)
                     }
                 }
             }
-            // Show Help ON/OFF (layers 36/37) Y position fix: y=63 -> y=82
-            for (int l = 36; l <= 37 && l < pic->layerCount; l++) {
-                for (int k = 0; k < pic->layers[l].kfCount; k++) {
-                    pic->layers[l].keyframes[k].y = 82.0f;
-                }
-            }
+        }
+
+        {
+            char path[MAX_PATH];
+            snprintf(path, sizeof(path), "%s\\AUDIO\\086.AUD", g_game.currentDirectory);
+            BGM_Stop();
+            if (BGM_LoadAUDDirect(path)) BGM_Play(true);
         }
 
         Render_SetGlobalColor(0.0f, 0.0f, 0.0f, 0.0f);
@@ -112,6 +113,7 @@ void Gamestate_UpdateGameOption(float dt)
                 break;
             case 4:
                 go_counter = 0;
+                Menu_ResetState();
                 Game_ChangeState(STATE_MENU_ENTER);
                 return;
             }
@@ -122,6 +124,7 @@ void Gamestate_UpdateGameOption(float dt)
     if (g_game.state == STATE_GAMEOPTION_EXIT)
     {
         go_counter = 0;
+        Menu_ResetState();
         Game_ChangeState(STATE_MENU_ENTER);
         return;
     }

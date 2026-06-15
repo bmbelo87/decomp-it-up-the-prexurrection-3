@@ -115,29 +115,34 @@ int main(int argc, char** argv) {
             uint32_t ofs = dataOff + i * kfSize;
             if (ofs + kfSize > bgaSize) break;
 
-            uint32_t ts;
-            float r, g, b, a;
             if (isBGA2) {
+                uint32_t ts;
+                float r, g, b, a;
+                float x, y, hotx, hoty, sx, sy;
                 // BGA2: 64-byte keyframe, timestamp at offset 44
                 ts = *(uint32_t*)(bga + ofs + 44);
-                r  = *(float*)(bga + ofs + 28);
-                g  = *(float*)(bga + ofs + 32);
-                b  = *(float*)(bga + ofs + 36);
-                a  = *(float*)(bga + ofs + 40);
+                float* floats = (float*)(bga + ofs);
+                x = floats[0]; y = floats[1]; hotx = floats[2]; hoty = floats[3];
+                sx = floats[4]; sy = floats[5];
+                r  = floats[7]; g = floats[8]; b = floats[9]; a = floats[10];
+
+                int frame = (int)(ts & 0xFFFF);
+                int type = (int)((ts >> 16) & 0xFFFF);
+
+                printf("  kf[%3d]: frame=%4d type=%d (x=%.0f y=%.0f hx=%.0f hy=%.0f sx=%.2f sy=%.2f) a=%.2f\n",
+                       i, frame, type, x, y, hotx, hoty, sx, sy, a);
             } else {
-                // BGA v0: 44-byte keyframe, timestamp at offset 0
-                ts = *(uint32_t*)(bga + ofs);
+                // BGA v0: 44-byte keyframe
+                int16_t frame = *(int16_t*)(bga + ofs);
+                int16_t spriteID = *(int16_t*)(bga + ofs + 2);
                 float* floats = (float*)(bga + ofs + 4);
-                r = floats[6]; g = floats[7]; b = floats[8]; a = floats[9];
+                float x = floats[0], y = floats[1], hotx = floats[2], hoty = floats[3];
+                float scale = floats[4], rot = floats[5];
+                float r = floats[6], g = floats[7], b = floats[8], a = floats[9];
+
+                printf("  kf[%3d]: frame=%4d spriteID=%d (x=%.0f y=%.0f hx=%.0f hy=%.0f scale=%.2f rot=%.2f) r=%.2f g=%.2f b=%.2f a=%.2f\n",
+                       i, frame, spriteID, x, y, hotx, hoty, scale, rot, r, g, b, a);
             }
-
-            int frame = (int)(ts & 0xFFFF);
-            int type = (int)((ts >> 16) & 0xFFFF);
-
-            bool isBlack = (r == 0.0f && g == 0.0f && b == 0.0f);
-            printf("  kf[%3d]: frame=%4d type=%d a=%.2f %s %s\n", i, frame, type, a,
-                   isBlack ? "[R=0 G=0 B=0]" : "",
-                   (type == 0) ? "<HIDDEN>" : "");
         }
 
         if (numKF > 0) {

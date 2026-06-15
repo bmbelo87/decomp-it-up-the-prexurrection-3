@@ -16,6 +16,8 @@ static void InitSystems(void) {
         exit(1);
     }
 
+    Render_SetOrtho(640, 480);
+
     Log_Print("Systems initialized\n");
 }
 
@@ -34,26 +36,58 @@ static void LoadBGAForState(GameState state) {
     case STATE_WARNING_INIT:
     case STATE_WARNING_ANIM: bgaName = "R_WARN"; break;
     case STATE_LOGO_ENTER:   bgaName = "81"; break;
-    case STATE_RESET_FLOW:
     case STATE_MENU_ENTER:
+    case STATE_MENU_INPUT:
     case STATE_LOGO_SKIP:    bgaName = "82w"; break;
     case STATE_GAME_INIT:
-    case STATE_GAMEPLAY:     bgaName = "00"; break;
+    case STATE_GAMEPLAY:
+        if (g_game.selectedSongIndex >= 0 && g_game.selectedSongIndex < g_game.songDB.songCount) {
+            static char songBGAName[16];
+            snprintf(songBGAName, sizeof(songBGAName), "%d", g_game.songDB.songs[g_game.selectedSongIndex].id);
+            bgaName = songBGAName;
+        } else {
+            bgaName = "00";
+        }
+        break;
     case STATE_RESULT:       bgaName = "83"; break;
     case STATE_GAMEOVER:     bgaName = "84"; break;
+    case STATE_SONG_SELECT:
+    case STATE_SONG_SELECT_B:
+    case STATE_LOADING_PNZ:
+    case STATE_LOADING_PNZ_B: bgaName = ""; break;
+    case STATE_STAFF_ENTER:
+    case STATE_STAFF:
+    case STATE_STAFF_END:      bgaName = ""; break;
     default: break;
     }
 
     if (bgaName) {
-        if (g_game.bgaPicCount == 0 || _stricmp(g_game.bgaPics[0].name, bgaName) != 0) {
-            Resource_SwitchBGA(bgaName);
+        if (bgaName[0] == '\0') {
+            Resource_ClearBGA();
+        } else if (g_game.bgaPicCount == 0 || _stricmp(g_game.bgaPics[0].name, bgaName) != 0) {
+            int idx = Resource_SwitchBGA(bgaName);
+            if (idx < 0 && (state == STATE_SONG_SELECT || state == STATE_SONG_SELECT_B ||
+                            state == STATE_STAFF_ENTER)) {
+                char directPath[MAX_PATH];
+                snprintf(directPath, sizeof(directPath), "%s\\BGA\\%s.DAT",
+                         g_game.currentDirectory, bgaName);
+                Log_Print("BGA: fallback loading '%s'\n", directPath);
+                Resource_LoadBGADirect(directPath);
+            }
         }
     }
+
+    if (state == STATE_MENU_ENTER) {
+        char path[MAX_PATH];
+        snprintf(path, sizeof(path), "%s\\AUDIO\\082.AUD", g_game.currentDirectory);
+        BGM_Stop();
+        if (BGM_LoadAUDDirect(path)) BGM_Play(true);
+    } else if (state == STATE_SONG_SELECT || state == STATE_SONG_SELECT_B) {
+        BGM_Stop();
+        SongSelect_Reset();
+    }
     
-    g_game.bgaLoop = (state == STATE_RESET_FLOW || state == STATE_MENU_FADE_IN ||
-                      state == STATE_MENU_IDLE || state == STATE_MENU_INPUT_WAIT ||
-                      state == STATE_MENU_ENTER || state == STATE_MENU_INPUT ||
-                      state == STATE_SONG_SELECT || state == STATE_SONG_SELECT_B ||
+    g_game.bgaLoop = (state == STATE_MENU_ENTER || state == STATE_MENU_INPUT ||
                       state == STATE_EXIT);
     if (g_game.bgaLoop) {
         g_game.bgaLoopStart = findBGALoopStart();
@@ -76,6 +110,7 @@ void Game_ChangeState(GameState newState) {
     g_game.stateFrame = 0;
     g_game.confirmActive = false;
     g_game.confirmTimer = 0;
+    Render_SetGlobalColor(0, 0, 0, 0);
     LoadBGAForState(newState);
 }
 
@@ -129,7 +164,7 @@ void Game_Init(HINSTANCE hInstance) {
         Log_Print("WARNING: Failed to load song database from '%s'\n", cfgPath);
     }
 
-    Game_ChangeState(STATE_WARNING_INIT);
+    Game_ChangeState(STATE_LOGO_ENTER);
     g_game.lastTime = timeGetTime();
 }
 
@@ -144,14 +179,43 @@ void Game_Shutdown(void) {
 void Game_Update(float dt) {
     Input_Update();
     if (Input_IsKeyHit(VK_F11)) g_game.showDebug = !g_game.showDebug;
+
+    if (Input_IsKeyHit(VK_ESCAPE)) {
+        GameState s = g_game.state;
+        BGM_Stop();
+        Menu_ResetState();
+        memset(g_game.input.padPrevState, 0, sizeof(g_game.input.padPrevState));
+
+        if (s == STATE_WARNING_INIT || s == STATE_WARNING_ANIM || s == STATE_WARNING_END) {
+            Game_ChangeState(STATE_LOGO_ENTER);
+            return;
+        }
+
+        if (s == STATE_STAFF || s == STATE_STAFF_ENTER) {
+            Game_ChangeState(STATE_MENU_ENTER);
+            return;
+        }
+
+        if (s == STATE_GAMEPLAY || s == STATE_GAME_INIT) {
+            Resource_ClearBGA();
+            Game_ChangeState(STATE_MENU_ENTER);
+            return;
+        }
+
+        Resource_ClearBGA();
+        Game_ChangeState(STATE_MENU_ENTER);
+    }
+
     g_game.stateFrame++;
 
 
     if (g_game.bgaPicCount > 0 && g_game.state != STATE_WARNING_END) {
-        bool manualBGA = (g_game.state == STATE_GAMEOPTION_ENTER ||
+        bool manualBGA = (g_game.state == STATE_GAMEPLAY ||
+                          g_game.state == STATE_GAMEOPTION_ENTER ||
                           g_game.state == STATE_GAMEOPTION_ANIM ||
                           g_game.state == STATE_GAMEOPTION ||
-                          g_game.state == STATE_GAMEOPTION_EXIT);
+                          g_game.state == STATE_GAMEOPTION_EXIT ||
+                          g_game.state == STATE_STAFF);
         if (!manualBGA) {
             g_game.bgaTimer += dt;
             if (g_game.bgaTimer >= 1.0f / 60.0f) {
@@ -182,10 +246,6 @@ void Game_Update(float dt) {
     case STATE_LOGO_SKIP:
         Gamestate_UpdateLogo(dt);
         break;
-    case STATE_RESET_FLOW:
-    case STATE_MENU_FADE_IN:
-    case STATE_MENU_IDLE:
-    case STATE_MENU_INPUT_WAIT:
     case STATE_MENU_ENTER:
     case STATE_MENU_INPUT:
         Gamestate_UpdateMenu(dt);
@@ -194,12 +254,23 @@ void Game_Update(float dt) {
     case STATE_SONG_SELECT_B:
         Gamestate_UpdateSongSelect(dt);
         break;
-    case STATE_GAME_INIT:
-        if (g_game.stateFrame == 0) Gameplay_Enter();
-        if (g_game.stateFrame > 30) Game_ChangeState(STATE_GAMEPLAY);
+    case STATE_LOADING_PNZ:
+    case STATE_LOADING_PNZ_B:
+        Loading_Update(dt);
         break;
     case STATE_GAMEPLAY:
         Gameplay_Update(dt);
+        break;
+    case STATE_STAFF_ENTER:
+        Staff_Enter();
+        break;
+    case STATE_STAFF:
+        Staff_Update(dt);
+        break;
+    case STATE_STAFF_END:
+        BGM_Stop();
+        Menu_ResetState();
+        Game_ChangeState(STATE_MENU_ENTER);
         break;
     case STATE_GAMEOPTION_ENTER:
     case STATE_GAMEOPTION_ANIM:
@@ -208,7 +279,7 @@ void Game_Update(float dt) {
         Gamestate_UpdateGameOption(dt);
         break;
     case STATE_RESET_WARNING:
-        Game_ChangeState(STATE_WARNING_INIT);
+    Game_ChangeState(STATE_LOGO_ENTER);
         break;
     case STATE_EXIT:
         if (g_game.stateFrame < 30) {
@@ -264,10 +335,11 @@ static void Render_StateInfo(void) {
         y += 16;
     }
     
-    if (g_game.bgm.buffer) {
-        snprintf(buf, sizeof(buf), "BGM: %s | playing=%d | size=%lu",
+    if (g_game.bgm.buffer || g_game.bgm.useMCI) {
+        snprintf(buf, sizeof(buf), "BGM: %s | mode=%s | playing=%d",
                  g_game.bgm.name[0] ? g_game.bgm.name : "(unnamed)",
-                 g_game.bgm.playing, g_game.bgm.dataSize);
+                 g_game.bgm.useMCI ? "MCI" : "DSound",
+                 g_game.bgm.playing);
         Font_DrawString(8, y, buf, 1.0f, 1.0f, 0.0f, 1.0f);
         y += 16;
     }
@@ -304,7 +376,6 @@ void Game_Render(void) {
     }
 
     if (g_game.bgaPicCount > 0 &&
-        g_game.state != STATE_SONG_SELECT && g_game.state != STATE_SONG_SELECT_B &&
         g_game.state != STATE_LOGO_SKIP &&
         g_game.state != STATE_GAMEOPTION_ENTER &&
         g_game.state != STATE_GAMEOPTION_ANIM &&
@@ -314,10 +385,6 @@ void Game_Render(void) {
     }
 
     switch (g_game.state) {
-        case STATE_RESET_FLOW:
-        case STATE_MENU_FADE_IN:
-        case STATE_MENU_IDLE:
-        case STATE_MENU_INPUT_WAIT:
         case STATE_MENU_ENTER:
         case STATE_MENU_INPUT:
         case STATE_EXIT:
@@ -326,6 +393,10 @@ void Game_Render(void) {
     case STATE_SONG_SELECT:
     case STATE_SONG_SELECT_B:
         Gamestate_RenderSongSelect();
+        break;
+    case STATE_LOADING_PNZ:
+    case STATE_LOADING_PNZ_B:
+        Loading_Render();
         break;
     case STATE_GAMEPLAY:
         Gameplay_Render();

@@ -50,8 +50,6 @@ void Input_Update(void) {
         g_game.input.padState[p] = 0;
     }
 
-    if (GetForegroundWindow() != g_game.hWnd) return;
-
     if (g_padDLL && Pad_GetState) {
         for (p = 0; p < 2; p++) {
             int state = Pad_GetState(p);

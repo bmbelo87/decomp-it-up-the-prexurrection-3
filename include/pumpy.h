@@ -39,10 +39,6 @@ typedef enum {
     STATE_WARNING_END     = 0x03,
     STATE_LOGO_ENTER      = 0x04,
     STATE_LOGO_UPDATE     = 0x05,
-    STATE_RESET_FLOW      = 0x06,
-    STATE_MENU_FADE_IN    = 0x07,
-    STATE_MENU_IDLE       = 0x08,
-    STATE_MENU_INPUT_WAIT = 0x09,
     STATE_MENU_ENTER      = 0x0A,
     STATE_MENU_INPUT      = 0x0B,
     STATE_RESET_WARNING   = 0x0C,
@@ -76,6 +72,9 @@ typedef enum {
     STATE_LOGO_SKIP       = 0x80,
     STATE_SONG_SELECT     = 0x81,
     STATE_SONG_SELECT_B   = 0x82,
+    STATE_LOADING_PNZ     = 0x83,
+    STATE_LOADING_PNZ_B   = 0x84,
+    STATE_GAMEPLAY_BEGIN  = 0x85,
     STATE_EXIT            = 0xFF,
 } GameState;
 
@@ -107,8 +106,11 @@ typedef struct {
     LPDIRECTSOUNDBUFFER buffer;
     bool playing;
     bool looping;
+    bool useMCI;
     char name[MAX_PATH];
+    char mciPath[MAX_PATH];
     DWORD dataSize;
+    uint32_t durationMs;
 } BGM;
 
 #pragma pack(push, 1)
@@ -165,6 +167,7 @@ typedef struct {
     float a;
     int frame;
     int type;
+    int blendMode;
     int z_order;
 } BGAKeyframe;
 
@@ -178,7 +181,7 @@ typedef struct {
 } SPRTileDef;
 
 #define MAX_BGA_LAYERS 64
-#define MAX_BGA_KEYFRAMES 256
+#define MAX_BGA_KEYFRAMES 512
 
 typedef struct {
     char filename[64];
@@ -189,6 +192,9 @@ typedef struct {
     int sprTileCount;
     int texId;
     int aniFrameCount;
+    int patCols;
+    int patRows;
+    int patFlags;
 } BGALayer;
 
 typedef struct {
@@ -358,8 +364,10 @@ bool BGM_Load(const char* path);
 bool BGM_LoadWAV(const char* path);
 bool BGM_LoadMP3(const char* path);
 bool BGM_LoadAUD(int songId, bool preview);
+bool BGM_LoadAUDDirect(const char* path);
 void BGM_Play(bool loop);
 void BGM_Stop(void);
+bool BGM_IsPlaying(void);
 void BGM_SetVolume(long volume);
 void BGM_Shutdown(void);
 
@@ -380,6 +388,15 @@ void BGA_Reset(void);
 void BGA_Shutdown(void);
 
 extern int g_menuSelection;
+void Menu_ResetState(void);
+
+void Staff_Enter(void);
+void Staff_Update(float dt);
+
+void Loading_Enter(int songId);
+void Loading_Update(float dt);
+void Loading_Render(void);
+bool Loading_IsActive(void);
 
 void Gamestate_UpdateWarning(float dt);
 void Gamestate_UpdateLogo(float dt);
@@ -387,7 +404,9 @@ void Gamestate_UpdateMenu(float dt);
 void Gamestate_UpdateSongSelect(float dt);
 void Gamestate_RenderMenu(int bgaIndex, int frame);
 void Gamestate_RenderSongSelect(void);
+void SongSelect_Reset(void);
 
+void Gameplay_Start(int songId);
 void Gameplay_Enter(void);
 void Gameplay_Exit(void);
 void Gameplay_Update(float dt);
@@ -434,5 +453,7 @@ void Resource_ClearBGA(void);
 int Resource_LoadStateBGA(const char* stateName);
 int Resource_GetStateBGAIndex(const char* stateName);
 int Resource_SwitchBGA(const char* datName);
+uint8_t* Resource_DecryptENC1(const uint8_t* data, uint32_t dataSize, uint32_t* outSize);
+int Resource_LoadPNZ(const char* path);
 
 #endif

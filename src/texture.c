@@ -117,7 +117,6 @@ static bool Texture_LoadWIC(const char* path, uint8_t** dataOut, int* wOut, int*
     IWICFormatConverter* converter = NULL;
     HRESULT hr;
 
-    extern HRESULT CoInitializeEx(LPVOID, DWORD);
     hr = CoInitializeEx(NULL, 1);
     (void)hr;
 
@@ -283,18 +282,23 @@ void Texture_DrawUV(int id, float x, float y, float w, float h,
                      float u1, float v1, float u2, float v2, float r, float g, float b, float alpha) {
     if (id < 0 || id >= MAX_TEXTURES || !g_game.textures[id].inUse) return;
     Texture* t = &g_game.textures[id];
+    float yUp = 480.0f - y - h;
 
     glBindTexture(GL_TEXTURE_2D, t->id);
     glColor4f(r, g, b, alpha);
+    float texW = (float)t->width;
+    float texH = (float)t->height;
+    if (texW <= 0) texW = 256.0f;
+    if (texH <= 0) texH = 256.0f;
     glBegin(GL_QUADS);
-    glTexCoord2f(u1 / 256.0f, v1 / 256.0f);
-    glVertex2f(x, y);
-    glTexCoord2f(u2 / 256.0f, v1 / 256.0f);
-    glVertex2f(x + w, y);
-    glTexCoord2f(u2 / 256.0f, v2 / 256.0f);
-    glVertex2f(x + w, y + h);
-    glTexCoord2f(u1 / 256.0f, v2 / 256.0f);
-    glVertex2f(x, y + h);
+    glTexCoord2f(u1 / texW, v1 / texH);
+    glVertex2f(x, yUp);
+    glTexCoord2f(u2 / texW, v1 / texH);
+    glVertex2f(x + w, yUp);
+    glTexCoord2f(u2 / texW, v2 / texH);
+    glVertex2f(x + w, yUp + h);
+    glTexCoord2f(u1 / texW, v2 / texH);
+    glVertex2f(x, yUp + h);
     glEnd();
 }
 
@@ -303,18 +307,19 @@ void Texture_Draw(int id, float x, float y, float scaleX, float scaleY, float al
     Texture* t = &g_game.textures[id];
     float w = t->width * scaleX;
     float h = t->height * scaleY;
+    float yUp = 480.0f - y - h;
 
     glBindTexture(GL_TEXTURE_2D, t->id);
     glColor4f(1.0f, 1.0f, 1.0f, alpha);
     glBegin(GL_QUADS);
     glTexCoord2f(0, 0);
-    glVertex2f(x, y);
+    glVertex2f(x, yUp);
     glTexCoord2f(1, 0);
-    glVertex2f(x + w, y);
+    glVertex2f(x + w, yUp);
     glTexCoord2f(1, 1);
-    glVertex2f(x + w, y + h);
+    glVertex2f(x + w, yUp + h);
     glTexCoord2f(0, 1);
-    glVertex2f(x, y + h);
+    glVertex2f(x, yUp + h);
     glEnd();
 }
 

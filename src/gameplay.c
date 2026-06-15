@@ -56,11 +56,10 @@ static float g_judgeDisplayTimer[2];
 static JudgeType g_judgeDisplayType[2];
 static int g_judgeDisplayCombo[2];
 
-static void loadChart(void)
+static bool loadChartForSong(int songId, int diffTier)
 {
-    SongMode* mode = &g_game.songDB.modes[g_game.selectedModeIndex];
-    int songId = mode->songIds[g_game.songSelectHighlighted];
-    int diffTier = mode->difficulties[g_game.songSelectHighlighted];
+    g_songLoaded = false;
+    g_chart = NULL;
 
     char stxPath[MAX_PATH];
     snprintf(stxPath, sizeof(stxPath), "%s\\STEP\\%d.STX",
@@ -71,8 +70,7 @@ static void loadChart(void)
     if (!Step_LoadSong(stxPath, &g_playSong))
     {
         Log_Print("GP: FAILED to load STX\n");
-        g_songLoaded = false;
-        return;
+        return false;
     }
 
     g_chartIdx = Step_FindChart(&g_playSong, (uint32_t)diffTier);
@@ -100,6 +98,15 @@ static void loadChart(void)
     Log_Print("GP: chart %d: BPM=%.1f subdiv=%d rows=%d time=%.1fs spR=%.4f\n",
         g_chartIdx, bpm, subdiv, g_chart->rowCount, g_totalSongSeconds, g_secondsPerRow);
     g_songLoaded = true;
+    return true;
+}
+
+static void loadChart(void)
+{
+    SongMode* mode = &g_game.songDB.modes[g_game.selectedModeIndex];
+    int songId = mode->songIds[g_game.songSelectHighlighted];
+    int diffTier = mode->difficulties[g_game.songSelectHighlighted];
+    loadChartForSong(songId, diffTier);
 }
 
 static JudgeType evaluateTiming(double diff)
@@ -280,20 +287,25 @@ static void processMisses(void)
     }
 }
 
-void Gameplay_Enter(void)
+void Gameplay_Start(int songId)
 {
     memset(&g_game.stats, 0, sizeof(g_game.stats));
     g_game.stats.life[0] = 100;
     g_game.stats.life[1] = 100;
     memset(g_judgeDisplayTimer, 0, sizeof(g_judgeDisplayTimer));
-    g_songLoaded = false;
-    g_chart = NULL;
 
-    loadChart();
-    
-    // Tocar música completa
+    int diffTier = g_game.selectedDifficulty;
+    loadChartForSong(songId, diffTier);
+
+    Log_Print("Gameplay: started song %d\n", songId);
+}
+
+void Gameplay_Enter(void)
+{
     SongMode* mode = &g_game.songDB.modes[g_game.selectedModeIndex];
     int songId = mode->songIds[g_game.songSelectHighlighted];
+    Gameplay_Start(songId);
+
     BGM_Stop();
     if (BGM_LoadAUD(songId, false)) {
         BGM_Play(false);
@@ -327,6 +339,40 @@ void Gameplay_Update(float dt)
 
     g_songTime += dt;
 
+    if (g_game.bgaMaxFrame > 0) {
+        float bgaTime = (float)g_songTime + APPROACH_SECONDS;
+        if (bgaTime < 0.0f) bgaTime = 0.0f;
+        int newFrame = (int)(bgaTime * 60.0f);
+        if (newFrame > g_game.bgaMaxFrame) newFrame = g_game.bgaMaxFrame;
+        if (newFrame != g_game.bgaFrame) {
+            Log_Print("BGA: frame %d -> %d (songTime=%.3f, max=%d)\n",
+                      g_game.bgaFrame, newFrame, g_songTime, g_game.bgaMaxFrame);
+        }
+        g_game.bgaFrame = newFrame;
+    }
+
+    if (g_game.frameCounter % 60 == 0) {
+        Log_Print("BGA_STATE: frame=%d songTime=%.3f\n", g_game.bgaFrame, g_songTime);
+        if (g_game.bgaPicCount > 0) {
+            BGAPicture* pic = &g_game.bgaPics[0];
+            for (int l = 0; l < pic->layerCount && l < 6; l++) {
+                BGALayer* layer = &pic->layers[l];
+                int seg = -1;
+                for (int k = 0; k < layer->kfCount - 1; k++) {
+                    if (layer->keyframes[k].frame <= g_game.bgaFrame &&
+                        g_game.bgaFrame <= layer->keyframes[k+1].frame) {
+                        seg = k; break;
+                    }
+                }
+                Log_Print("  layer %d '%s': seg=%d kf=[%d..%d] kfCount=%d\n",
+                          l, layer->filename, seg,
+                          layer->kfCount > 0 ? layer->keyframes[0].frame : -1,
+                          layer->kfCount > 0 ? layer->keyframes[layer->kfCount-1].frame : -1,
+                          layer->kfCount);
+            }
+        }
+    }
+
     processInput(0);
     processInput(1);
     processAutoplay();
@@ -338,7 +384,10 @@ void Gameplay_Update(float dt)
             g_judgeDisplayTimer[p] -= dt;
     }
 
-    if (g_songTime >= g_totalSongSeconds + 2.0f)
+    bool audioDone = !BGM_IsPlaying();
+    bool bgaDone = (g_game.bgaMaxFrame > 0) ? (g_game.bgaFrame >= g_game.bgaMaxFrame) : true;
+
+    if (audioDone && bgaDone)
     {
         Game_ChangeState(STATE_RESULT);
     }
@@ -375,19 +424,6 @@ static void drawPanelAt(int panel, float x, float y, uint8_t val, float alpha, b
 void Gameplay_Render(void)
 {
     if (g_game.state != STATE_GAMEPLAY) return;
-
-    glLoadIdentity();
-
-    // Draw background
-    glBindTexture(GL_TEXTURE_2D, 0);
-    glColor4f(0.2f, 0.2f, 0.4f, 1.0f);
-    glBegin(GL_QUADS);
-    glVertex2f(0, 0);
-    glVertex2f(640, 0);
-    glVertex2f(640, 480);
-    glVertex2f(0, 480);
-    glEnd();
-    glColor4f(1, 1, 1, 1);
 
     if (!g_songLoaded)
     {

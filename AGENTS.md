@@ -1,134 +1,458 @@
-# Instruções do OpenCode
+# OpenCode Instructions
 
-## Linguagem de Fala
+## Project Objective
 
-- Sempre responda em Português-Brasil
+This project is a reverse engineering and reconstruction effort.
+**The objective is NOT to redesign, modernize or improve the original game.**
+The objective is to reproduce the original executable as faithfully as possible.
 
-## Compilação e Execução
+### Priority order:
 
-- Compilação: `cmake --build build` (a partir da raiz do repositório).
-- Os recursos (*assets*) são copiados automaticamente para o diretório de compilação (*build*).
-- Lembre-se de sempre fazer a cópia do arquivo buildado (PUMPY.EXE), renomea-la para PUMPYTESTE.EXE e enviar para a pasta root do projeto "E:\Pumps\PREX3-Original" para testarmos com os itens originais do jogo.
-- Lembre-se de quando usar terminal, estamos em ambiente Windows, terminal aqui é só com códigos powershell, nunca coloque comandos terminal linux pois não vai rodar, o mesmo para comandos cmd.
+1. Original behavior
+2. Binary compatibility whenever possible
+3. Equivalent logic
+4. Equivalent rendering
+5. Equivalent timing
+6. Code readability (only when it does not alter behavior)
 
-## Peculiaridades Técnicas
+> **Note:** If there is a conflict between cleaner code and compatibility with the original executable, compatibility always wins.
 
-- **Sistema de Coordenadas**: As texturas do OpenGL são invertidas verticalmente pelo carregador (*loader*). Toda renderização de SPR em `renderSPTile` DEVE usar `(256 - v)` para as coordenadas V, a fim de garantir a orientação correta.
-- ***Parsing* de BGA**:
-  - `BGA2`: Versão 2, identificada pelos bytes mágicos "BGA2".
-  - `BGA`: Versão 0, identificada pelos bytes mágicos "BGA".
-- **Logs (Registros)**: Use `Log_Print` para depuração; a saída pode ser encontrada em `build/Debug/pumpy.log`.
-- Toda tela de algum STATE, deve ter o background totalmente preto RGBA(0,0,0,1) por padrão.
-- Sempre que houver mensão a extensão .tga, se for buscar nos folders a extensão tem que ser trocada pra .png
+---
 
-## Estilo e Convenções
+## Language
 
-- Definições e estruturas compartilhadas residem em `include/pumpy.h`.
-- Mantenha o empacotamento binário estrito para as *structs* que fazem o *parsing* de arquivos BGA (ex.: `#pragma pack(push, 1)`).
+* Always respond in Português (Brasil).
+* Use technical terminology whenever appropriate.
 
-# Descobertas de Engenharia Reversa (acumuladas)
+---
 
-## Funções Renomeadas no Ghidra
+## Thinking Process
 
-| Endereço   | Nome                    | Descrição                                                                                    |
-| ---------- | ----------------------- | -------------------------------------------------------------------------------------------- |
-| 0x00402850 | `Game_MainLoop`         | Loop principal: `Render_ClearScreen()` → `switch(g_dwState)` com 26+ cases → `SwapBuffers()` |
-| 0x004014d0 | (anônima)               | Pipeline de negação Y nas coordenadas de renderização                                        |
-| 0x004012e0 | `BGA_LoadFile`          | Carrega BGA: lê magic BGA2/BGA, roteia para parser v0 ou v2, carrega SPR por layer           |
-| 0x004190f0 | `Audio_LoadADPCM`       | Carrega AUDIO\\%s.AUD, escreve temp, decodifica ADPCM                                        |
-| 0x00403f30 | `Warning_Animate`       | `BGA_SetEventFrame(events, g_dwFrameCounter++)`; se >899 → state=3                           |
-| 0x00404320 | `Menu_UpdateInput`      | Input + multi-pass render (7 layers estáticas + background + overlay + modo)                 |
-| 0x004191a0 | `Anim_ConfirmEnter`     | Animação de confirmação (enter)                                                              |
-| 0x004191c0 | `Anim_ConfirmLeave`     | Animação de confirmação (leave)                                                              |
-| 0x00401890 | `Render_SetGlobalColor` | Seta cor global de renderização                                                              |
-| 0x004269b0 | `Math_ROUND`            | Arredondamento matemático                                                                    |
-| 0x0040c0f0 | (anônima)               | Desenha retângulo preto/branco (fade overlay?)                                               |
-| 0x00403e50 | (anônima)               | Desenha texto na tela (usado no menu para copyright)                                         |
+Before answering:
 
-## Mapeamento de Estados (g_dwState)
+1. Observe
+2. Analyze
+3. Build hypotheses
+4. Search for evidence
+5. Reach a conclusion
 
-| State | Nome                    | Função                           | Descrição                                                                     |
-| ----- | ----------------------- | -------------------------------- | ----------------------------------------------------------------------------- |
-| 0x00  | `STATE_BOOT`            | `State_Branch()` (FUN_00409380?) | Boot: decide se vai para Warning, Logo ou Menu (baseado em `g_dwBootCounter`) |
-| 0x01  | `STATE_WARNING_INIT`    | `Warning_Enter()` (FUN_00409720) | Inicializa Warning (carrega BGA, configura)                                   |
-| 0x02  | `STATE_WARNING_ANIM`    | `Warning_Animate()` (00403f30)   | Anima: `BGA_SetEventFrame(events, frame++)`, max 900 → state 3                |
-| 0x03  | `STATE_WARNING_END`     | `Warning_End()` (FUN_004054c0)   | Finaliza Warning                                                              |
-| 0x04  | `STATE_LOGO_ENTER`      | `Logo_Enter()` (FUN_00403a80?)   | Inicializa Logo                                                               |
-| 0x05  | `STATE_LOGO_UPDATE`     | `Logo_Update()`                  | Atualiza Logo, transiciona para ResetFlow                                     |
-| 0x06  | `STATE_RESET_FLOW`      | `State_ResetFlow()`              | Reset do fluxo (carrega 82W, configura menu)                                  |
-| 0x07  | `STATE_MENU_FADE_IN`    | `Menu_FadeEnter()`               | Fade in do menu                                                               |
-| 0x08  | `STATE_MENU_IDLE`       | `Menu_IdleUpdate()`              | Menu idle (60f)                                                               |
-| 0x09  | `STATE_MENU_INPUT_WAIT` | `Menu_InputReset()`              | Aguarda input (30f)                                                           |
-| 0x0A  | `STATE_MENU_ENTER`      | `Menu_Enter()`                   | Menu inicializando (82W resetando)                                            |
-| 0x0B  | `STATE_MENU_INPUT`      | `Menu_UpdateInput()` (00404320)  | Menu real: loop eterno, input + multi-pass render                             |
-| 0x0C  | (reset)                 | `State_ResetToWarning()`         | Volta ao Warning                                                              |
-| 0x0D  | TryNextStage            | `FUN_00412750`                   | Vídeo de Try Next Stage                                                       |
-| 0x0F  | Gameplay                | `FUN_00414820`                   | Carrega 00.DAT, XXX.DAT, XXX.AUD, XXX.STX                                     |
-| 0x19  | DanceGradeResult        | `FUN_00415020`                   | Resultado normal de dança                                                     |
-| 0x1E  | Title                   | `FUN_004091a0`                   | Title.PNZ da música selecionada                                               |
-| 0x16  | Stage Break             | `FUN_00412480`                   | Tela de Stage Break                                                           |
-| 0x1F  | GameOption transição    | `FUN_00415ad0`                   | Saindo do Menu, entrando no GameOption                                        |
-| 0x20  | GameOption sequência    | `FUN_00415b30`                   | Sequência de entrada no GameOption                                            |
-| 0x21  | GameOption inside       | `FUN_00415ba0`                   | Dentro do GameOption                                                          |
-| 0x23  | StaffEnter              | `StaffEnter()`                   | Carrega STAFF.DAT (staff roll)                                                |
+**Never** skip the verification step.
 
-## Arquitetura de Renderização Multi-Pass (ORIGINAL)
+---
 
-O original NÃO renderiza em um único passe. `Menu_UpdateInput` (00404320) faz múltiplas chamadas sequenciais a `BGA_SetEventFrame`/`BGA_SetEventLayer` no MESMO frame do jogo. Cada chamada desenha imediatamente via OpenGL, sobrescrevendo o que foi desenhado antes para as camadas afetadas. Como cada faixa de frame tem keyframes diferentes ativos, layers diferentes ficam visíveis em cada passe.
+## Confidence Levels
 
-### Sequência exata (state 0x0B):
+Every conclusion should implicitly fit one of these categories:
 
-1. **Passe 1 - Layers estáticas**: `BGA_SetEventLayer(events, frameCounter % 415, layerIdx)` para layers 1, 2, 13, 19, 5, 29, 48
-2. **Passe 2 - Background**: `BGA_SetEventFrame(events, (frameCounter % 120) + 1020)` — fundo animado (1020-1139)
-3. **Passe 3 - Overlay de seleção**: `BGA_SetEventFrame(events, (frameCounter % 120) + 900)` — quando `g_dwMenuMode != 0` (900-1019)
-4. **Passe 4 - Específico do modo**:
-   - UL (modo 1): `BGA_SetEventFrame(events, (frameCounter % 120) + 420)` (420-539)
-   - UR (modo 3): `BGA_SetEventFrame(events, (frameCounter % 120) + 660)` (660-779)
-   - Center (modo 7): `BGA_SetEventLayer(events, (frameCounter % 120) + 300, 21)` e `BGA_SetEventLayer(events, (frameCounter % 120) + 300, 32)` (300-419)
-   - DL (modo 9): `BGA_SetEventFrame(events, (frameCounter % 120) + 540)` (540-659)
-   - DR (default): `BGA_SetEventFrame(events, (frameCounter % 120) + 780)` (780-899)
+* Confirmed
+* Highly Probable
+* Probable
+* Hypothesis
 
-### Faixas de frame do 82W.DAT:
+**Never** present assumptions as facts. Whenever evidence is insufficient, clearly state the uncertainty.
 
-- 0-299: ?
-- 300-419: Center (int_c/int_d? layers 21,32)
-- 420-539: UL (Start)
-- 540-659: UR (Options)
-- 660-779: DL (Credits)
-- 780-899: DR (Exit)
-- 900-1019: Center selection overlay (16.spr)
-- 1020+: Background continuation
+---
 
-### Warning_Animate (00403f30):
+## Development Philosophy
 
-- Apenas `BGA_SetEventFrame(events, g_dwFrameCounter++)` — playback linear de TODOS os eventos (frame 0 → 899)
-- Quando > 899 → state 3 (Warning_End)
+* **Never** refactor simply because the code looks old.
+* **Never** modernize APIs.
+* **Never** replace legacy algorithms without evidence.
+* **Never** optimize code unless explicitly requested.
+* Prefer preserving original behavior over writing cleaner code.
 
-## Globais Importantes
+---
 
-| Endereço   | Nome               | Descrição                                                              |
-| ---------- | ------------------ | ---------------------------------------------------------------------- |
-| 0x00d387f0 | `g_dwFrameCounter` | Contador de frames (incrementado em Warning_Animate, Menu_UpdateInput) |
-| 0x008bbf40 | `g_dwBootCounter`  | Contador de boot (decide Warning/Logo/Menu)                            |
-| 0x00d387e0 | `g_dwMenuMode`     | Modo do menu (1=UL, 3=UR, 7=Center, 9=DL, outros=DR)                   |
-| 0x00d387ec | `g_dwConfirmTimer` | Timer de confirmação (60 frames após segundo toque)                    |
-| (flag)     | `g_bConfirmActive` | Flag de confirmação ativa                                              |
-| (HWND)     | `g_dwHWnd`         | Handle da janela                                                       |
+## Programming Languages
 
-## Estruturas BGA
+**Preferred languages:**
 
-- **BGA v2**: Magic "BGA2", eventos fixos de 50 layers, keyframes de 64 bytes com timestamp no offset 44
-- **BGA v0**: Magic "BGA", sem keyframes por evento (apenas frame a frame)
-- `BGA_SetEventFrame(bgaIndex, frame)`: renderiza TODAS as 50 layers no frame dado
-- `BGA_SetEventLayer(bgaIndex, layerIdx, frame)`: renderiza UMA layer no frame dado
-- `interpolate_layer`: retorna NULL se `frame < keyframes[0].frame` (layer invisível)
+* C
+* Python
+* PowerShell
 
-## Outras Descobertas
+Lua may be used when appropriate. Avoid introducing unnecessary C++ abstractions.
 
-- `BGA_LoadFile` (004012e0): Limpa 0x46ab9*4 bytes, verifica magic BGA2, roteia para parser, carrega SPR por layer
-- `g_bootCounter%3==0` → Logo, `%3==1` → Menu, `%3==2` → ???
-- Projeção OpenGL: Y-down (`gluOrtho2D(0, 640, 480, 0)`)
-- 81.DAT maxFrame=465; R_WARN maxFrame=900; 82W.DAT maxFrame=1140+
-- TODOS OS ARQUIVOS .DAT JÁ ESTÃO DESCOMPACTADOS NA PASTA BGA_extracted. Não precisa extrair de .DAT, os arquivos .BGA, .SPR, .TGA/.PNG já estão lá.
+---
 
-- SPR são arquivos TEXTO apenas com COORDENADAS de posições de sprites.
+## Coding Style
+
+* Prefer procedural code.
+* Avoid unnecessary abstractions.
+* Avoid unnecessary classes.
+* Avoid templates.
+* Avoid macros unless already used.
+* Prefer small isolated patches.
+* **Never** rewrite an entire subsystem to solve a localized issue.
+
+---
+
+## Reverse Engineering
+
+Always prioritize evidence. Decompiler output is **NOT** authoritative. Assembly always has higher priority than decompiled C.
+
+When analyzing unknown behavior, follow this order:
+
+1. Strings
+2. Imports
+3. Cross References
+4. Global Variables
+5. Structures
+6. Assembly
+7. Decompiled C
+
+Avoid jumping directly into decompiled code.
+
+---
+
+## Decompiled Code
+
+Decompiler generated symbols such as:
+
+* `FUN_xxxxxxxx`
+* `DAT_xxxxxxxx`
+* `PTR_xxxxxxxx`
+* `LAB_xxxxxxxx`
+
+...should be preserved unless explicitly requested.
+
+* **Never** rename functions automatically.
+* **Never** infer semantics solely from variable names.
+
+---
+
+## Binary Analysis
+
+When investigating binary formats always identify:
+
+* Magic
+* Version
+* Header Size
+* Flags
+* Endianness
+* Alignment
+* Padding
+* Offset Tables
+* Pointer Tables
+* Checksums
+* Compression
+* Encryption
+
+**Never** stop after identifying only the header.
+
+---
+
+## Compression
+
+**Never** assume encryption first. Always verify:
+
+* RLE
+* LZ77
+* LZSS
+* Deflate
+* Zlib
+* LZO
+* Huffman
+* XOR
+
+Only after excluding common compression methods should encryption be considered.
+
+---
+
+## Structures
+
+**Never** modify:
+
+* Structure packing
+* Offsets
+* Field ordering
+* Integer sizes
+* Alignment
+
+...unless there is concrete evidence that they are incorrect. Always preserve binary compatibility.
+
+---
+
+## OpenGL
+
+* Preserve original rendering order.
+* Avoid changing draw order.
+* Avoid introducing state changes unnecessarily.
+* **Never** assume OpenGL state.
+* Preserve original rendering pipeline whenever possible.
+
+---
+
+## Legacy Windows
+
+Assume the original executable targets:
+
+* Windows 95
+* Win32 API
+* OpenGL
+* DirectSound
+* Visual C
+
+Timing differences between Windows 95 and modern Windows should always be considered.
+
+---
+
+## Ghidra
+
+When using Ghidra:
+
+1. Prefer Strings.
+2. Then Imports.
+3. Then Xrefs.
+4. Only inspect functions relevant to the current task.
+5. Request only one new function at a time.
+* Avoid recursive exploration.
+* Avoid mass decompilation.
+* **Never** request the entire executable.
+
+---
+
+## Context Usage
+
+* Minimize token consumption.
+* Do not request information already analyzed.
+* Do not request files already provided.
+* Prefer summaries over duplicated code.
+* Reference functions by address whenever possible.
+
+---
+
+## Code Modification Workflow
+
+Before modifying any code:
+
+1. Explain what the code currently does.
+2. Explain why it should change.
+3. Explain possible side effects.
+4. Only then propose modifications.
+
+---
+
+## Data Analysis
+
+When comparing binary files:
+
+* Identify common regions.
+* Identify changed regions.
+* Identify pointer differences.
+* Identify checksum changes.
+* Identify alignment changes.
+
+**Never** classify changed bytes as random without evidence.
+
+---
+
+## Python
+
+Python scripts should:
+
+* Accept command-line arguments.
+* Support recursive processing when appropriate.
+* Avoid unnecessary dependencies.
+* Print meaningful diagnostics.
+* Prefer standard library.
+
+---
+
+## PowerShell
+
+* Always assume a Windows environment.
+* **Never** generate Linux shell commands.
+* **Never** generate Bash scripts unless explicitly requested.
+* Prefer native PowerShell commands.
+
+---
+
+## Documentation
+
+Separate information into:
+
+* Facts
+* Evidence
+* Hypotheses
+* Open Questions
+
+Avoid mixing speculation with confirmed information.
+
+---
+
+## Response Style
+
+* Prefer technical explanations.
+* Avoid generic advice.
+* Avoid motivational language.
+* Avoid repeating previous explanations.
+* If multiple interpretations exist, explain each.
+
+---
+
+## Build Process
+
+**Compilation:**
+
+```sh
+cmake --build build
+```
+
+Assets are copied automatically.
+
+**After building:**
+
+1. Copy: `PUMPY.EXE`
+2. Rename to: `PUMPYTESTE.EXE`
+3. Copy it to: `E:\Pumps\PREX3-Original` (for validation using original game assets).
+
+
+
+**After build and copy process, always ASK if I want to continue another thing.**
+
+---
+
+## Logging
+
+Use:
+
+```c
+Log_Print()
+```
+
+Log location: `build/Debug/pumpy.log`
+
+---
+
+## Original Executable
+
+Original executable characteristics:
+
+* **System:** Windows 95 (32-bit)
+* **Compiler:** Microsoft Visual C 13.00
+* **Language:** C
+* **Graphics:** OpenGL
+* **Audio:** DirectSound
+* **Protection:** PELock 2.x
+
+> **Note:** Decompiler output may contain artifacts caused by PELock.
+
+---
+
+## Rendering
+
+* **Projection:** Y-UP
+* **External API:** Y-DOWN
+
+Sprites rendered by `renderSPTile` must always invert the V coordinate using `256 - v` unless explicitly proven otherwise.
+
+### Global Color Overlay (Render_EndScene)
+
+- `Render_SetGlobalColor(r, g, b, a)` controla o overlay fullscreen desenhado por `Render_EndScene`
+- O overlay só aparece quando `globalColorA > 0.0f`
+- **NUNCA** chame `Render_SetGlobalColor(1,1,1,1)` em telas novas — isso produz overlay branco opaco que tampa tudo (`alpha=1` = opaco)
+- Ao criar uma nova tela, omita `Render_SetGlobalColor` ou passe `alpha=0` para não sobrescrever o overlay
+- **IMPORTANTE:** Se você setar `alpha=1`, o overlay preto tapa TUDO. A cada tela, verifique se o `alpha` está sendo atualizado corretamente ao longo dos frames (fade-in/fade-out). Caso contrário a tela fica preta e parece que o conteúdo não carregou.
+
+---
+
+## BGA Parsing
+
+**Supported formats:** `BGA`, `BGA2`
+Detect version through magic bytes.
+
+Shared parsing structures must use:
+
+```c
+#pragma pack(push,1)
+```
+
+---
+
+## Project Conventions
+
+* Shared structures belong in: `include/pumpy.h`
+* Every STATE screen should default to: `RGBA(0,0,0,1)` unless the original executable behaves differently.
+* Whenever `.tga` resources are referenced, project assets should use `.png`.
+* All DAT resources are already extracted inside: `BGA_extracted`
+* **Never** decrypt any DAT file — all are already extracted in `BGA_extracted`
+* **Never** propose extracting DAT files again unless explicitly requested.
+* `81.DAT` → Somente animação do LOGO, não mexer
+* `82W.DAT` → Animações da tela de menu, não mexer
+* SPR files contain sprite coordinate definitions, not textures.
+* Use `C:\Users\bruno\AppData\Local\Temp\parse_bga3.py` to analyze entry names and structure of BGA files. It parses the fixed-record format correctly (64-byte name fields, count, keyframes).
+
+---
+
+## Critical Rules
+
+- **Always verify in GhidraMCP** before implementing any format fix — never base corrections on format hypotheses alone. The decompiled original always has priority.
+- When analyzing the original, follow the data flow: what does it READ from the file/buffer? The read pattern reveals the actual format (e.g., fixed 64-byte records vs variable-length strings).
+
+## Reverse Engineering Rules
+
+**Never** request:
+
+* The entire executable
+* Every function
+* All globals
+* Large unrelated code blocks
+
+Only request information strictly necessary for the current objective. Always justify why additional information is needed.
+
+---
+
+## Resource Mapping
+
+**NUNCA** assuma qual arquivo DAT/BGA/AUD/WAV corresponde a qual tela ou recurso. As numerações nem sempre são óbvias (ex: Song Select é `099.DAT`, não `SELECT.DAT`). Sempre pergunte ao usuário antes de tirar conclusões sobre nomes de arquivos ou mapeamentos de recursos.
+
+## Investigation Checklist
+
+Before concluding any investigation verify:
+
+- [ ] Original behavior identified
+- [ ] Related globals identified
+- [ ] Related structures identified
+- [ ] Related strings identified
+- [ ] Related xrefs identified
+- [ ] Related rendering identified
+- [ ] Compression checked
+- [ ] Encryption checked
+- [ ] Side effects evaluated
+
+Only after completing this checklist should a final conclusion be presented.
+
+---
+
+## Session Summary — Staff Screen (DL 2x)
+
+### Goal
+
+Implementar tela de Staff (créditos) ativada via DL 2x no menu.
+
+### Done
+
+- `src/staff.c` criado com `Staff_Enter()` e `Staff_Update(float dt)`
+- `Staff_Enter()`: `Resource_LoadBGADirect("BGA\\STAFF.DAT")` carrega RES com Staff.bga + S.SPR, S00.spr + staff01~08.png; `BGM_LoadAUDDirect` toca 84.AUD; `bgaLoop=false`, `bgaFrame=0`, `frameCounter=0`
+- `Staff_Update()`: incrementa `frameCounter` até 1920, sincroniza `bgaFrame`. ESC/CENTER ou fim → `BGM_Stop()` + `Menu_ResetState()` + `Game_ChangeState(STATE_MENU_ENTER)`
+- `LoadBGAForState`: `STATE_STAFF_ENTER/STAFF/STAFF_END` → `bgaName = ""` (limpa BGA)
+- `Game_Update`: cases `STATE_STAFF_ENTER` (Staff_Enter), `STATE_STAFF` (Staff_Update), `STATE_STAFF_END` (volta menu). `manualBGA` inclui `STATE_STAFF`. ESC handler trata STAFF.
+- `Game_Render`: `STATE_STAFF` usa `BGA_Render` padrão (não excluído)
+- `menu.c`: DL 2x confirma → fade → `STATE_STAFF_ENTER`
+- `CMakeLists.txt`: adicionado `src/staff.c`
+- `resource.c`: parser BGA2 aceita `.png`/`.PNG` além de `.spr`/`.sp2`/`.tga`/`.TGA`
+- Removido `Render_SetGlobalColor(1,1,1,1)` de Staff_Enter (causava overlay branco)
+
+### Key Fixes
+
+1. **Tela branca**: causada por `Render_SetGlobalColor(1,1,1,1)` em Staff_Enter — overlay branco full-alpha tampava o BGA
+2. **File path**: `Resource_LoadBGADirect("BGA\\STAFF.DAT")` funciona do diretório raiz do jogo (`E:\Pumps\PREX3-Original\`) sem precisar de fallback `assets/`
+
+### Known
+
+- RES entries usam XOR contínuo (key 0xEF, step 0x4F) sem reinício entre entries — decodificação funciona corretamente
+- `loadBGAFromRES` (usado por `Resource_LoadBGAByName`) NÃO funciona pra Staff.bga (offset 16 não tem filenames); `Resource_LoadBGADirect` (scan de extensões) funciona
+- Staff.BGA2 tem 2 layers: S00.spr (frames 0-325) e S.spr (frames 115-1891)
+- S.SPR: 10 tiles, S00.spr: 2 tiles, todos referenciando `staffXX.tga` resolvido via `loadTextureFromRES` para `.png`
+- Texturas staff01~08.png: 256x256 cada

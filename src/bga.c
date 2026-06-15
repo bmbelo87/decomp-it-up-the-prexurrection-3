@@ -29,8 +29,9 @@ static BGAKeyframe lerp_kf(BGAKeyframe* a, BGAKeyframe* b, float t) {
     return r;
 }
 
-static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum) {
+static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum, float* outAnimT) {
     static BGAKeyframe result;
+    if (outAnimT) *outAnimT = 0.0f;
     if (layer->kfCount == 0) return NULL;
     
     if (frameNum < layer->keyframes[0].frame) return NULL;
@@ -45,7 +46,7 @@ static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum) {
 
     if (segIdx < 0) {
         if (frameNum >= layer->keyframes[layer->kfCount - 1].frame) {
-            return &layer->keyframes[layer->kfCount - 1];
+            return NULL;
         }
         return NULL;
     }
@@ -56,30 +57,22 @@ static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum) {
     float t = (span > 0) ? (float)(frameNum - a->frame) / span : 0.0f;
 
     result = lerp_kf(a, b, t);
+    {
+        int blendIdx = (segIdx > 0) ? segIdx - 1 : 0;
+        result.blendMode = layer->keyframes[blendIdx].blendMode;
+    }
 
     if (a->type == 0) result.a = 0;
     else if (b->type == 0 && t >= 1.0f) result.a = 0;
 
+    Log_Print("  interpolate '%s': frame=%d seg=%d a->frame=%d b->frame=%d t=%.3f x=%.1f y=%.1f sx=%.2f sy=%.2f rot=%.2f r=%.2f g=%.2f b=%.2f a=%.2f\n",
+              layer->filename, frameNum, segIdx, a->frame, b->frame, t,
+              result.x, result.y, result.scaleX, result.scaleY, result.rotation,
+              result.r, result.g, result.b, result.a);
+
+    if (outAnimT) *outAnimT = t;
     return &result;
 }
-
-#pragma pack(push, 1)
-typedef struct {
-    float xPos;
-    float yPos;
-    float hotx;
-    float hoty;
-    float scaleX;
-    float scaleY;
-    float rotation;
-    float r;
-    float g;
-    float b;
-    float a;
-    uint32_t timestamp;
-    uint32_t z_order;
-} BGA2KFRaw;
-#pragma pack(pop)
 
 static bool parseBGA2(const uint8_t* bgaData, uint32_t bgaSize, BGAPicture* pic) {
     if (bgaSize < 4 || memcmp(bgaData, "BGA2", 4) != 0) return false;
@@ -87,110 +80,83 @@ static bool parseBGA2(const uint8_t* bgaData, uint32_t bgaSize, BGAPicture* pic)
     memset(pic, 0, sizeof(BGAPicture));
     pic->version = 2;
 
-    char text[8664];
-    memcpy(text, bgaData, bgaSize < 8664 ? bgaSize : 8664);
-    text[bgaSize < 8664 ? bgaSize : 8663] = '\0';
+    int entryPos = 16;
+    while (entryPos + 64 + 4 <= (int)bgaSize && pic->layerCount < MAX_BGA_LAYERS) {
+        char filename[64];
+        memcpy(filename, bgaData + entryPos, 64);
+        filename[63] = '\0';
 
-    char filename[64];
-    int nameStart = -1;
-    int nameEnd = -1;
+        int nameLen = (int)strlen(filename);
+        int count = *(int*)(bgaData + entryPos + 64);
 
-    for (uint32_t i = 4; i + 4 < bgaSize && i < 0x200; i++) {
-        char c = bgaData[i];
-        if (c == '.' && (i + 4 < bgaSize)) {
-            char ext[5];
-            memcpy(ext, bgaData + i, 4);
-            ext[4] = '\0';
-            if (_stricmp(ext, ".spr") == 0 || _stricmp(ext, ".sp2") == 0 ||
-                _stricmp(ext, ".tga") == 0 || _stricmp(ext, ".TGA") == 0) {
-                int start = (int)i;
-                while (start > 0 && bgaData[start - 1] >= 0x20 && bgaData[start - 1] < 0x7F)
-                    start--;
-                int len = (int)(i + 4 - start);
-                if (len < 64) {
-                    memcpy(filename, bgaData + start, len);
-                    filename[len] = '\0';
-                    nameStart = start;
-                    nameEnd = i + 4;
-                    break;
-                }
-            }
+        if (nameLen == 0 && count == 0) {
+            entryPos += 68;
+            continue;
         }
-    }
 
-    if (nameStart < 0) return false;
-
-    for (int ci = 0; filename[ci]; ci++) {
-        if (filename[ci] >= 'A' && filename[ci] <= 'Z')
-            filename[ci] = (char)(filename[ci] + 32);
-    }
-
-    strncpy(pic->name, filename, sizeof(pic->name) - 1);
-
-    int ptr = nameEnd;
-    while (ptr < (int)bgaSize && bgaData[ptr] == 0) ptr++;
-    int aligned = ((ptr + 3) / 4) * 4;
-
-    int numKF = 0;
-    int dataOff = 0;
-    for (int scan = aligned; scan < (int)bgaSize - 4; scan += 4) {
-        uint32_t val = *(uint32_t*)(bgaData + scan);
-        if (val >= 1 && val <= 5000) {
-            numKF = (int)val;
-            dataOff = scan + 4;
-            break;
+        for (int ci = 0; filename[ci]; ci++) {
+            if (filename[ci] >= 'A' && filename[ci] <= 'Z')
+                filename[ci] = (char)(filename[ci] + 32);
         }
-    }
 
-    if (numKF == 0 || dataOff == 0) {
-        Log_Print("BGA2: no keyframes found for '%s'\n", filename);
-        return false;
-    }
+        BGALayer* layer = &pic->layers[pic->layerCount];
+        strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
 
-    BGALayer* layer = &pic->layers[pic->layerCount];
-    strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
+        char* dot = strrchr(filename, '.');
+        layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
 
-    char* ext2 = strrchr(filename, '.');
-    layer->isSPR = (ext2 && (_stricmp(ext2, ".spr") == 0 || _stricmp(ext2, ".sp2") == 0));
+        if (pic->layerCount == 0) {
+            strncpy(pic->name, filename, sizeof(pic->name) - 1);
+        }
 
-    int kfSize = 64;
-    layer->kfCount = 0;
-    for (int i = 0; i < numKF && layer->kfCount < MAX_BGA_KEYFRAMES; i++) {
-        uint32_t ofs = dataOff + i * kfSize;
-        if (ofs + kfSize > bgaSize) break;
+        int dataOff = entryPos + 68;
+        int readCount = count;
+        if (readCount > MAX_BGA_KEYFRAMES)
+            readCount = MAX_BGA_KEYFRAMES;
+        layer->kfCount = 0;
 
-        BGA2KFRaw* raw = (BGA2KFRaw*)(bgaData + ofs);
-        BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
+        for (int i = 0; i < readCount && layer->kfCount < MAX_BGA_KEYFRAMES; i++) {
+            uint32_t ofs = dataOff + i * 64;
+            if (ofs + 64 > bgaSize) break;
 
-        uint32_t ts = raw->timestamp;
-        kf->frame = (int)(ts & 0xFFFF);
-        kf->type = (int)((ts >> 16) & 0xFFFF);
-        kf->x = raw->xPos;
-        kf->y = raw->yPos;
-        kf->hotx = raw->hotx;
-        kf->hoty = raw->hoty;
-        kf->scaleX = raw->scaleX;
-        kf->scaleY = raw->scaleY;
-        kf->rotation = raw->rotation;
-        kf->r = raw->r;
-        kf->g = raw->g;
-        kf->b = raw->b;
-        kf->a = raw->a;
-        kf->z_order = (int)raw->z_order;
+            uint32_t ts = *(uint32_t*)(bgaData + ofs + 0x2c);
+            BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
 
-        layer->kfCount++;
-    }
+            kf->frame = (int)(ts & 0xFFFF);
+            kf->type = (int)((ts >> 16) & 0xFFFF);
+            kf->x = *(float*)(bgaData + ofs + 0x00);
+            kf->y = *(float*)(bgaData + ofs + 0x04);
+            kf->hotx = *(float*)(bgaData + ofs + 0x08);
+            kf->hoty = *(float*)(bgaData + ofs + 0x0c);
+            kf->scaleX = *(float*)(bgaData + ofs + 0x10);
+            kf->scaleY = *(float*)(bgaData + ofs + 0x14);
+            kf->rotation = *(float*)(bgaData + ofs + 0x18);
+            kf->r = *(float*)(bgaData + ofs + 0x1c);
+            kf->g = *(float*)(bgaData + ofs + 0x20);
+            kf->b = *(float*)(bgaData + ofs + 0x24);
+            kf->a = *(float*)(bgaData + ofs + 0x28);
+            kf->blendMode = (int)*(int16_t*)(bgaData + ofs + 0x30);
+            kf->z_order = (int)*(int32_t*)(bgaData + ofs + 0x34);
+
+            layer->kfCount++;
+        }
 
         if (layer->kfCount > 0) {
             int maxF = layer->keyframes[layer->kfCount - 1].frame;
             if (maxF > pic->maxFrame) pic->maxFrame = maxF;
         }
 
-    Log_Print("BGA2: layer '%s' %s kf=%d maxFrame=%d\n",
-        filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, pic->maxFrame);
+        Log_Print("BGA2: '%s' %s kf=%d maxFrame=%d\n",
+            filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, pic->maxFrame);
 
-    pic->layerCount++;
-    return true;
+        pic->layerCount++;
+        entryPos += 68 + count * 64;
+    }
+
+    if (pic->layerCount > 0) {
+        return true;
+    }
+    return false;
 }
 
 static bool parseBGA0(const uint8_t* bgaData, uint32_t bgaSize);
@@ -242,108 +208,86 @@ bool BGA_LoadFromMemory(const uint8_t* data, uint32_t size, bool isBGA2) {
 static bool parseBGA0(const uint8_t* bgaData, uint32_t bgaSize) {
     if (bgaSize < 4 || memcmp(bgaData, "BGA", 3) != 0) return false;
 
+    // BGA v0 header: 4 bytes magic + 12 bytes unknown = 16 bytes total
+    // Fixed-record format: [64 bytes name][4 bytes count][count * 44 bytes keyframes]
+    // Matches original EXE's sequential file read (FUN_00401020)
     BGAPicture* pic = &g_game.bgaPics[g_game.bgaPicCount];
     memset(pic, 0, sizeof(BGAPicture));
     pic->version = 0;
 
-    int scanStart = 4;
-    while (scanStart < (int)bgaSize - 4 && pic->layerCount < MAX_BGA_LAYERS) {
+    int entryPos = 16; // skip 16-byte header
+    while (entryPos + 64 + 4 <= (int)bgaSize && pic->layerCount < MAX_BGA_LAYERS) {
         char filename[64];
-        int nameStart = -1;
-        int nameEnd = -1;
+        memcpy(filename, bgaData + entryPos, 64);
+        filename[63] = '\0';
 
-        for (int i = scanStart; i + 4 < (int)bgaSize; i++) {
-            if (bgaData[i] == '.') {
-                char ext[5];
-                memcpy(ext, bgaData + i, 4);
-                ext[4] = '\0';
-                if (_stricmp(ext, ".spr") == 0 || _stricmp(ext, ".sp2") == 0 ||
-                    _stricmp(ext, ".tga") == 0 || _stricmp(ext, ".TGA") == 0) {
-                    int s = i;
-                    while (s > 0 && bgaData[s - 1] >= 0x20 && bgaData[s - 1] < 0x7F) s--;
-                    int len = (i + 4 - s);
-                    if (len < 64) {
-                        memcpy(filename, bgaData + s, len);
-                        filename[len] = '\0';
-                        nameStart = s;
-                        nameEnd = i + 4;
-                        break;
-                    }
-                }
-            }
+        int nameLen = (int)strlen(filename);
+        if (nameLen == 0) {
+            int count = *(int*)(bgaData + entryPos + 64);
+            entryPos += 68 + count * 44;
+            continue;
         }
 
-        if (nameStart < 0) break;
+        int count = *(int*)(bgaData + entryPos + 64);
+        if (count == 0) {
+            entryPos += 68;
+            continue;
+        }
 
         for (int ci = 0; filename[ci]; ci++) {
             if (filename[ci] >= 'A' && filename[ci] <= 'Z')
                 filename[ci] = (char)(filename[ci] + 32);
         }
 
+        BGALayer* layer = &pic->layers[pic->layerCount];
+        strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
+
+        char* dot = strrchr(filename, '.');
+        layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
+
         if (pic->layerCount == 0) {
             strncpy(pic->name, filename, sizeof(pic->name) - 1);
         }
 
-        int ptr = nameEnd;
-        while (ptr < (int)bgaSize && bgaData[ptr] == 0) ptr++;
-        int aligned = ((ptr + 3) / 4) * 4;
+        int dataOff = entryPos + 68;
+        layer->kfCount = 0;
+        for (int i = 0; i < count && layer->kfCount < MAX_BGA_KEYFRAMES; i++) {
+            uint32_t ofs = dataOff + i * 44;
+            if (ofs + 44 > bgaSize) break;
 
-        int numKF = 0;
-        int dataOff = 0;
-        for (int scan = aligned; scan < (int)bgaSize - 4; scan += 4) {
-            uint32_t val = *(uint32_t*)(bgaData + scan);
-            if (val >= 1 && val <= 5000) {
-                numKF = (int)val;
-                dataOff = scan + 4;
-                break;
-            }
+            int16_t frame = *(int16_t*)(bgaData + ofs);
+            int16_t spriteID = *(int16_t*)(bgaData + ofs + 2);
+            float* floats = (float*)(bgaData + ofs + 4);
+            BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
+
+            kf->frame = frame;
+            kf->type = (spriteID != 0) ? 1 : 0;
+            kf->x = floats[0];
+            kf->y = floats[1];
+            kf->hotx = floats[2];
+            kf->hoty = floats[3];
+            kf->scaleX = floats[4];
+            kf->scaleY = floats[4];
+            kf->rotation = floats[5];
+            kf->r = floats[6];
+            kf->g = floats[7];
+            kf->b = floats[8];
+            kf->a = floats[9];
+            kf->blendMode = 0;
+
+            layer->kfCount++;
         }
 
-        if (numKF > 0 && dataOff > 0) {
-            BGALayer* layer = &pic->layers[pic->layerCount];
-            strncpy(layer->filename, filename, sizeof(layer->filename) - 1);
-
-            char* dot = strrchr(filename, '.');
-            layer->isSPR = (dot && (_stricmp(dot, ".spr") == 0 || _stricmp(dot, ".sp2") == 0));
-
-            layer->kfCount = 0;
-            for (int i = 0; i < numKF && layer->kfCount < MAX_BGA_KEYFRAMES; i++) {
-                uint32_t ofs = dataOff + i * 44;
-                if (ofs + 44 > bgaSize) break;
-
-                uint32_t ts = *(uint32_t*)(bgaData + ofs);
-                float* floats = (float*)(bgaData + ofs + 4);
-                BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
-
-                kf->frame = (int)(ts & 0xFFFF);
-                kf->type = (int)((ts >> 16) & 0xFFFF);
-                kf->x = floats[0];
-                kf->y = floats[1];
-                kf->hotx = floats[2];
-                kf->hoty = floats[3];
-                kf->scaleX = floats[4];
-                kf->scaleY = floats[5];
-                kf->r = floats[6];
-                kf->g = floats[7];
-                kf->b = floats[8];
-                kf->a = floats[9];
-
-                layer->kfCount++;
-            }
-
-            if (layer->kfCount > 0) {
-                int maxF = layer->keyframes[layer->kfCount - 1].frame;
-                if (maxF > pic->maxFrame) pic->maxFrame = maxF;
-            }
-
-            Log_Print("BGA0: layer '%s' %s kf=%d maxFrame=%d\n",
-                filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, pic->maxFrame);
-
-            pic->layerCount++;
-            scanStart = dataOff + numKF * 44;
-        } else {
-            break;
+        if (layer->kfCount > 0) {
+            int maxF = layer->keyframes[layer->kfCount - 1].frame;
+            if (maxF > pic->maxFrame) pic->maxFrame = maxF;
         }
+
+        Log_Print("BGA0: '%s' %s kf=%d maxFrame=%d\n",
+            filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, pic->maxFrame);
+
+        pic->layerCount++;
+        entryPos += 68 + count * 44;
     }
 
     if (pic->layerCount > 0) {
@@ -368,7 +312,35 @@ void BGA_Reset(void) {
     Log_Print("BGA: reset, maxFrame=%d\n", g_game.bgaMaxFrame);
 }
 
-static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX, float scaleY, float hotX, float hotY, float rotation, float r, float g, float b, float alpha, int version) {
+static void drawTileQuad(SPRTileDef* tile, float offsetX, float offsetY) {
+    GLuint glTexId = (tile->texId >= 0 && tile->texId < MAX_TEXTURES && g_game.textures[tile->texId].inUse) ? g_game.textures[tile->texId].id : 0;
+    if (!glTexId) return;
+
+    glBindTexture(GL_TEXTURE_2D, glTexId);
+
+    float texW = (float)g_game.textures[tile->texId].width;
+    float texH = (float)g_game.textures[tile->texId].height;
+    if (texW <= 0) texW = 256.0f;
+    if (texH <= 0) texH = 256.0f;
+
+    float u1 = (float)tile->u1 / texW;
+    float v1 = (texH - (float)tile->v1) / texH;
+    float u2 = (float)tile->u2 / texW;
+    float v2 = (texH - (float)tile->v2) / texH;
+
+    glBegin(GL_QUADS);
+    glTexCoord2f(u1, v1);
+    glVertex2f(offsetX + (float)tile->srcX, 480.0f - (offsetY + (float)tile->srcY));
+    glTexCoord2f(u2, v1);
+    glVertex2f(offsetX + (float)(tile->srcX + tile->srcW), 480.0f - (offsetY + (float)tile->srcY));
+    glTexCoord2f(u2, v2);
+    glVertex2f(offsetX + (float)(tile->srcX + tile->srcW), 480.0f - (offsetY + (float)(tile->srcY + tile->srcH)));
+    glTexCoord2f(u1, v2);
+    glVertex2f(offsetX + (float)tile->srcX, 480.0f - (offsetY + (float)(tile->srcY + tile->srcH)));
+    glEnd();
+}
+
+static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX, float scaleY, float hotX, float hotY, float rotation, float r, float g, float b, float alpha) {
     if (!tile || tile->texId < 0) return;
     if (alpha <= 0.01f) return;
 
@@ -381,43 +353,24 @@ static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX,
     float destH = (float)tile->srcH * sy;
     if (destW <= 0 || destH <= 0) return;
 
-    if (rotation != 0.0f) {
-        glPushMatrix();
-        glTranslatef(posX, posY, 0.0f);
-        glTranslatef(hotX, hotY, 0.0f);
-        glRotatef(-rotation, 0.0f, 0.0f, 1.0f);
-        glScalef(sx, sy, 1.0f);
-        glTranslatef(-hotX, -hotY, 0.0f);
+    GLuint glTexId = (tile->texId >= 0 && tile->texId < MAX_TEXTURES && g_game.textures[tile->texId].inUse) ? g_game.textures[tile->texId].id : 0;
+    if (!glTexId) return;
 
-        GLuint glTexId = (tile->texId >= 0 && tile->texId < MAX_TEXTURES && g_game.textures[tile->texId].inUse) ? g_game.textures[tile->texId].id : 0;
-        glBindTexture(GL_TEXTURE_2D, glTexId);
-        glColor4f(r, g, b, alpha);
+    glPushMatrix();
+    glTranslatef(0.0f, 480.0f, 0.0f);
+    glTranslatef(posX, -posY, 0.0f);
+    glTranslatef(hotX, -hotY, 0.0f);
+    if (rotation != 0.0f)
+        glRotatef(rotation, 0.0f, 0.0f, 1.0f);
+    glScalef(sx, sy, 1.0f);
+    glTranslatef(-hotX, hotY, 0.0f);
+    glTranslatef(0.0f, -480.0f, 0.0f);
 
-        float uvV1 = (float)(256 - tile->v1) / 256.0f;
-        float uvV2 = (float)(256 - tile->v2) / 256.0f;
+    glColor4f(r, g, b, alpha);
+    drawTileQuad(tile, 0.0f, 0.0f);
 
-        glBegin(GL_QUADS);
-        glTexCoord2f((float)tile->u1 / 256.0f, uvV1);
-        glVertex2f((float)tile->srcX, (float)tile->srcY);
-        glTexCoord2f((float)tile->u2 / 256.0f, uvV1);
-        glVertex2f((float)(tile->srcX + tile->srcW), (float)tile->srcY);
-        glTexCoord2f((float)tile->u2 / 256.0f, uvV2);
-        glVertex2f((float)(tile->srcX + tile->srcW), (float)(tile->srcY + tile->srcH));
-        glTexCoord2f((float)tile->u1 / 256.0f, uvV2);
-        glVertex2f((float)tile->srcX, (float)(tile->srcY + tile->srcH));
-        glEnd();
-
-        glPopMatrix();
-        glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-    } else {
-        float drawX = hotX + (tile->srcX + posX - hotX) * sx;
-        float drawY = hotY + (tile->srcY + posY - hotY) * sy;
-        float uvV1 = (float)(256 - tile->v1);
-        float uvV2 = (float)(256 - tile->v2);
-        Texture_DrawUV(tile->texId, drawX, drawY, destW, destH,
-                       (float)tile->u1, uvV1,
-                       (float)tile->u2, uvV2, r, g, b, alpha);
-    }
+    glPopMatrix();
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 }
 
 bool layerMatchesDirection(BGALayer* layer, int sel) {
@@ -500,45 +453,128 @@ int findBGALoopEnd(void) {
     return firstHidden - 1;
 }
 
-static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion) {
+static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, float animT) {
     if (!state || state->type == 0 || state->a <= 0.01f) return;
     float alpha = state->a;
     float renderR = state->r, renderG = state->g, renderB = state->b;
 
+    if (strstr(layer->filename, "m_mask1") || strstr(layer->filename, "M_MASK1")) {
+        Log_Print("M_MASK1: state x=%.1f y=%.1f hotx=%.1f hoty=%.1f scX=%.2f scY=%.2f a=%.2f type=%d blend=%d z=%d\n",
+                  state->x, state->y, state->hotx, state->hoty,
+                  state->scaleX, state->scaleY, state->a, state->type, state->blendMode, state->z_order);
+        Log_Print("M_MASK1: layer sprTileStart=%d sprTileCount=%d patCols=%d patRows=%d ani=%d\n",
+                  layer->sprTileStart, layer->sprTileCount,
+                  layer->patCols, layer->patRows, layer->aniFrameCount);
+        for (int ti = 0; ti < layer->sprTileCount && (layer->sprTileStart + ti) < g_game.sprTileCount; ti++) {
+            SPRTileDef* t = &g_game.sprTiles[layer->sprTileStart + ti];
+            Log_Print("M_MASK1: tile[%d] src=(%d,%d,%d,%d) uv=(%d,%d,%d,%d) tex=%d texId=%d\n",
+                      ti, t->srcX, t->srcY, t->srcW, t->srcH,
+                      t->u1, t->v1, t->u2, t->v2, t->texId);
+        }
+    }
+
+    glEnable(GL_BLEND);
+    if (state->blendMode == 1)
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    else if (state->blendMode == 2)
+        glBlendFunc(GL_ZERO, GL_SRC_COLOR);
+    else
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
     if (layer->isSPR) {
-            if (layer->aniFrameCount > 1) {
-            int aniIdx = (g_game.frameCounter / 2) % layer->aniFrameCount;
-            if (aniIdx < layer->sprTileCount) {
-                int tileIdx = layer->sprTileStart + aniIdx;
-                if (tileIdx >= 0 && tileIdx < g_game.sprTileCount) {
-                    SPRTileDef* tile = &g_game.sprTiles[tileIdx];
-                    renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha, picVersion);
+        if (layer->patCols > 0 && layer->patRows > 0 && layer->sprTileCount > 0) {
+            int cellW = g_game.sprTiles[layer->sprTileStart].srcW;
+            int cellH = g_game.sprTiles[layer->sprTileStart].srcH;
+            int patOffset = Math_ROUND(layer->sprTileCount * animT);
+
+            float sx = state->scaleX;
+            float sy = state->scaleY;
+            if (sy == 0.0f) sy = sx;
+            if (sx == 0.0f) sx = 1.0f;
+
+            // Apply full transform (position + hotspot + scale + rotation) ONCE for entire grid
+            glPushMatrix();
+            glTranslatef(0.0f, 480.0f, 0.0f);
+            glTranslatef(state->x, -state->y, 0.0f);
+            glTranslatef(state->hotx, -state->hoty, 0.0f);
+            if (state->rotation != 0.0f)
+                glRotatef(state->rotation, 0.0f, 0.0f, 1.0f);
+            glScalef(sx, sy, 1.0f);
+            glTranslatef(-state->hotx, state->hoty, 0.0f);
+            glTranslatef(0.0f, -480.0f, 0.0f);
+            glColor4f(renderR, renderG, renderB, alpha);
+
+            if (layer->patFlags == 0) {
+                int tileAccum = 0;
+                for (int r = 0; r < layer->patRows; r++) {
+                    for (int c = 0; c < layer->patCols; c++) {
+                        int idx = (patOffset + tileAccum + c) % layer->sprTileCount;
+                        int tileIdx = layer->sprTileStart + idx;
+                        if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) continue;
+                        SPRTileDef* tile = &g_game.sprTiles[tileIdx];
+                        drawTileQuad(tile, (float)(c * cellW), (float)(r * cellH));
+                    }
+                    tileAccum += layer->patCols;
                 }
+            } else {
+                int tileAccum = 0;
+                for (int c = 0; c < layer->patCols; c++) {
+                    for (int r = 0; r < layer->patRows; r++) {
+                        int idx = (patOffset + tileAccum + r) % layer->sprTileCount;
+                        int tileIdx = layer->sprTileStart + idx;
+                        if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) continue;
+                        SPRTileDef* tile = &g_game.sprTiles[tileIdx];
+                        drawTileQuad(tile, (float)(c * cellW), (float)(r * cellH));
+                    }
+                    tileAccum += layer->patCols;
+                }
+            }
+            glPopMatrix();
+            glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+        } else if (layer->aniFrameCount > 1 && layer->sprTileCount > 1) {
+            int aniIdx = Math_ROUND(layer->aniFrameCount * animT);
+            if (aniIdx < 0) aniIdx = 0;
+            if (aniIdx >= layer->sprTileCount) aniIdx = layer->sprTileCount - 1;
+            int tileIdx = layer->sprTileStart + aniIdx;
+            if (tileIdx >= 0 && tileIdx < g_game.sprTileCount) {
+                SPRTileDef* tile = &g_game.sprTiles[tileIdx];
+                renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha);
             }
         } else {
             for (int t = layer->sprTileCount - 1; t >= 0; t--) {
                 int tileIdx = layer->sprTileStart + t;
                 if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) continue;
                 SPRTileDef* tile = &g_game.sprTiles[tileIdx];
-                renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha, picVersion);
+                renderSPTile(tile, state->x, state->y, state->scaleX, state->scaleY, state->hotx, state->hoty, state->rotation, renderR, renderG, renderB, alpha);
             }
         }
     } else if (layer->texId >= 0) {
         Texture* tex = &g_game.textures[layer->texId];
         if (!tex->inUse) return;
-        float sclY = (state->scaleY != 0.0f) ? state->scaleY : state->scaleX;
+        float sx = state->scaleX;
+        float sy = state->scaleY;
+        if (sy == 0.0f) sy = sx;
+        if (sx == 0.0f) sx = 1.0f;
         glPushMatrix();
-        glTranslatef(state->x + state->hotx, state->y + state->hoty, 0.0f);
-        glScalef(state->scaleX, sclY, 1.0f);
+        glTranslatef(0.0f, 480.0f, 0.0f);
+        glTranslatef(state->x, -state->y, 0.0f);
+        glTranslatef(state->hotx, -state->hoty, 0.0f);
+        if (state->rotation != 0.0f)
+            glRotatef(state->rotation, 0.0f, 0.0f, 1.0f);
+        glScalef(sx, sy, 1.0f);
+        glTranslatef(-state->hotx, state->hoty, 0.0f);
+        glTranslatef(0.0f, -480.0f, 0.0f);
         glBindTexture(GL_TEXTURE_2D, tex->id);
         glColor4f(renderR, renderG, renderB, alpha);
         glBegin(GL_QUADS);
-        float hx = state->hotx;
-        float hy = state->hoty;
-        glTexCoord2f(0, 1); glVertex2f(0 - hx, 0 - hy);
-        glTexCoord2f(1, 1); glVertex2f(tex->width - hx, 0 - hy);
-        glTexCoord2f(1, 0); glVertex2f(tex->width - hx, tex->height - hy);
-        glTexCoord2f(0, 0); glVertex2f(0 - hx, tex->height - hy);
+        glTexCoord2f(0, 1);
+        glVertex2f(0, 480.0f);
+        glTexCoord2f(1, 1);
+        glVertex2f((float)tex->width, 480.0f);
+        glTexCoord2f(1, 0);
+        glVertex2f((float)tex->width, 480.0f - (float)tex->height);
+        glTexCoord2f(0, 0);
+        glVertex2f(0, 480.0f - (float)tex->height);
         glEnd();
         glPopMatrix();
         glColor4f(1, 1, 1, 1);
@@ -553,28 +589,33 @@ void BGA_SetEventLayer(int bgaIndex, int frame, int layerIdx) {
     BGALayer* layer = &pic->layers[layerIdx];
     if (layer->kfCount == 0) return;
 
-    BGAKeyframe* state = interpolate_layer(layer, frame);
+    float animT = 0.0f;
+    BGAKeyframe* state = interpolate_layer(layer, frame, &animT);
     if (!state) return;
 
     if (state->type == 0 || state->a <= 0.01f) return;
-    renderOneLayer(layer, state, pic->version);
+    renderOneLayer(layer, state, pic->version, animT);
 }
 
 void BGA_SetEventFrame(int bgaIndex, int frame) {
     if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
     BGAPicture* pic = &g_game.bgaPics[bgaIndex];
 
+    if (g_game.frameCounter % 60 == 0) {
+        Log_Print("BGA_RENDER: pic=%d frame=%d layers=%d\n", bgaIndex, frame, pic->layerCount);
+    }
+
+    Log_Print("BGA_EVENTFRAME: bgaIndex=%d frame=%d layerCount=%d\n", bgaIndex, frame, pic->layerCount);
     for (int i = 0; i < pic->layerCount; i++) {
+        BGALayer* layer = &pic->layers[i];
+        Log_Print("  layer %d: '%s' kfCount=%d isSPR=%d ani=%d pat=%dx%d\n",
+                  i, layer->filename, layer->kfCount, layer->isSPR, layer->aniFrameCount, layer->patCols, layer->patRows);
         BGA_SetEventLayer(bgaIndex, frame, i);
     }
 }
 
 void BGA_Render(int bgaIndex, int frame) {
-    bool isMenu = (g_game.state == STATE_RESET_FLOW ||
-                   g_game.state == STATE_MENU_FADE_IN ||
-                   g_game.state == STATE_MENU_IDLE ||
-                   g_game.state == STATE_MENU_INPUT_WAIT ||
-                   g_game.state == STATE_MENU_ENTER ||
+    bool isMenu = (g_game.state == STATE_MENU_ENTER ||
                    g_game.state == STATE_MENU_INPUT);
 
     if (isMenu) {

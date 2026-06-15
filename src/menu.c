@@ -4,6 +4,11 @@
 static int g_menuOption = 0;
 int g_menuSelection = 0; // 0=none, 1=UL(Start), 2=UR(Options), 3=DL(Credits), 4=DR(Exit)
 
+void Menu_ResetState(void) {
+    g_menuOption = 0;
+    g_menuSelection = 0;
+}
+
 static bool padHit(int player, PadButton btn) {
     return Input_IsPadHit(player, btn);
 }
@@ -16,69 +21,48 @@ static void subEnter(GameState state) {
 void Gamestate_UpdateMenu(float dt) {
     (void)dt;
     switch (g_game.state) {
-    case STATE_RESET_FLOW:
-        if (g_game.stateFrame > 30) {
-            g_menuOption = 0;
-            g_menuSelection = 0;
-            g_game.confirmActive = false;
-            g_game.confirmTimer = 0;
-            subEnter(STATE_MENU_IDLE);
-        }
-        break;
-    case STATE_MENU_IDLE:
-        if (g_game.stateFrame > 60) {
-            g_game.input.padPrevState[0] = 0;
-            g_game.input.padPrevState[1] = 0;
-            g_game.input.padState[0] = 0;
-            g_game.input.padState[1] = 0;
-            subEnter(STATE_MENU_INPUT_WAIT);
-        }
-        break;
-    case STATE_MENU_INPUT_WAIT:
-        if (g_game.stateFrame > 30)
-            subEnter(STATE_MENU_ENTER);
-        break;
     case STATE_MENU_ENTER:
-        if (g_game.stateFrame > 15)
-            subEnter(STATE_MENU_INPUT);
+        g_game.state = STATE_MENU_INPUT;
         break;
     case STATE_MENU_INPUT:
+        if (g_game.confirmActive) {
+            g_game.confirmTimer++;
+            float a = g_game.confirmTimer * (1.0f / 60.0f);
+            if (a > 1.0f) a = 1.0f;
+            Render_SetGlobalColor(0, 0, 0, a);
+            if (a >= 1.0f) {
+                g_game.confirmActive = false;
+                g_game.confirmTimer = 0;
+                GameState target = g_game.fadeTarget;
+                g_game.fadeTarget = 0;
+                Game_ChangeState(target);
+            }
+            return;
+        }
         if (g_menuSelection == 0) {
-            if (padHit(0, PAD_UL)) { g_menuSelection = 1; return; }
-            if (padHit(0, PAD_UR)) { g_menuSelection = 2; return; }
-            if (padHit(0, PAD_DL)) { g_menuSelection = 3; return; }
-            if (padHit(0, PAD_DR)) { g_menuSelection = 4; return; }
+            if (padHit(0, PAD_UL)) { Log_Print("MENU: sel UL->1\n"); g_menuSelection = 1; return; }
+            if (padHit(0, PAD_UR)) { Log_Print("MENU: sel UR->2\n"); g_menuSelection = 2; return; }
+            if (padHit(0, PAD_DL)) { Log_Print("MENU: sel DL->3\n"); g_menuSelection = 3; return; }
+            if (padHit(0, PAD_DR)) { Log_Print("MENU: sel DR->4\n"); g_menuSelection = 4; return; }
         } else {
             if (padHit(0, PAD_UL)) {
-                if (g_menuSelection == 1) { g_game.fadeTarget = STATE_SONG_SELECT; Render_SetGlobalColor(0,0,0,0); Game_ChangeState(STATE_MENU_FADE_IN); return; }
-                g_menuSelection = 1; return;
+                if (g_menuSelection == 1) { Log_Print("MENU: confirm UL\n"); g_game.confirmActive = true; g_game.confirmTimer = 0; g_game.fadeTarget = STATE_SONG_SELECT; return; }
+                Log_Print("MENU: change UL->1\n"); g_menuSelection = 1; return;
             }
             if (padHit(0, PAD_UR)) {
-                if (g_menuSelection == 2) { g_game.fadeTarget = STATE_GAMEOPTION_ENTER; Render_SetGlobalColor(0,0,0,0); Game_ChangeState(STATE_MENU_FADE_IN); return; }
-                g_menuSelection = 2; return;
+                if (g_menuSelection == 2) { Log_Print("MENU: confirm UR\n"); g_game.confirmActive = true; g_game.confirmTimer = 0; g_game.fadeTarget = STATE_GAMEOPTION_ENTER; return; }
+                Log_Print("MENU: change UR->2\n"); g_menuSelection = 2; return;
             }
             if (padHit(0, PAD_DL)) {
-                if (g_menuSelection == 3) { return; }
-                g_menuSelection = 3; return;
+                if (g_menuSelection == 3) { Log_Print("MENU: confirm DL -> STAFF\n"); g_game.confirmActive = true; g_game.confirmTimer = 0; g_game.fadeTarget = STATE_STAFF_ENTER; return; }
+                Log_Print("MENU: change DL->3\n"); g_menuSelection = 3; return;
             }
             if (padHit(0, PAD_DR)) {
-                if (g_menuSelection == 4) { Render_SetGlobalColor(0,0,0,0.01f); Game_ChangeState(STATE_EXIT); return; }
-                g_menuSelection = 4; return;
+                if (g_menuSelection == 4) { Game_ChangeState(STATE_EXIT); return; }
+                Log_Print("MENU: change DR->4\n"); g_menuSelection = 4; return;
             }
         }
         break;
-    case STATE_MENU_FADE_IN: {
-        float a = g_game.globalColorA + dt * 1.0f;
-        if (a >= 1.0f) {
-            GameState target = g_game.fadeTarget;
-            Render_SetGlobalColor(0, 0, 0, 0);
-            g_game.fadeTarget = 0;
-            Game_ChangeState(target);
-        } else {
-            Render_SetGlobalColor(0, 0, 0, a);
-        }
-        break;
-    }
     default:
         break;
     }
@@ -116,9 +100,7 @@ static const int MENU_MODE_FRAME[] = {
 
 void Gamestate_RenderMenu(int bgaIndex, int frame) {
     if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
-    if (g_game.state != STATE_RESET_FLOW && g_game.state != STATE_MENU_FADE_IN &&
-        g_game.state != STATE_MENU_IDLE && g_game.state != STATE_MENU_INPUT_WAIT &&
-        g_game.state != STATE_MENU_ENTER && g_game.state != STATE_MENU_INPUT &&
+    if (g_game.state != STATE_MENU_ENTER && g_game.state != STATE_MENU_INPUT &&
         g_game.state != STATE_EXIT) return;
 
     BGAPicture* pic = &g_game.bgaPics[bgaIndex];

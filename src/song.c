@@ -63,6 +63,7 @@ bool Song_LoadDatabase(const char* path, SongDB* db)
             while (*modeName == ' ' || *modeName == '\t') modeName++;
 
             if (strcmp(modeName, "END") == 0) break;
+            if (strcmp(modeName, "MENU") == 0) { currentMode = -1; continue; }
 
             if (db->modeCount < MAX_MODES)
             {

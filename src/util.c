@@ -68,10 +68,7 @@ const char* State_ToString(GameState state) {
         case STATE_WARNING_END: return "WARNING_END";
         case STATE_LOGO_ENTER: return "LOGO_ENTER";
         case STATE_LOGO_UPDATE: return "LOGO_UPDATE";
-        case STATE_RESET_FLOW: return "RESET_FLOW";
-        case STATE_MENU_FADE_IN: return "MENU_FADE_IN";
-        case STATE_MENU_IDLE: return "MENU_IDLE";
-        case STATE_MENU_INPUT_WAIT: return "MENU_INPUT_WAIT";
+
         case STATE_MENU_ENTER: return "MENU_ENTER";
         case STATE_MENU_INPUT: return "MENU_INPUT";
         case STATE_RESET_WARNING: return "RESET_WARNING";
@@ -119,7 +116,9 @@ void Sprite_DrawTile(int tileIdx, float x, float y, float scaleX, float scaleY, 
     float u2 = t->flipH ? (float)t->u1 : (float)t->u2;
     float v2 = t->flipV ? (float)t->v1 : (float)t->v2;
 
-    if (t->u1 == 0 && t->v1 == 0 && t->u2 == 256 && t->v2 == 256 && !t->flipH && !t->flipV)
+    int tw = Texture_GetWidth(t->texId);
+    int th = Texture_GetHeight(t->texId);
+    if (t->u1 == 0 && t->v1 == 0 && t->u2 == tw && t->v2 == th && !t->flipH && !t->flipV)
     {
         float w = (float)t->srcW * scaleX;
         float h = (float)t->srcH * scaleY;

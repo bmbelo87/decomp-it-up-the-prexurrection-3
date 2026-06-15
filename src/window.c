@@ -120,7 +120,7 @@ bool Window_Create(HINSTANCE hInstance, int width, int height, bool fullscreen) 
     glViewport(0, 0, g_game.screenWidth, g_game.screenHeight);
     glMatrixMode(GL_PROJECTION);
     glLoadIdentity();
-    gluOrtho2D(0, g_game.screenWidth, g_game.screenHeight, 0);
+    glOrtho(0, (GLdouble)g_game.screenWidth, 0, (GLdouble)g_game.screenHeight, 1.0, 0.0);
     glMatrixMode(GL_MODELVIEW);
     glLoadIdentity();
 
