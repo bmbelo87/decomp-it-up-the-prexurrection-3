@@ -1,4 +1,5 @@
 #include "pumpy.h"
+#include "vsl.h"
 
 extern bool Window_Create(HINSTANCE hInstance, int width, int height, bool fullscreen);
 extern void Window_Destroy(void);
@@ -233,6 +234,17 @@ void Game_Update(float dt) {
                 }
             }
         }
+    } else if (g_game.isVSL && g_vsl.active && g_game.bgaFrame < g_vsl.frameCount - 1) {
+        g_game.bgaTimer += dt;
+        if (g_game.bgaTimer >= 1.0f / 60.0f) {
+            g_game.bgaTimer -= 1.0f / 60.0f;
+            g_game.bgaFrame++;
+            static int lastFrameAdvLog = -1;
+            if (abs(g_game.bgaFrame - lastFrameAdvLog) >= 30) {
+                Log_Print("VSL: bgaFrame advanced to %d (timer=%.4f, dt=%.4f)\n", g_game.bgaFrame, g_game.bgaTimer, dt);
+                lastFrameAdvLog = g_game.bgaFrame;
+            }
+        }
     }
 
     switch (g_game.state) {
@@ -375,7 +387,9 @@ void Game_Render(void) {
         glColor4f(1, 1, 1, 1);
     }
 
-    if (g_game.bgaPicCount > 0 &&
+    if (g_game.isVSL && g_vsl.active) {
+        VSL_Render(g_game.bgaFrame);
+    } else if (g_game.bgaPicCount > 0 &&
         g_game.state != STATE_LOGO_SKIP &&
         g_game.state != STATE_GAMEOPTION_ENTER &&
         g_game.state != STATE_GAMEOPTION_ANIM &&
@@ -412,6 +426,15 @@ void Game_Render(void) {
     }
 
     if (g_game.showDebug) Render_StateInfo();
+    static int renderLogCount = 0;
+    if (g_game.isVSL && renderLogCount < 30) {
+        Log_Print("RENDER: state=%d isVSL=%d active=%d globalA=%.2f frame=%d fc=%d\n", g_game.state, g_game.isVSL, g_vsl.active, g_game.globalColorA, g_game.bgaFrame, g_vsl.frameCount);
+        renderLogCount++;
+    }
+    if (renderLogCount < 5) {
+        Log_Print("RENDER: state=%d isVSL=%d globalA=%.2f frame=%d\n", g_game.state, g_game.isVSL, g_game.globalColorA, g_game.bgaFrame);
+        renderLogCount++;
+    }
     Render_EndScene();
 }
 

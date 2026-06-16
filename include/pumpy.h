@@ -175,7 +175,7 @@ typedef struct {
     char name[16];
     char texture[64];
     int srcX, srcY, srcW, srcH;
-    int u1, v1, u2, v2;
+    float u1, v1, u2, v2;
     int texId;
     bool flipH, flipV;
 } SPRTileDef;
@@ -297,6 +297,7 @@ typedef struct {
     int optionCurrentItem; // 0-4
     int stageBreak;       // Stage Break global (0=OFF, 1=ON)
     int showHelp;         // Show Help global (0=OFF, 1=ON)
+    bool isVSL;           // true when current song uses 3D VSL instead of BGA
     
     bool showDebug;
     uint32_t timerId;
@@ -343,6 +344,7 @@ void Font_Shutdown(void);
 void Texture_Init(void);
 int Texture_Load(const char* name);
 int Texture_LoadFromMemory(const uint8_t* buf, uint32_t bufSize, const char* debugName);
+int Texture_LoadFromMemoryColorKey(const uint8_t* buf, uint32_t bufSize, const char* debugName);
 void Texture_Unload(int id);
 void Texture_Bind(int id);
 int Texture_GetWidth(int id);
@@ -455,5 +457,8 @@ int Resource_GetStateBGAIndex(const char* stateName);
 int Resource_SwitchBGA(const char* datName);
 uint8_t* Resource_DecryptENC1(const uint8_t* data, uint32_t dataSize, uint32_t* outSize);
 int Resource_LoadPNZ(const char* path);
+
+int loadTextureFromRES(const char* resName);
+int loadSPRFromRES(const char* name, int* outCols, int* outRows, int* outFlags);
 
 #endif

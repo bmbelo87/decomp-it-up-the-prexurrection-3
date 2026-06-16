@@ -26,6 +26,9 @@ add_executable(Pumpy WIN32
     src/input.c
     src/font.c
     src/bga.c
+    src/bga2_parser.c
+    src/vsl.c
+    src/df_resource.c
     src/util.c
     src/resource.c
     src/step.c
@@ -42,6 +45,9 @@ target_link_libraries(Pumpy
 
 add_executable(dump_bga2 tools/dump_bga2.c)
 add_executable(dump_kf tools/dump_kf.c)
+add_executable(dump_df tools/dump_df.c src/df_resource.c)
+target_include_directories(dump_df PRIVATE include)
+target_link_libraries(dump_df kernel32)
 
 add_custom_command(TARGET Pumpy POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Pumpy>/assets"

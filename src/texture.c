@@ -253,6 +253,54 @@ int Texture_LoadFromMemory(const uint8_t* buf, uint32_t bufSize, const char* deb
     return id;
 }
 
+int Texture_LoadFromMemoryColorKey(const uint8_t* buf, uint32_t bufSize, const char* debugName) {
+    char tmpDir[MAX_PATH];
+    GetTempPathA(MAX_PATH, tmpDir);
+    char tmpName[MAX_PATH];
+    snprintf(tmpName, sizeof(tmpName), "_tmp_%s", debugName);
+    char tmpPath[MAX_PATH];
+    snprintf(tmpPath, sizeof(tmpPath), "%s%s", tmpDir, tmpName);
+    FILE* f = fopen(tmpPath, "wb");
+    if (!f) return -1;
+    fwrite(buf, 1, bufSize, f);
+    fclose(f);
+
+    uint8_t* data = NULL;
+    int w = 0, h = 0;
+    if (!Texture_LoadWIC(tmpPath, &data, &w, &h)) { remove(tmpPath); return -1; }
+    remove(tmpPath);
+
+    int stride = w * 4;
+    for (int i = 0; i < h * stride; i += 4) {
+        uint8_t r = data[i];
+        uint8_t g = data[i+1];
+        uint8_t b = data[i+2];
+        uint8_t maxc = (r > g) ? ((r > b) ? r : b) : ((g > b) ? g : b);
+        if (maxc > 0) {
+            data[i] = (uint8_t)((r * 255 + maxc / 2) / maxc);
+            data[i+1] = (uint8_t)((g * 255 + maxc / 2) / maxc);
+            data[i+2] = (uint8_t)((b * 255 + maxc / 2) / maxc);
+        }
+        data[i+3] = maxc;
+    }
+
+    int idx = Texture_FindFree();
+    if (idx < 0) { free(data); return -1; }
+
+    Texture* t = &g_game.textures[idx];
+    t->id = Texture_CreateGL(data, w, h);
+    t->width = w;
+    t->height = h;
+    t->format = GL_RGBA;
+    t->inUse = true;
+    t->lastFrame = g_game.frameCounter;
+    strncpy(t->name, debugName, sizeof(t->name) - 1);
+    free(data);
+    g_game.textureCount++;
+    Log_Print("Texture: loaded CK '%s' (%dx%d) id=%d\n", debugName, w, h, idx);
+    return idx;
+}
+
 void Texture_Unload(int id) {
     if (id < 0 || id >= MAX_TEXTURES || !g_game.textures[id].inUse) return;
     Texture* t = &g_game.textures[id];

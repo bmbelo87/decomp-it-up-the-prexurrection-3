@@ -65,11 +65,6 @@ static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum, float* outA
     if (a->type == 0) result.a = 0;
     else if (b->type == 0 && t >= 1.0f) result.a = 0;
 
-    Log_Print("  interpolate '%s': frame=%d seg=%d a->frame=%d b->frame=%d t=%.3f x=%.1f y=%.1f sx=%.2f sy=%.2f rot=%.2f r=%.2f g=%.2f b=%.2f a=%.2f\n",
-              layer->filename, frameNum, segIdx, a->frame, b->frame, t,
-              result.x, result.y, result.scaleX, result.scaleY, result.rotation,
-              result.r, result.g, result.b, result.a);
-
     if (outAnimT) *outAnimT = t;
     return &result;
 }
@@ -318,15 +313,10 @@ static void drawTileQuad(SPRTileDef* tile, float offsetX, float offsetY) {
 
     glBindTexture(GL_TEXTURE_2D, glTexId);
 
-    float texW = (float)g_game.textures[tile->texId].width;
-    float texH = (float)g_game.textures[tile->texId].height;
-    if (texW <= 0) texW = 256.0f;
-    if (texH <= 0) texH = 256.0f;
-
-    float u1 = (float)tile->u1 / texW;
-    float v1 = (texH - (float)tile->v1) / texH;
-    float u2 = (float)tile->u2 / texW;
-    float v2 = (texH - (float)tile->v2) / texH;
+    float u1 = tile->u1;
+    float v1 = 1.0f - tile->v1;
+    float u2 = tile->u2;
+    float v2 = 1.0f - tile->v2;
 
     glBegin(GL_QUADS);
     glTexCoord2f(u1, v1);
@@ -458,21 +448,6 @@ static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, 
     float alpha = state->a;
     float renderR = state->r, renderG = state->g, renderB = state->b;
 
-    if (strstr(layer->filename, "m_mask1") || strstr(layer->filename, "M_MASK1")) {
-        Log_Print("M_MASK1: state x=%.1f y=%.1f hotx=%.1f hoty=%.1f scX=%.2f scY=%.2f a=%.2f type=%d blend=%d z=%d\n",
-                  state->x, state->y, state->hotx, state->hoty,
-                  state->scaleX, state->scaleY, state->a, state->type, state->blendMode, state->z_order);
-        Log_Print("M_MASK1: layer sprTileStart=%d sprTileCount=%d patCols=%d patRows=%d ani=%d\n",
-                  layer->sprTileStart, layer->sprTileCount,
-                  layer->patCols, layer->patRows, layer->aniFrameCount);
-        for (int ti = 0; ti < layer->sprTileCount && (layer->sprTileStart + ti) < g_game.sprTileCount; ti++) {
-            SPRTileDef* t = &g_game.sprTiles[layer->sprTileStart + ti];
-            Log_Print("M_MASK1: tile[%d] src=(%d,%d,%d,%d) uv=(%d,%d,%d,%d) tex=%d texId=%d\n",
-                      ti, t->srcX, t->srcY, t->srcW, t->srcH,
-                      t->u1, t->v1, t->u2, t->v2, t->texId);
-        }
-    }
-
     glEnable(GL_BLEND);
     if (state->blendMode == 1)
         glBlendFunc(GL_SRC_ALPHA, GL_ONE);
@@ -601,15 +576,7 @@ void BGA_SetEventFrame(int bgaIndex, int frame) {
     if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
     BGAPicture* pic = &g_game.bgaPics[bgaIndex];
 
-    if (g_game.frameCounter % 60 == 0) {
-        Log_Print("BGA_RENDER: pic=%d frame=%d layers=%d\n", bgaIndex, frame, pic->layerCount);
-    }
-
-    Log_Print("BGA_EVENTFRAME: bgaIndex=%d frame=%d layerCount=%d\n", bgaIndex, frame, pic->layerCount);
     for (int i = 0; i < pic->layerCount; i++) {
-        BGALayer* layer = &pic->layers[i];
-        Log_Print("  layer %d: '%s' kfCount=%d isSPR=%d ani=%d pat=%dx%d\n",
-                  i, layer->filename, layer->kfCount, layer->isSPR, layer->aniFrameCount, layer->patCols, layer->patRows);
         BGA_SetEventLayer(bgaIndex, frame, i);
     }
 }

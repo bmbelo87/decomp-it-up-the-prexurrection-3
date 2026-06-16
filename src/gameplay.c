@@ -1,4 +1,5 @@
 #include "pumpy.h"
+#include "vsl.h"
 
 #define APPROACH_SECONDS 1.8f
 #define RECEPTOR_Y 400
@@ -294,6 +295,8 @@ void Gameplay_Start(int songId)
     g_game.stats.life[1] = 100;
     memset(g_judgeDisplayTimer, 0, sizeof(g_judgeDisplayTimer));
 
+    g_game.bgaFrame = 0;
+
     int diffTier = g_game.selectedDifficulty;
     loadChartForSong(songId, diffTier);
 
@@ -305,6 +308,11 @@ void Gameplay_Enter(void)
     SongMode* mode = &g_game.songDB.modes[g_game.selectedModeIndex];
     int songId = mode->songIds[g_game.songSelectHighlighted];
     Gameplay_Start(songId);
+
+    char bgaPath[MAX_PATH];
+    snprintf(bgaPath, sizeof(bgaPath), "%s\\BGA\\%d.DAT", g_game.currentDirectory, songId);
+    Log_Print("Gameplay: loading BGA/VSL from '%s'\n", bgaPath);
+    Resource_LoadBGADirect(bgaPath);
 
     BGM_Stop();
     if (BGM_LoadAUD(songId, false)) {
@@ -339,16 +347,21 @@ void Gameplay_Update(float dt)
 
     g_songTime += dt;
 
-    if (g_game.bgaMaxFrame > 0) {
-        float bgaTime = (float)g_songTime + APPROACH_SECONDS;
-        if (bgaTime < 0.0f) bgaTime = 0.0f;
-        int newFrame = (int)(bgaTime * 60.0f);
-        if (newFrame > g_game.bgaMaxFrame) newFrame = g_game.bgaMaxFrame;
-        if (newFrame != g_game.bgaFrame) {
-            Log_Print("BGA: frame %d -> %d (songTime=%.3f, max=%d)\n",
-                      g_game.bgaFrame, newFrame, g_songTime, g_game.bgaMaxFrame);
+    {
+        int maxFrame = g_game.bgaMaxFrame;
+        if (g_game.isVSL && g_vsl.active && g_vsl.frameCount > 0)
+            maxFrame = g_vsl.frameCount - 1;
+        if (maxFrame > 0) {
+            float bgaTime = (float)g_songTime + APPROACH_SECONDS;
+            if (bgaTime < 0.0f) bgaTime = 0.0f;
+            int newFrame = (int)(bgaTime * 60.0f);
+            if (newFrame > maxFrame) newFrame = maxFrame;
+            if (newFrame != g_game.bgaFrame) {
+                Log_Print("BGA: frame %d -> %d (songTime=%.3f, max=%d)\n",
+                          g_game.bgaFrame, newFrame, g_songTime, maxFrame);
+            }
+            g_game.bgaFrame = newFrame;
         }
-        g_game.bgaFrame = newFrame;
     }
 
     if (g_game.frameCounter % 60 == 0) {

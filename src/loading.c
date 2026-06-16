@@ -1,6 +1,6 @@
 #include "pumpy.h"
 
-#define LOADING_DURATION_MS 3500
+#define LOADING_DURATION_MS 3550
 #define LOADING_FADE_MS 48
 
 static int g_pnzTexId = -1;

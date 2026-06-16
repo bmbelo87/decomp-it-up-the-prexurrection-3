@@ -307,8 +307,6 @@ Assets are copied automatically.
 2. Rename to: `PUMPYTESTE.EXE`
 3. Copy it to: `E:\Pumps\PREX3-Original` (for validation using original game assets).
 
-
-
 **After build and copy process, always ASK if I want to continue another thing.**
 
 ---
@@ -321,7 +319,7 @@ Use:
 Log_Print()
 ```
 
-Log location: `build/Debug/pumpy.log`
+Log location: `root/pumpy.log`
 
 ---
 

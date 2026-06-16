@@ -1,4 +1,6 @@
 #include "pumpy.h"
+#include "vsl.h"
+#include "df_resource.h"
 
 #define RES_MAGIC "RES"
 #define RES_KEY_INIT 0xEF
@@ -184,7 +186,7 @@ static bool hasExt(const char* name, const char* ext) {
     return _stricmp(name + nl - el, ext) == 0;
 }
 
-static int loadTextureFromRES(const char* resName) {
+int loadTextureFromRES(const char* resName) {
     int idx = RES_Find(resName);
     Log_Print("RES: tex find '%s' -> %d\n", resName, idx);
     if (idx < 0) {
@@ -590,7 +592,7 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
     return true;
 }
 
-static int loadSPRFromRES(const char* sprName, int* outPatCols, int* outPatRows, int* outPatFlags) {
+int loadSPRFromRES(const char* sprName, int* outPatCols, int* outPatRows, int* outPatFlags) {
     char sprFileName[64];
     const char* ext = strrchr(sprName, '.');
     if (ext && (_stricmp(ext, ".spr") == 0 || _stricmp(ext, ".sp2") == 0)) {
@@ -641,10 +643,6 @@ static int loadSPRFromRES(const char* sprName, int* outPatCols, int* outPatRows,
         t->srcY = spr.tiles[i].srcY;
         t->srcW = spr.tiles[i].srcW;
         t->srcH = spr.tiles[i].srcH;
-        t->u1 = spr.tiles[i].u1;
-        t->v1 = spr.tiles[i].v1;
-        t->u2 = spr.tiles[i].u2;
-        t->v2 = spr.tiles[i].v2;
         t->flipH = spr.tiles[i].flipH;
         t->flipV = spr.tiles[i].flipV;
         t->texId = -1;
@@ -658,11 +656,18 @@ static int loadSPRFromRES(const char* sprName, int* outPatCols, int* outPatRows,
 
         t->texId = loadTextureFromRES(texName);
 
-        if (strstr(sprFileName, "go_c04") || strstr(sprFileName, "GO_C04")) {
-            Log_Print("SPR: '%s' tile='%s' tex='%s' texId=%d src=(%d,%d,%d,%d) uv=(%d,%d,%d,%d)\n",
-                      sprFileName, t->name, t->texture, t->texId,
-                      t->srcX, t->srcY, t->srcW, t->srcH,
-                      t->u1, t->v1, t->u2, t->v2);
+        if (t->texId >= 0 && t->texId < MAX_TEXTURES && g_game.textures[t->texId].inUse) {
+            float texW = (float)g_game.textures[t->texId].width;
+            float texH = (float)g_game.textures[t->texId].height;
+            if (texW <= 0) texW = 256.0f;
+            if (texH <= 0) texH = 256.0f;
+            t->u1 = (float)spr.tiles[i].u1 / texW;
+            t->v1 = (float)spr.tiles[i].v1 / texH;
+            t->u2 = (float)spr.tiles[i].u2 / texW;
+            t->v2 = (float)spr.tiles[i].v2 / texH;
+        } else {
+            t->u1 = 0.0f; t->v1 = 0.0f;
+            t->u2 = 1.0f; t->v2 = 1.0f;
         }
 
         g_game.sprTileCount++;
@@ -753,6 +758,14 @@ bool Resource_LoadBGAByName(const char* datName) {
 }
 
 bool Resource_LoadBGADirect(const char* datPath) {
+    g_game.isVSL = false;
+
+    if (VSL_IsVSL(datPath)) {
+        g_game.isVSL = true;
+        bool result = VSL_Load(datPath);
+        return result;
+    }
+
     if (!RES_Open(datPath)) return false;
 
     int bgaIdx = -1;
@@ -1077,6 +1090,10 @@ int Resource_LoadPNZ(const char* path) {
 void Resource_ClearBGA(void)
 {
     BGA_Shutdown();
+    if (g_game.isVSL) {
+        VSL_Shutdown();
+        g_game.isVSL = false;
+    }
 }
 
 int Resource_SwitchBGA(const char* datName)
