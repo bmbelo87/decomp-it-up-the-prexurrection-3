@@ -43,6 +43,9 @@ target_link_libraries(Pumpy
     kernel32 user32 gdi32 advapi32 shell32
 )
 
+add_executable(test_step tools/test_step.c src/step.c src/zlibinflate.c)
+target_include_directories(test_step PRIVATE include)
+
 add_executable(dump_bga2 tools/dump_bga2.c)
 add_executable(dump_kf tools/dump_kf.c)
 add_executable(dump_df tools/dump_df.c src/df_resource.c)

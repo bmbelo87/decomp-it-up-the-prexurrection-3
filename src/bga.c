@@ -311,6 +311,7 @@ static void drawTileQuad(SPRTileDef* tile, float offsetX, float offsetY) {
     GLuint glTexId = (tile->texId >= 0 && tile->texId < MAX_TEXTURES && g_game.textures[tile->texId].inUse) ? g_game.textures[tile->texId].id : 0;
     if (!glTexId) return;
 
+    glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, glTexId);
 
     float u1 = tile->u1;
@@ -539,6 +540,7 @@ static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, 
         glScalef(sx, sy, 1.0f);
         glTranslatef(-state->hotx, state->hoty, 0.0f);
         glTranslatef(0.0f, -480.0f, 0.0f);
+        glEnable(GL_TEXTURE_2D);
         glBindTexture(GL_TEXTURE_2D, tex->id);
         glColor4f(renderR, renderG, renderB, alpha);
         glBegin(GL_QUADS);

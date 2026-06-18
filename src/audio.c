@@ -540,6 +540,7 @@ bool BGM_LoadAUD(int songId, bool preview) {
     return BGM_LoadAUDDirect(path);
 }
 
+static bool dshow_load(const char* mp3path);
 bool BGM_LoadAUDDirect(const char* path) {
     Log_Print("BGM: loading .AUD '%s'\n", path);
 
@@ -583,6 +584,17 @@ bool BGM_LoadAUDDirect(const char* path) {
     }
     fwrite(decData, 1, decSize, ftmp);
     fclose(ftmp);
+
+    // Try DirectShow first (faithful to original CLSID_FilterGraph + RenderFile)
+    strncpy(g_game.bgm.name, path, sizeof(g_game.bgm.name) - 1);
+    if (dshow_load(tmpPath)) {
+        free(decData);
+        g_game.bgm.playing = false;
+        Log_Print("BGM: loaded via DirectShow\n");
+        return true;
+    }
+
+    Log_Print("BGM: DirectShow failed, using MCI\n");
     free(decData);
 
     char cmd[MAX_PATH * 2];
@@ -595,12 +607,10 @@ bool BGM_LoadAUDDirect(const char* path) {
     }
 
     strncpy(g_game.bgm.mciPath, tmpPath, sizeof(g_game.bgm.mciPath) - 1);
-    strncpy(g_game.bgm.name, path, sizeof(g_game.bgm.name) - 1);
     g_game.bgm.useMCI = true;
     g_game.bgm.playing = false;
     g_game.bgm.looping = false;
     g_game.bgm.buffer = NULL;
-    g_game.bgm.dataSize = decSize;
 
     mciSendStringA("set pumpybgm time format milliseconds", NULL, 0, NULL);
     char buf[32] = {0};
@@ -615,7 +625,119 @@ bool BGM_LoadAUDDirect(const char* path) {
     return true;
 }
 
+// ---- DirectShow (fields stored here, NOT in BGM struct, to avoid layout shift) ----
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void*,const GUID*,void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(void*);
+    ULONG   (STDMETHODCALLTYPE *Release)(void*);
+    HRESULT (STDMETHODCALLTYPE *AddFilter)(void*,void*,LPCWSTR);
+    HRESULT (STDMETHODCALLTYPE *RemoveFilter)(void*,void*);
+    HRESULT (STDMETHODCALLTYPE *EnumFilters)(void*,void**);
+    HRESULT (STDMETHODCALLTYPE *FindFilterByName)(void*,LPCWSTR,void**);
+    HRESULT (STDMETHODCALLTYPE *ConnectDirect)(void*,void*,void*,const void*);
+    HRESULT (STDMETHODCALLTYPE *Reconnect)(void*,void*);
+    HRESULT (STDMETHODCALLTYPE *Disconnect)(void*,void*);
+    HRESULT (STDMETHODCALLTYPE *SetDefaultSyncSource)(void*);
+    HRESULT (STDMETHODCALLTYPE *Connect)(void*,void*,void*);
+    HRESULT (STDMETHODCALLTYPE *Render)(void*,void*);
+    HRESULT (STDMETHODCALLTYPE *RenderFile)(void*,LPCWSTR,LPCWSTR);
+} VtblGraph;
+
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void*,const GUID*,void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(void*);
+    ULONG   (STDMETHODCALLTYPE *Release)(void*);
+    HRESULT (STDMETHODCALLTYPE *GetTypeInfoCount)(void*,UINT*);
+    HRESULT (STDMETHODCALLTYPE *GetTypeInfo)(void*,UINT,LCID,void**);
+    HRESULT (STDMETHODCALLTYPE *GetIDsOfNames)(void*,const GUID*,OLECHAR**,UINT,LCID,DISPID*);
+    HRESULT (STDMETHODCALLTYPE *Invoke)(void*,DISPID,const GUID*,LCID,WORD,DISPPARAMS*,VARIANT*,EXCEPINFO*,UINT*);
+    HRESULT (STDMETHODCALLTYPE *Run)(void*);
+    HRESULT (STDMETHODCALLTYPE *Stop)(void*);
+    HRESULT (STDMETHODCALLTYPE *GetState)(void*,LONG,LONG*);
+} VtblControl;
+
+typedef struct {
+    HRESULT (STDMETHODCALLTYPE *QueryInterface)(void*,const GUID*,void**);
+    ULONG   (STDMETHODCALLTYPE *AddRef)(void*);
+    ULONG   (STDMETHODCALLTYPE *Release)(void*);
+    HRESULT (STDMETHODCALLTYPE *GetTypeInfoCount)(void*,UINT*);
+    HRESULT (STDMETHODCALLTYPE *GetTypeInfo)(void*,UINT,LCID,void**);
+    HRESULT (STDMETHODCALLTYPE *GetIDsOfNames)(void*,const GUID*,OLECHAR**,UINT,LCID,DISPID*);
+    HRESULT (STDMETHODCALLTYPE *Invoke)(void*,DISPID,const GUID*,LCID,WORD,DISPPARAMS*,VARIANT*,EXCEPINFO*,UINT*);
+    HRESULT (STDMETHODCALLTYPE *get_Duration)(void*,double*);
+    HRESULT (STDMETHODCALLTYPE *put_CurrentPosition)(void*,double);
+    HRESULT (STDMETHODCALLTYPE *get_CurrentPosition)(void*,double*);
+} VtblPos;
+
+static void* ds_graph  = NULL;
+static void* ds_ctrl   = NULL;
+static void* ds_pos    = NULL;
+static bool  ds_active = false;
+
+static bool dshow_load(const char* mp3path)
+{
+    void* pG = NULL, *pC = NULL, *pP = NULL;
+
+    // {E436EBB3-524F-11CE-9F53-0020AF0BA770}
+    GUID clsid = {0xE436EBB3,0x524F,0x11CE,{0x9F,0x53,0x00,0x20,0xAF,0x0B,0xA7,0x70}};
+    // IID_IGraphBuilder = {56A868A9-0AD4-11CE-B03A-0020AF0BA770}
+    GUID iidGB = {0x56A868A9,0x0AD4,0x11CE,{0xB0,0x3A,0x00,0x20,0xAF,0x0B,0xA7,0x70}};
+    // IID_IMediaControl = {56A868B1-0AD4-11CE-B03A-0020AF0BA770}
+    GUID iidMC = {0x56A868B1,0x0AD4,0x11CE,{0xB0,0x3A,0x00,0x20,0xAF,0x0B,0xA7,0x70}};
+    // IID_IMediaPosition = {56A868B2-0AD4-11CE-B03A-0020AF0BA770}
+    GUID iidMP = {0x56A868B2,0x0AD4,0x11CE,{0xB0,0x3A,0x00,0x20,0xAF,0x0B,0xA7,0x70}};
+
+    CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
+    Log_Print("DS: CoCreateInstance\n");
+    HRESULT hr = CoCreateInstance(&clsid, NULL, 1, &iidGB, &pG);
+    if (FAILED(hr)) { Log_Print("DS: CoCreateInstance failed hr=0x%08lx\n", hr); return false; }
+
+    hr = ((VtblGraph*)(*(void**)pG))->QueryInterface(pG, &iidMC, &pC);
+    if (FAILED(hr)) { ((VtblGraph*)(*(void**)pG))->Release(pG); return false; }
+
+    hr = ((VtblGraph*)(*(void**)pG))->QueryInterface(pG, &iidMP, &pP);
+    if (FAILED(hr)) { ((VtblGraph*)(*(void**)pG))->Release(pG); ((VtblGraph*)(*(void**)pC))->Release(pC); return false; }
+
+    WCHAR wpath[MAX_PATH];
+    MultiByteToWideChar(CP_ACP, 0, mp3path, -1, wpath, MAX_PATH);
+
+    hr = ((VtblGraph*)(*(void**)pG))->RenderFile(pG, wpath, NULL);
+    if (FAILED(hr)) {
+        Log_Print("DS: RenderFile failed 0x%08lx\n", hr);
+        ((VtblGraph*)(*(void**)pP))->Release(pP);
+        ((VtblGraph*)(*(void**)pC))->Release(pC);
+        ((VtblGraph*)(*(void**)pG))->Release(pG);
+        return false;
+    }
+
+    // Run graph immediately (original starts playback at RenderFile time)
+    ((VtblControl*)(*(void**)pC))->Run(pC);
+    Log_Print("DS: Run OK\n");
+
+    ds_graph  = pG;
+    ds_ctrl   = pC;
+    ds_pos    = pP;
+    ds_active = true;
+    Log_Print("DS: loaded OK\n");
+    return true;
+}
+
+static void dshow_stop(void) {
+    if (ds_ctrl) ((VtblControl*)(*(void**)ds_ctrl))->Stop(ds_ctrl);
+    if (ds_pos)  ((VtblGraph*)(*(void**)ds_pos))->Release(ds_pos);
+    if (ds_ctrl) ((VtblGraph*)(*(void**)ds_ctrl))->Release(ds_ctrl);
+    if (ds_graph)((VtblGraph*)(*(void**)ds_graph))->Release(ds_graph);
+    ds_graph = ds_ctrl = ds_pos = NULL;
+    ds_active = false;
+}
+
 void BGM_Play(bool loop) {
+    if (ds_active) {
+        // Graph already running (started in dshow_load)
+        g_game.bgm.playing = true;
+        g_game.bgm.looping = loop;
+        return;
+    }
     if (g_game.bgm.useMCI) {
         if (g_game.bgm.playing) BGM_Stop();
         mciSendStringA("seek pumpybgm to start", NULL, 0, NULL);
@@ -626,11 +748,7 @@ void BGM_Play(bool loop) {
     }
 
     if (!g_game.bgm.buffer) return;
-
-    if (g_game.bgm.playing) {
-        BGM_Stop();
-    }
-
+    if (g_game.bgm.playing) BGM_Stop();
     IDirectSoundBuffer_SetCurrentPosition(g_game.bgm.buffer, 0);
     HRESULT hr = IDirectSoundBuffer_Play(g_game.bgm.buffer, 0, 0, loop ? DSBPLAY_LOOPING : 0);
     if (SUCCEEDED(hr)) {
@@ -642,6 +760,7 @@ void BGM_Play(bool loop) {
 }
 
 void BGM_Stop(void) {
+    if (ds_active) { dshow_stop(); g_game.bgm.playing = false; return; }
     if (g_game.bgm.useMCI) {
         mciSendStringA("stop pumpybgm", NULL, 0, NULL);
         mciSendStringA("close pumpybgm", NULL, 0, NULL);
@@ -650,13 +769,24 @@ void BGM_Stop(void) {
     }
 
     if (!g_game.bgm.buffer || !g_game.bgm.playing) return;
-
     IDirectSoundBuffer_Stop(g_game.bgm.buffer);
     IDirectSoundBuffer_SetCurrentPosition(g_game.bgm.buffer, 0);
     g_game.bgm.playing = false;
 }
 
+uint32_t BGM_GetPositionMs(void) {
+    if (ds_pos) {
+        double pos = 0;
+        if (SUCCEEDED(((VtblPos*)(*(void**)ds_pos))->get_CurrentPosition(ds_pos, &pos)))
+            return (uint32_t)(pos * 1000.0);
+    }
+    return 0;
+}
+
+bool BGM_IsDSActive(void) { return ds_active; }
+
 bool BGM_IsPlaying(void) {
+    if (ds_active) return g_game.bgm.playing;
     if (g_game.bgm.useMCI) {
         char result[32] = {0};
         mciSendStringA("status pumpybgm mode", result, sizeof(result), NULL);
@@ -677,6 +807,7 @@ void BGM_SetVolume(long volume) {
 }
 
 void BGM_Shutdown(void) {
+    if (ds_active) { dshow_stop(); g_game.bgm.playing = false; g_game.bgm.name[0] = '\0'; return; }
     if (g_game.bgm.useMCI) {
         mciSendStringA("stop pumpybgm", NULL, 0, NULL);
         mciSendStringA("close pumpybgm", NULL, 0, NULL);

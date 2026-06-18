@@ -5,8 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SECTION_HEADER_SIZE 0xD0
-
 bool Step_LoadSong(const char* path, StepSong* song)
 {
     memset(song, 0, sizeof(StepSong));
@@ -16,125 +14,145 @@ bool Step_LoadSong(const char* path, StepSong* song)
 
     fseek(f, 0, SEEK_END);
     long fileSize = ftell(f);
-    if (fileSize < STX_OFFSET_TABLE + 36)
+    if (fileSize < STX_HEADER_SIZE)
     {
         fclose(f);
         return false;
     }
 
-    uint8_t* fileBuf = (uint8_t*)malloc(fileSize);
-    if (!fileBuf)
-    {
-        fclose(f);
-        return false;
-    }
+    uint8_t* header = (uint8_t*)malloc(STX_HEADER_SIZE);
+    if (!header) { fclose(f); return false; }
     fseek(f, 0, SEEK_SET);
-    fread(fileBuf, 1, fileSize, f);
-    fclose(f);
+    fread(header, 1, STX_HEADER_SIZE, f);
 
-    if (memcmp(fileBuf, STX_MAGIC, 4) != 0)
+    if (memcmp(header, STX_MAGIC, 4) != 0)
     {
-        free(fileBuf);
+        free(header); fclose(f);
         return false;
     }
 
-    int maxSkip = 64;
-    const char* nameSrc = (const char*)fileBuf + STX_TITLE_OFFSET;
-    while (maxSkip-- > 0 && *nameSrc == 0) nameSrc++;
-    if (*nameSrc)
+    const char* titlePtr = (const char*)header + STX_TITLE_OFFSET;
+    while (*titlePtr == 0 && titlePtr < (const char*)header + STX_OFFSET_TABLE)
+        titlePtr++;
+    if (*titlePtr)
     {
-        strncpy(song->title, nameSrc, sizeof(song->title) - 1);
+        strncpy(song->title, titlePtr, sizeof(song->title) - 1);
         song->title[sizeof(song->title) - 1] = '\0';
     }
-    else
+
+    uint32_t sectionOffsets[STX_SECTION_COUNT];
+    memcpy(sectionOffsets, header + STX_OFFSET_TABLE, STX_SECTION_COUNT * 4);
+    free(header);
+
+    for (int si = 0; si < STX_SECTION_COUNT; si++)
     {
-        song->title[0] = '\0';
-    }
+        uint32_t secOff = sectionOffsets[si];
+        if (secOff == 0 || secOff >= (uint32_t)fileSize) continue;
 
-    uint32_t sectionOffsets[9];
-    for (int i = 0; i < 9; i++)
-    {
-        sectionOffsets[i] = ((uint32_t*)&fileBuf[STX_OFFSET_TABLE])[i];
-    }
+        fseek(f, secOff, SEEK_SET);
 
-    for (int si = 3; si < 9; si++)
-    {
-        uint32_t secStart = sectionOffsets[si];
-        if (secStart == 0) continue;
+        uint8_t secHeader[STX_SECTION_HEADER];
+        if (fread(secHeader, 1, STX_SECTION_HEADER, f) != STX_SECTION_HEADER)
+            continue;
 
-        uint32_t secEnd = (si < 8) ? sectionOffsets[si + 1] : (uint32_t)fileSize;
-        if (secEnd > (uint32_t)fileSize) secEnd = (uint32_t)fileSize;
+        uint32_t compSize;
+        memcpy(&compSize, secHeader + STX_SECTION_HEADER - 4, 4);
+        if (compSize == 0 || compSize > (uint32_t)(fileSize - secOff - STX_SECTION_HEADER))
+            continue;
 
-        uint32_t secLen = secEnd - secStart;
-        if (secLen <= SECTION_HEADER_SIZE) continue;
-
-        uint32_t dataStart = secStart + SECTION_HEADER_SIZE;
-        uint32_t dataEnd = secEnd;
-        uint32_t pos = dataStart;
-
-        while (pos < dataEnd && song->chartCount < STX_CHART_MAX)
+        uint8_t* compData = (uint8_t*)malloc(compSize);
+        if (!compData || fread(compData, 1, compSize, f) != compSize)
         {
-            uint32_t remaining = dataEnd - pos;
-            if (remaining < 6) break;
-
-            uint8_t* decompBuf = (uint8_t*)malloc(65536);
-            if (!decompBuf) break;
-
-            uint32_t decompLen = 65536;
-            uint32_t inConsumed = 0;
-            int ret = zlib_decompress_ex(fileBuf + pos, remaining, decompBuf, &decompLen, &inConsumed);
-
-            if (ret != 0 || decompLen < 16)
-            {
-                free(decompBuf);
-                pos++;
-                continue;
-            }
-
-            float bpm;
-            uint32_t difficulty, subdiv;
-            memcpy(&bpm, decompBuf, 4);
-            memcpy(&difficulty, decompBuf + 4, 4);
-            memcpy(&subdiv, decompBuf + 8, 4);
-
-            uint32_t dataBytes = decompLen - 16;
-            uint32_t count = dataBytes / STEP_ROW_SIZE;
-
-            StepChart* chart = &song->charts[song->chartCount];
-            chart->bpm = bpm;
-            chart->difficulty = difficulty;
-            chart->subdiv = subdiv;
-            chart->rowCount = count;
-            chart->rows = (StepRow*)malloc(count * sizeof(StepRow));
-            if (!chart->rows)
-            {
-                free(decompBuf);
-                pos++;
-                continue;
-            }
-
-            for (uint32_t ri = 0; ri < count; ri++)
-            {
-                const uint8_t* src = decompBuf + 16 + ri * STEP_ROW_SIZE;
-                chart->rows[ri].half1.l = src[0];
-                chart->rows[ri].half1.d = src[1];
-                chart->rows[ri].half1.u = src[2];
-                chart->rows[ri].half1.r = src[3];
-                chart->rows[ri].half1.c = src[4];
-                chart->rows[ri].half2.l = src[8];
-                chart->rows[ri].half2.d = src[9];
-                chart->rows[ri].half2.u = src[10];
-                chart->rows[ri].half2.r = src[11];
-                chart->rows[ri].half2.c = src[12];
-            }
-
-            song->chartCount++;
-            free(decompBuf);
-            pos += inConsumed;
+            free(compData);
+            continue;
         }
+
+        uint8_t* decompBuf = (uint8_t*)malloc(65536);
+        if (!decompBuf) { free(compData); continue; }
+
+        uint32_t decompLen = 65536;
+        uint32_t inConsumed = 0;
+        int ret = zlib_decompress_ex(compData, compSize, decompBuf, &decompLen, &inConsumed);
+        free(compData);
+
+        if (ret != 0 || decompLen < STX_GRID_OFFSET + STX_ROW_SIZE)
+        {
+            free(decompBuf);
+            continue;
+        }
+
+        float bpm;
+        uint32_t beatPerMeasure, beatSplit;
+        int32_t delay;
+        memcpy(&bpm, decompBuf, 4);
+        memcpy(&beatPerMeasure, decompBuf + 4, 4);
+        memcpy(&beatSplit, decompBuf + 8, 4);
+        memcpy(&delay, decompBuf + 12, 4);
+
+        uint32_t rowCount;
+        memcpy(&rowCount, decompBuf + STX_DECOMP_HEADER, 4);
+
+        uint32_t dataBytes = (uint32_t)(decompLen - STX_GRID_OFFSET);
+        uint32_t expectedRows = dataBytes / STX_ROW_SIZE;
+        if (rowCount > expectedRows)
+            rowCount = expectedRows;
+        if (rowCount == 0)
+        {
+            free(decompBuf);
+            continue;
+        }
+
+        int chartIdx = song->chartCount;
+        StepChart* chart = &song->charts[chartIdx];
+        chart->bpm = bpm;
+        chart->beatPerMeasure = beatPerMeasure;
+        chart->beatSplit = beatSplit;
+        chart->delay = delay;
+        chart->rowCount = rowCount;
+
+        bool mirror = true;
+        chart->panelCount = STEP_PANELS_SINGLE;
+        if (si == 3 || si == 5 || si == 6)
+        {
+            chart->panelCount = STEP_PANELS_DOUBLE;
+            mirror = false;
+        }
+
+        chart->rows = (StepRow*)malloc(rowCount * sizeof(StepRow));
+        if (!chart->rows) { free(decompBuf); continue; }
+
+        for (uint32_t ri = 0; ri < rowCount; ri++)
+        {
+            const uint8_t* src = decompBuf + STX_GRID_OFFSET + ri * STX_ROW_SIZE;
+            chart->rows[ri].half1.dl = src[0];
+            chart->rows[ri].half1.ul = src[1];
+            chart->rows[ri].half1.cn = src[2];
+            chart->rows[ri].half1.ur = src[3];
+            chart->rows[ri].half1.dr = src[4];
+
+            if (mirror)
+            {
+                chart->rows[ri].half2.dl = src[0];
+                chart->rows[ri].half2.ul = src[1];
+                chart->rows[ri].half2.cn = src[2];
+                chart->rows[ri].half2.ur = src[3];
+                chart->rows[ri].half2.dr = src[4];
+            }
+            else
+            {
+                chart->rows[ri].half2.dl = src[5];
+                chart->rows[ri].half2.ul = src[6];
+                chart->rows[ri].half2.cn = src[7];
+                chart->rows[ri].half2.ur = src[8];
+                chart->rows[ri].half2.dr = src[9];
+            }
+        }
+
+        song->chartCount++;
+        free(decompBuf);
     }
 
-    free(fileBuf);
+    fclose(f);
     return song->chartCount > 0;
 }
 
@@ -148,12 +166,19 @@ void Step_FreeSong(StepSong* song)
     song->chartCount = 0;
 }
 
-int Step_FindChart(const StepSong* song, uint32_t difficulty)
+int Step_SelectChart(const char* modeName, int fallbackSection)
 {
-    for (int i = 0; i < song->chartCount; i++)
-    {
-        if (song->charts[i].difficulty == difficulty)
-            return i;
-    }
-    return -1;
+    if (modeName == NULL) return fallbackSection;
+
+    if (_stricmp(modeName, "PRACTICE") == 0) return 0;
+    if (_stricmp(modeName, "NORMAL") == 0) return 1;
+    if (_stricmp(modeName, "HARD") == 0) return 2;
+    if (_stricmp(modeName, "NIGHTMARE") == 0) return 3;
+    if (_stricmp(modeName, "CRAZY") == 0) return 4;
+    if (_stricmp(modeName, "FULLDOUBLE") == 0) return 5;
+    if (_stricmp(modeName, "HALFDOUBLE") == 0) return 6;
+    if (_stricmp(modeName, "DIVISION") == 0) return 7;
+    if (_stricmp(modeName, "LIGHTMAP") == 0) return 8;
+
+    return fallbackSection;
 }

@@ -472,8 +472,6 @@ void VSL_Render(int frame) {
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
-    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
-
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
     glLoadIdentity();
@@ -487,6 +485,9 @@ void VSL_Render(int frame) {
     // Blend normal (herdado pelo render, mas garantimos aqui)
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glDisable(GL_LIGHTING);
+    glDisable(GL_LIGHT0);
 
     for (int layer = 0; layer < 3; layer++) {
         int mi = fr->meshIdx[layer];

@@ -637,7 +637,14 @@ int loadSPRFromRES(const char* sprName, int* outPatCols, int* outPatRows, int* o
 
     for (int i = 0; i < spr.tileCount && g_game.sprTileCount < MAX_SPR_TILES; i++) {
         SPRTileDef* t = &g_game.sprTiles[g_game.sprTileCount];
-        strncpy(t->name, spr.tiles[i].name, sizeof(t->name) - 1);
+        // Nome do tile = nome do arquivo SPR + "_" + tileIndex
+        // Para que possamos encontrar tiles por nome do arquivo SPR
+        snprintf(t->name, sizeof(t->name), "%s_%d", sprFileName, i);
+        // Remove extensão do nome
+        for (int ci = 0; t->name[ci]; ci++) {
+            if (t->name[ci] >= 'A' && t->name[ci] <= 'Z')
+                t->name[ci] = (char)(t->name[ci] + 32);
+        }
         strncpy(t->texture, spr.tiles[i].texture, sizeof(t->texture) - 1);
         t->srcX = spr.tiles[i].srcX;
         t->srcY = spr.tiles[i].srcY;
@@ -696,6 +703,19 @@ static void loadAllSPRsFromRES(void) {
             loadSPRFromRES(name, NULL, NULL, NULL);
         }
     }
+}
+
+int Resource_LoadAllSPRs(const char* datPath) {
+    if (!RES_Open(datPath)) {
+        Log_Print("RES: failed to open '%s' for SPR loading\n", datPath);
+        return 0;
+    }
+    int startCount = g_game.sprTileCount;
+    loadAllSPRsFromRES();
+    RES_Close();
+    int loaded = g_game.sprTileCount - startCount;
+    Log_Print("RES: loaded %d SPR tiles from '%s'\n", loaded, datPath);
+    return loaded;
 }
 
 bool Resource_LoadBGAByName(const char* datName) {

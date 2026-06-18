@@ -2,13 +2,11 @@
 #include "vsl.h"
 
 #define APPROACH_SECONDS 1.8f
-#define RECEPTOR_Y 400
-#define ARROW_TOP_Y 40
+
 #define PANEL_SIZE 30
 #define P1_CENTER_X 160
 #define P2_CENTER_X 480
-#define P1_RECEPTOR_LX 100
-#define P1_RECEPTOR_RX 220
+
 #define MISS_WINDOW 0.25f
 
 #define JUDGE_PERFECT  0.055f
@@ -47,6 +45,7 @@ static bool g_songLoaded;
 static double g_songTime;
 static double g_secondsPerRow;
 static double g_totalSongSeconds;
+static double g_chartDelay;
 static bool g_autoplay;
 
 static NoteHit g_noteHits[2][5][2048];
@@ -57,7 +56,7 @@ static float g_judgeDisplayTimer[2];
 static JudgeType g_judgeDisplayType[2];
 static int g_judgeDisplayCombo[2];
 
-static bool loadChartForSong(int songId, int diffTier)
+static bool loadChartForSong(int songId, int diffTier, const char* modeName)
 {
     g_songLoaded = false;
     g_chart = NULL;
@@ -66,7 +65,7 @@ static bool loadChartForSong(int songId, int diffTier)
     snprintf(stxPath, sizeof(stxPath), "%s\\STEP\\%d.STX",
              g_game.currentDirectory, songId);
 
-    Log_Print("GP: loading '%s' (song %d, diff tier %d)\n", stxPath, songId, diffTier);
+    Log_Print("GP: loading '%s' (song %d, mode=%s)\n", stxPath, songId, modeName ? modeName : "?");
 
     if (!Step_LoadSong(stxPath, &g_playSong))
     {
@@ -74,30 +73,31 @@ static bool loadChartForSong(int songId, int diffTier)
         return false;
     }
 
-    g_chartIdx = Step_FindChart(&g_playSong, (uint32_t)diffTier);
-    if (g_chartIdx < 0)
+    g_chartIdx = Step_SelectChart(modeName, 1);
+    if (g_chartIdx < 0 || g_chartIdx >= g_playSong.chartCount)
     {
-        Log_Print("GP: no chart for diff=%d, using chart 0\n", diffTier);
+        Log_Print("GP: chart index %d out of range, using 0\n", g_chartIdx);
         g_chartIdx = 0;
     }
 
     g_chart = &g_playSong.charts[g_chartIdx];
-    g_songTime = -APPROACH_SECONDS;
+    g_songTime = 0.0;
+    g_chartDelay = g_chart->delay / 100.0;
     float bpm = g_chart->bpm;
     if (bpm <= 0) bpm = 120.0f;
-    uint32_t subdiv = g_chart->subdiv;
+    uint32_t subdiv = g_chart->beatSplit;
     if (subdiv == 0) subdiv = 4;
 
     g_secondsPerRow = 60.0 / ((double)bpm * (double)subdiv);
-    g_totalSongSeconds = g_chart->rowCount * g_secondsPerRow;
+    g_totalSongSeconds = g_chart->rowCount * g_secondsPerRow + g_chartDelay;
     g_autoplay = g_game.input.autoplay;
 
     memset(g_noteHits, 0, sizeof(g_noteHits));
     memset(g_noteHitCount, 0, sizeof(g_noteHitCount));
     memset(g_nextNoteRow, 0, sizeof(g_nextNoteRow));
 
-    Log_Print("GP: chart %d: BPM=%.1f subdiv=%d rows=%d time=%.1fs spR=%.4f\n",
-        g_chartIdx, bpm, subdiv, g_chart->rowCount, g_totalSongSeconds, g_secondsPerRow);
+    Log_Print("GP: chart %d: BPM=%.1f subdiv=%d rows=%d panels=%d time=%.1fs spR=%.4f\n",
+        g_chartIdx, bpm, subdiv, g_chart->rowCount, g_chart->panelCount, g_totalSongSeconds, g_secondsPerRow);
     g_songLoaded = true;
     return true;
 }
@@ -107,7 +107,7 @@ static void loadChart(void)
     SongMode* mode = &g_game.songDB.modes[g_game.selectedModeIndex];
     int songId = mode->songIds[g_game.songSelectHighlighted];
     int diffTier = mode->difficulties[g_game.songSelectHighlighted];
-    loadChartForSong(songId, diffTier);
+    loadChartForSong(songId, diffTier, mode->name);
 }
 
 static JudgeType evaluateTiming(double diff)
@@ -124,10 +124,10 @@ static int getPanelForButton(PadButton btn)
 {
     switch (btn)
     {
-        case PAD_UL: return 0;
-        case PAD_UR: return 1;
+        case PAD_DL: return 0;
+        case PAD_UL: return 1;
         case PAD_C:  return 2;
-        case PAD_DL: return 3;
+        case PAD_UR: return 3;
         case PAD_DR: return 4;
         default: return -1;
     }
@@ -135,25 +135,13 @@ static int getPanelForButton(PadButton btn)
 
 static uint8_t getPanelValue(StepRow* row, int panel, int player)
 {
-    if (player == 0)
-    {
-        switch (panel) {
-            case 0: return row->half1.l;
-            case 1: return row->half1.d;
-            case 2: return row->half1.u;
-            case 3: return row->half1.r;
-            case 4: return row->half1.c;
-        }
-    }
-    else
-    {
-        switch (panel) {
-            case 0: return row->half2.l;
-            case 1: return row->half2.d;
-            case 2: return row->half2.u;
-            case 3: return row->half2.r;
-            case 4: return row->half2.c;
-        }
+    StepHalf* h = (player == 0) ? &row->half1 : &row->half2;
+    switch (panel) {
+        case 0: return h->dl;
+        case 1: return h->ul;
+        case 2: return h->cn;
+        case 3: return h->ur;
+        case 4: return h->dr;
     }
     return 0;
 }
@@ -164,9 +152,10 @@ static void processInput(int player)
 
     for (int b = 0; b < PAD_BUTTONS_PER_PLAYER; b++)
     {
-        if (!Input_IsPadHit(player, (PadButton)b)) continue;
         int panel = getPanelForButton((PadButton)b);
         if (panel < 0) continue;
+
+        if (!Input_IsPadHit(player, (PadButton)b)) continue;
 
         double bestDiff = 999;
         int bestRow = -1;
@@ -176,7 +165,7 @@ static void processInput(int player)
             uint8_t val = getPanelValue(&g_chart->rows[ri], panel, player);
             if (!val) continue;
 
-            double rowTime = ri * g_secondsPerRow;
+            double rowTime = ri * g_secondsPerRow + g_chartDelay;
             double diff = g_songTime - rowTime;
             if (diff < -JUDGE_BAD) break;
             if (diff > JUDGE_BAD) { g_nextNoteRow[player][panel] = ri + 1; continue; }
@@ -232,7 +221,7 @@ static void processAutoplay(void)
                 uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
                 if (!val) continue;
 
-                double rowTime = ri * g_secondsPerRow;
+                double rowTime = ri * g_secondsPerRow + g_chartDelay;
                 double diff = g_songTime - rowTime;
                 if (diff < -JUDGE_PERFECT) break;
                 if (diff > JUDGE_PERFECT) { g_nextNoteRow[p][panel] = ri + 1; continue; }
@@ -271,7 +260,7 @@ static void processMisses(void)
                 uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
                 if (!val) continue;
 
-                double rowTime = ri * g_secondsPerRow;
+                double rowTime = ri * g_secondsPerRow + g_chartDelay;
                 if (missThreshold <= rowTime) break;
 
                 g_nextNoteRow[p][panel] = ri + 1;
@@ -297,8 +286,9 @@ void Gameplay_Start(int songId)
 
     g_game.bgaFrame = 0;
 
+    SongMode* mode = &g_game.songDB.modes[g_game.selectedModeIndex];
     int diffTier = g_game.selectedDifficulty;
-    loadChartForSong(songId, diffTier);
+    loadChartForSong(songId, diffTier, mode->name);
 
     Log_Print("Gameplay: started song %d\n", songId);
 }
@@ -318,14 +308,14 @@ void Gameplay_Enter(void)
     if (BGM_LoadAUD(songId, false)) {
         BGM_Play(false);
     }
-    
+
     Log_Print("Gameplay: enter\n");
 }
 
 void Gameplay_Exit(void)
 {
     BGM_Stop();
-    
+
     if (g_songLoaded)
     {
         Step_FreeSong(&g_playSong);
@@ -345,44 +335,26 @@ void Gameplay_Update(float dt)
         Log_Print("GP: autoplay %s\n", g_autoplay ? "ON" : "OFF");
     }
 
-    g_songTime += dt;
+    if (BGM_IsDSActive()) {
+        uint32_t posMs = BGM_GetPositionMs();
+        if (posMs > 100) // ignore first 100ms (startup)
+            g_songTime = posMs / 1000.0 - 0.150; // compensate audio buffer
+        else
+            g_songTime += dt;
+    } else {
+        g_songTime += dt;
+    }
 
     {
         int maxFrame = g_game.bgaMaxFrame;
         if (g_game.isVSL && g_vsl.active && g_vsl.frameCount > 0)
             maxFrame = g_vsl.frameCount - 1;
         if (maxFrame > 0) {
-            float bgaTime = (float)g_songTime + APPROACH_SECONDS;
+            float bgaTime = (float)g_songTime;
             if (bgaTime < 0.0f) bgaTime = 0.0f;
             int newFrame = (int)(bgaTime * 60.0f);
             if (newFrame > maxFrame) newFrame = maxFrame;
-            if (newFrame != g_game.bgaFrame) {
-                Log_Print("BGA: frame %d -> %d (songTime=%.3f, max=%d)\n",
-                          g_game.bgaFrame, newFrame, g_songTime, maxFrame);
-            }
             g_game.bgaFrame = newFrame;
-        }
-    }
-
-    if (g_game.frameCounter % 60 == 0) {
-        Log_Print("BGA_STATE: frame=%d songTime=%.3f\n", g_game.bgaFrame, g_songTime);
-        if (g_game.bgaPicCount > 0) {
-            BGAPicture* pic = &g_game.bgaPics[0];
-            for (int l = 0; l < pic->layerCount && l < 6; l++) {
-                BGALayer* layer = &pic->layers[l];
-                int seg = -1;
-                for (int k = 0; k < layer->kfCount - 1; k++) {
-                    if (layer->keyframes[k].frame <= g_game.bgaFrame &&
-                        g_game.bgaFrame <= layer->keyframes[k+1].frame) {
-                        seg = k; break;
-                    }
-                }
-                Log_Print("  layer %d '%s': seg=%d kf=[%d..%d] kfCount=%d\n",
-                          l, layer->filename, seg,
-                          layer->kfCount > 0 ? layer->keyframes[0].frame : -1,
-                          layer->kfCount > 0 ? layer->keyframes[layer->kfCount-1].frame : -1,
-                          layer->kfCount);
-            }
         }
     }
 
@@ -406,34 +378,6 @@ void Gameplay_Update(float dt)
     }
 }
 
-static void drawPanelAt(int panel, float x, float y, uint8_t val, float alpha, bool judged, JudgeType jt)
-{
-    (void)jt;
-    float r, g, b;
-    switch (panel)
-    {
-        case 0: r=1.0f; g=0.3f; b=0.3f; break;
-        case 1: r=0.3f; g=1.0f; b=0.3f; break;
-        case 2: r=1.0f; g=1.0f; b=0.3f; break;
-        case 3: r=0.3f; g=0.6f; b=1.0f; break;
-        case 4: r=1.0f; g=0.6f; b=0.0f; break;
-        default: r=1; g=1; b=1; break;
-    }
-
-    if (judged && jt == JT_MISS)
-    {
-        r *= 0.4f; g *= 0.4f; b *= 0.4f;
-    }
-
-    if (val)
-    {
-        float s = PANEL_SIZE * (judged ? 1.5f : 1.0f);
-        uint8_t a = (uint8_t)(alpha * (judged ? 128 : 220));
-        Render_Rect(x - s/2, y - s/2, s, s,
-            (uint8_t)(r*255), (uint8_t)(g*255), (uint8_t)(b*255), a);
-    }
-}
-
 void Gameplay_Render(void)
 {
     if (g_game.state != STATE_GAMEPLAY) return;
@@ -445,11 +389,13 @@ void Gameplay_Render(void)
         return;
     }
 
-    float scrollPixelsPerSec = (RECEPTOR_Y - ARROW_TOP_Y) / APPROACH_SECONDS;
+    int receptorY = 32;
+    int scrollBottom = 480;
+    float scrollPixelsPerSec = (float)(scrollBottom - receptorY) / APPROACH_SECONDS;
 
-    int rowToShow = (int)((g_songTime + APPROACH_SECONDS) / g_secondsPerRow);
+    int rowToShow = (int)((g_songTime + APPROACH_SECONDS - g_chartDelay) / g_secondsPerRow);
     if (rowToShow < 0) rowToShow = 0;
-    int startRow = (int)((g_songTime - JUDGE_BAD) / g_secondsPerRow) - 1;
+    int startRow = (int)((g_songTime - JUDGE_BAD - g_chartDelay) / g_secondsPerRow) - 1;
     if (startRow < 0) startRow = 0;
     int endRow = rowToShow + 2;
     if (endRow >= (int)g_chart->rowCount) endRow = g_chart->rowCount - 1;
@@ -459,39 +405,82 @@ void Gameplay_Render(void)
         int centerX = (p == 0) ? P1_CENTER_X : P2_CENTER_X;
         int baseX = centerX - 80;
 
+        float posX[5];
+        posX[0] = (float)(baseX + 0 * 40);  // DL
+        posX[1] = (float)(baseX + 1 * 40);  // UL
+        posX[2] = (float)(baseX + 2 * 40);  // CN
+        posX[3] = (float)(baseX + 3 * 40);  // UR
+        posX[4] = (float)(baseX + 4 * 40);  // DR
+
+        // Grid de fundo (compasso/batida/sub-batida)
+        if (g_chart->beatPerMeasure > 0 && g_chart->beatSplit > 0)
+        {
+            int rowsPerMeasure = g_chart->beatPerMeasure * g_chart->beatSplit;
+            int rowsPerBeat = g_chart->beatSplit;
+            int gx0 = baseX - 22;
+            int gx1 = baseX + 162;
+            int gridStartRow = startRow > 0 ? startRow - 1 : 0;
+            int gridEndRow = endRow < (int)g_chart->rowCount - 1 ? endRow + 1 : endRow;
+            for (int ri = gridStartRow; ri <= gridEndRow; ri++)
+            {
+                double gy = receptorY + (ri * g_secondsPerRow + g_chartDelay - g_songTime) * scrollPixelsPerSec;
+                if (gy < receptorY - PANEL_SIZE || gy > scrollBottom + PANEL_SIZE) continue;
+
+                if (ri % rowsPerMeasure == 0)
+                {
+                    Render_Rect((float)gx0, (float)gy, (float)(gx1 - gx0), 3, 80, 80, 80, 180);
+                    int blockNum = ri / rowsPerMeasure + 1;
+                    char num[8];
+                    snprintf(num, sizeof(num), "%d", blockNum);
+                    int numY = g_game.screenHeight - (int)gy - 6;
+                    Font_DrawString(gx0 - 22, numY, num, 0.5f, 0.5f, 0.5f, 0.8f);
+                }
+                else if (ri % rowsPerBeat == 0)
+                {
+                    for (int x = gx0; x < gx1; x += 16)
+                        Render_Rect((float)x, (float)gy, 8, 2, 60, 60, 60, 120);
+                }
+                else
+                {
+                    for (int x = gx0; x < gx1; x += 24)
+                        Render_Rect((float)x, (float)gy, 4, 1, 40, 40, 40, 70);
+                }
+            }
+        }
+
+        // Receptor no topo
+        for (int panel = 0; panel < 5; panel++)
+        {
+            float px = posX[panel];
+            Render_Rect(px - 18, receptorY - 4, 36, 8, 100, 100, 100, 200);
+            Render_Rect(px - 16, receptorY - 3, 32, 6, 150, 200, 255, 255);
+        }
+
+        // Notas (scroll do fundo para o topo)
         for (int ri = startRow; ri <= endRow; ri++)
         {
             StepRow* row = &g_chart->rows[ri];
-            double rowTime = ri * g_secondsPerRow;
+            double rowTime = ri * g_secondsPerRow + g_chartDelay;
             double timeToHit = rowTime - g_songTime;
 
             if (timeToHit > APPROACH_SECONDS) continue;
             if (timeToHit < -JUDGE_BAD - 0.2f) continue;
 
-            float y = (float)(RECEPTOR_Y + timeToHit * scrollPixelsPerSec);
-            if (y < ARROW_TOP_Y - PANEL_SIZE || y > RECEPTOR_Y + PANEL_SIZE) continue;
+            float y = (float)(receptorY + timeToHit * scrollPixelsPerSec);
+            if (y < receptorY - PANEL_SIZE || y > scrollBottom + PANEL_SIZE) continue;
 
             float alpha = 1.0f;
-            if (y < ARROW_TOP_Y + PANEL_SIZE/2)
-                alpha = (y - ARROW_TOP_Y + PANEL_SIZE) / (float)(PANEL_SIZE * 1.5f);
+            if (y > scrollBottom - PANEL_SIZE)
+                alpha = (scrollBottom + PANEL_SIZE - y) / (float)(PANEL_SIZE * 1.5f);
             if (alpha > 1) alpha = 1;
             if (alpha < 0) alpha = 0;
 
             bool anyNote = false;
             for (int panel = 0; panel < 5; panel++)
             {
-                uint8_t val = getPanelValue(row, panel, p);
-                if (val) { anyNote = true; break; }
+                if (getPanelValue(row, panel, p)) { anyNote = true; break; }
             }
             if (!anyNote) continue;
-
-            float posX[5] = {
-                (float)(baseX + 0 * 40),
-                (float)(baseX + 1 * 40),
-                (float)(baseX + 2 * 40),
-                (float)(baseX + 3 * 40),
-                (float)(baseX + 4 * 40)
-            };
 
             for (int panel = 0; panel < 5; panel++)
             {
@@ -509,21 +498,15 @@ void Gameplay_Render(void)
                         break;
                     }
                 }
-                drawPanelAt(panel, posX[panel], y, val, alpha, isJudged, jt);
+
+                float sc = isJudged ? 1.5f : 1.0f;
+                float a = alpha * (isJudged ? 0.5f : 0.85f);
+                float hw = 15 * sc;
+                float hh = 8 * sc;
+                uint8_t aa = (uint8_t)(a * 255);
+                Render_Rect(posX[panel] - hw - 1, y - hh - 1, (hw + 1) * 2, (hh + 1) * 2, 0, 0, 0, aa);
+                Render_Rect(posX[panel] - hw, y - hh, hw * 2, hh * 2, 255, 255, 255, aa);
             }
-        }
-    }
-
-    for (int p = 0; p < 2; p++)
-    {
-        int centerX = (p == 0) ? P1_CENTER_X : P2_CENTER_X;
-        int baseX = centerX - 80;
-
-        for (int panel = 0; panel < 5; panel++)
-        {
-            float px = (float)(baseX + panel * 40);
-            Render_Rect(px - 18, RECEPTOR_Y - 4, 36, 8, 100, 100, 100, 200);
-            Render_Rect(px - 16, RECEPTOR_Y - 3, 32, 6, 150, 200, 255, 255);
         }
 
         char scoreBuf[64];
@@ -542,7 +525,7 @@ void Gameplay_Render(void)
         {
             char comboBuf[32];
             snprintf(comboBuf, sizeof(comboBuf), "%u COMBO!", g_game.stats.combo[p]);
-            Font_DrawStringCentered(centerX, RECEPTOR_Y + 40,
+            Font_DrawStringCentered(centerX, receptorY + 40,
                 comboBuf, 1, 1, 0, 1);
         }
 
@@ -550,7 +533,7 @@ void Gameplay_Render(void)
         {
             JudgeType jt = g_judgeDisplayType[p];
             float a = g_judgeDisplayTimer[p] / 0.6f;
-            Font_DrawStringCentered(centerX, RECEPTOR_Y + 20,
+            Font_DrawStringCentered(centerX, receptorY + 20,
                 g_judgeNames[jt],
                 g_judgeColors[jt][0], g_judgeColors[jt][1], g_judgeColors[jt][2], a);
         }

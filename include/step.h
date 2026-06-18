@@ -5,22 +5,26 @@
 #include <stdbool.h>
 
 #define STX_MAGIC "STF4"
-#define STX_TITLE_OFFSET 0x30
-#define STX_OFFSET_TABLE 0xF0
-#define STX_MAX_STREAMS 9
-#define STX_STREAM_START 1
-#define STX_CHART_MAX 16
-#define STEP_HALF_PANELS 5
-#define STEP_ROW_SIZE 16
+#define STX_HEADER_SIZE 288
+#define STX_TITLE_OFFSET 0x3C
+#define STX_OFFSET_TABLE 0xFC
+#define STX_SECTION_COUNT 9
+#define STX_SECTION_HEADER 0xD0
+#define STX_ROW_SIZE 13
 
-#define DIFF_NONE 0xFF
+#define STX_DECOMP_HEADER 128
+#define STX_GRID_OFFSET 132
+
+#define STEP_PANELS_SINGLE 5
+#define STEP_PANELS_DOUBLE 10
+#define STEP_PANELS_HALF 6
 
 typedef struct {
-    uint8_t l;
-    uint8_t d;
-    uint8_t u;
-    uint8_t r;
-    uint8_t c;
+    uint8_t dl;
+    uint8_t ul;
+    uint8_t cn;
+    uint8_t ur;
+    uint8_t dr;
 } StepHalf;
 
 typedef struct {
@@ -30,20 +34,22 @@ typedef struct {
 
 typedef struct {
     float bpm;
-    uint32_t difficulty;
-    uint32_t subdiv;
+    uint32_t beatPerMeasure;
+    uint32_t beatSplit;
+    int32_t delay;
     uint32_t rowCount;
     StepRow* rows;
+    int panelCount;
 } StepChart;
 
 typedef struct {
     char title[64];
     int chartCount;
-    StepChart charts[STX_CHART_MAX];
+    StepChart charts[9];
 } StepSong;
 
 bool Step_LoadSong(const char* path, StepSong* song);
 void Step_FreeSong(StepSong* song);
-int Step_FindChart(const StepSong* song, uint32_t difficulty);
+int Step_SelectChart(const char* modeName, int fallbackSection);
 
 #endif

@@ -370,6 +370,8 @@ bool BGM_LoadAUDDirect(const char* path);
 void BGM_Play(bool loop);
 void BGM_Stop(void);
 bool BGM_IsPlaying(void);
+uint32_t BGM_GetPositionMs(void);
+bool BGM_IsDSActive(void);
 void BGM_SetVolume(long volume);
 void BGM_Shutdown(void);
 
@@ -451,6 +453,7 @@ bool Resource_LoadBGA(int resId);
 bool Resource_LoadBGAByName(const char* datName);
 bool Resource_LoadBGADirect(const char* datPath);
 bool Resource_LoadStage(const char* path);
+int Resource_LoadAllSPRs(const char* datPath);
 void Resource_ClearBGA(void);
 int Resource_LoadStateBGA(const char* stateName);
 int Resource_GetStateBGAIndex(const char* stateName);

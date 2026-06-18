@@ -335,7 +335,19 @@ static void Render_StateInfo(void) {
     y += 16;
     
     
-    if (g_game.bgaPicCount > 0) {
+    if (g_game.isVSL && g_vsl.active) {
+        int songId = 0;
+        if (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&
+            g_game.selectedSongIndex >= 0) {
+            SongMode* mode = &g_game.songDB.modes[g_game.selectedModeIndex];
+            if (g_game.selectedSongIndex < mode->songCount)
+                songId = mode->songIds[g_game.selectedSongIndex];
+        }
+        snprintf(buf, sizeof(buf), "BGA: %d.DAT - VSL | frame=%d/%d | meshs=%d",
+                 songId, g_game.bgaFrame, g_vsl.frameCount, g_vsl.meshTableCount);
+        Font_DrawString(8, y, buf, 1.0f, 1.0f, 0.0f, 1.0f);
+        y += 16;
+    } else if (g_game.bgaPicCount > 0) {
         BGAPicture* pic = &g_game.bgaPics[0];
         snprintf(buf, sizeof(buf), "BGA: %s | layers=%d | frame=%d/%d | tiles=%d",
                  pic->name, pic->layerCount, g_game.bgaFrame, g_game.bgaMaxFrame, g_game.sprTileCount);
