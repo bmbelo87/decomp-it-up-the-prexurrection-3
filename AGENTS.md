@@ -1,3 +1,11 @@
+# 🚨 REGRA DE URGÊNCIA MÁXIMA - SEMPRE VERIFICAR PRIMEIRO 🚨
+
+**"Desativar" significa:** Envolver o bloco da função em `/*` `*/` (comentário). **NUNCA apague ou delete código** a menos que o usuário explicitly diga "delete" ou "apague".
+
+Sempre que o usuário pedir para desativar algo, apenas comente o bloco. Preserve o código original intacto dentro do comentário.
+
+---
+
 # OpenCode Instructions
 
 ## Project Objective
