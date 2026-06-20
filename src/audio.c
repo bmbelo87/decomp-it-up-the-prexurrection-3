@@ -672,6 +672,7 @@ typedef struct {
 static void* ds_graph  = NULL;
 static void* ds_ctrl   = NULL;
 static void* ds_pos    = NULL;
+static void* g_dsEvent = NULL;
 static bool  ds_active = false;
 
 static bool dshow_load(const char* mp3path)
@@ -686,6 +687,8 @@ static bool dshow_load(const char* mp3path)
     GUID iidMC = {0x56A868B1,0x0AD4,0x11CE,{0xB0,0x3A,0x00,0x20,0xAF,0x0B,0xA7,0x70}};
     // IID_IMediaPosition = {56A868B2-0AD4-11CE-B03A-0020AF0BA770}
     GUID iidMP = {0x56A868B2,0x0AD4,0x11CE,{0xB0,0x3A,0x00,0x20,0xAF,0x0B,0xA7,0x70}};
+    // IID_IMediaEvent = {56A868B6-0AD4-11CE-B03A-0020AF0BA770}
+    GUID iidME = {0x56A868B6,0x0AD4,0x11CE,{0xB0,0x3A,0x00,0x20,0xAF,0x0B,0xA7,0x70}};
 
     CoInitializeEx(NULL, COINIT_APARTMENTTHREADED);
     Log_Print("DS: CoCreateInstance\n");
@@ -697,6 +700,9 @@ static bool dshow_load(const char* mp3path)
 
     hr = ((VtblGraph*)(*(void**)pG))->QueryInterface(pG, &iidMP, &pP);
     if (FAILED(hr)) { ((VtblGraph*)(*(void**)pG))->Release(pG); ((VtblGraph*)(*(void**)pC))->Release(pC); return false; }
+
+    hr = ((VtblGraph*)(*(void**)pG))->QueryInterface(pG, &iidME, &g_dsEvent);
+    if (FAILED(hr)) g_dsEvent = NULL;
 
     WCHAR wpath[MAX_PATH];
     MultiByteToWideChar(CP_ACP, 0, mp3path, -1, wpath, MAX_PATH);
@@ -723,11 +729,12 @@ static bool dshow_load(const char* mp3path)
 }
 
 static void dshow_stop(void) {
-    if (ds_ctrl) ((VtblControl*)(*(void**)ds_ctrl))->Stop(ds_ctrl);
-    if (ds_pos)  ((VtblGraph*)(*(void**)ds_pos))->Release(ds_pos);
-    if (ds_ctrl) ((VtblGraph*)(*(void**)ds_ctrl))->Release(ds_ctrl);
-    if (ds_graph)((VtblGraph*)(*(void**)ds_graph))->Release(ds_graph);
-    ds_graph = ds_ctrl = ds_pos = NULL;
+    if (ds_ctrl)   ((VtblControl*)(*(void**)ds_ctrl))->Stop(ds_ctrl);
+    if (g_dsEvent) ((VtblGraph*)(*(void**)g_dsEvent))->Release(g_dsEvent);
+    if (ds_pos)    ((VtblGraph*)(*(void**)ds_pos))->Release(ds_pos);
+    if (ds_ctrl)   ((VtblGraph*)(*(void**)ds_ctrl))->Release(ds_ctrl);
+    if (ds_graph)  ((VtblGraph*)(*(void**)ds_graph))->Release(ds_graph);
+    ds_graph = ds_ctrl = ds_pos = g_dsEvent = NULL;
     ds_active = false;
 }
 
@@ -783,6 +790,57 @@ uint32_t BGM_GetPositionMs(void) {
     return 0;
 }
 
+bool BGM_HasEnded(void) {
+    // Método 1: IMediaEvent EC_COMPLETE
+    if (g_dsEvent) {
+        long evCode = 0;
+        LONG_PTR p1 = 0, p2 = 0;
+        void* vtbl = *(void**)g_dsEvent;
+        if (vtbl) {
+            typedef HRESULT (STDMETHODCALLTYPE *GetEventFn)(void*,long*,LONG_PTR*,LONG_PTR*,long);
+            GetEventFn fn = (GetEventFn)((void**)vtbl)[8];
+            HRESULT hr = fn(g_dsEvent, &evCode, &p1, &p2, 0);
+            if (SUCCEEDED(hr) && evCode == 1) { // EC_COMPLETE
+                typedef HRESULT (STDMETHODCALLTYPE *FreeEventFn)(void*,long,LONG_PTR,LONG_PTR);
+                ((FreeEventFn)((void**)vtbl)[12])(g_dsEvent, evCode, p1, p2);
+                return true;
+            }
+        }
+    }
+    // Método 2: IMediaControl::GetState - se stopped, música acabou
+    if (ds_ctrl) {
+        void* vtbl = *(void**)ds_ctrl;
+        if (vtbl) {
+            // IMediaControl slot 9 = GetState (após IUnknown 0-2, IDispatch 3-6, Run 7, Stop 8)
+            typedef HRESULT (STDMETHODCALLTYPE *GetStateFn)(void*, LONG, LONG*);
+            GetStateFn fn = (GetStateFn)((void**)vtbl)[9];
+            LONG state = 0;
+            if (SUCCEEDED(fn(ds_ctrl, 0, &state)) && state == 0) // State_Stopped = 0
+                return true;
+        }
+    }
+    // Método 3: posição próxima da duração total
+    if (ds_pos) {
+        double dur = 0;
+        double cur = 0;
+        if (SUCCEEDED(((VtblPos*)(*(void**)ds_pos))->get_Duration(ds_pos, &dur)) && dur > 0.0 &&
+            SUCCEEDED(((VtblPos*)(*(void**)ds_pos))->get_CurrentPosition(ds_pos, &cur))) {
+            if (dur - cur < 0.5) // within 500ms of end
+                return true;
+        }
+    }
+    return false;
+}
+
+uint32_t BGM_GetDurationMs(void) {
+    if (ds_pos) {
+        double dur = 0;
+        if (SUCCEEDED(((VtblPos*)(*(void**)ds_pos))->get_Duration(ds_pos, &dur)))
+            return (uint32_t)(dur * 1000.0);
+    }
+    return 0;
+}
+
 bool BGM_IsDSActive(void) { return ds_active; }
 
 bool BGM_IsPlaying(void) {
@@ -830,3 +888,5 @@ void BGM_Shutdown(void) {
     g_game.bgm.looping = false;
     g_game.bgm.name[0] = '\0';
 }
+
+//force

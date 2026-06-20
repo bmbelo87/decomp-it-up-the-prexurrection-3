@@ -52,10 +52,10 @@ typedef enum {
     STATE_RANKING         = 0x14,
     STATE_RANKING_IN      = 0x15,
     STATE_RANKING_OUT     = 0x16,
-    STATE_COURSE          = 0x17,
-    STATE_COURSE_2        = 0x18,
-    STATE_COURSE_3        = 0x19,
-    STATE_BATTLE          = 0x1A,
+    STATE_GAMEOVER_ENTER  = 0x17,
+    STATE_DANCE_GRADE_ENTER = 0x18,
+    STATE_DANCE_GRADE_DISPLAY = 0x19,
+    STATE_STAGE_TRANSITION = 0x1A,
     STATE_BATTLE_2        = 0x1B,
     STATE_BATTLE_3        = 0x1C,
     STATE_BATTLE_4        = 0x1D,
@@ -224,6 +224,7 @@ typedef struct {
     int goodCount[2];
     int badCount[2];
     int missCount[2];
+    int missCombo[2];
 } GameplayStats;
 
 typedef struct {
@@ -310,6 +311,7 @@ typedef struct {
 } GameContext;
 
 extern GameContext g_game;
+extern StepChart* g_chart;
 
 void Game_Init(HINSTANCE hInstance);
 void Game_Shutdown(void);
@@ -339,6 +341,11 @@ bool Font_Init(void);
 void Font_DrawChar(int x, int y, unsigned char c, float r, float g, float b, float a);
 void Font_DrawString(int x, int y, const char* str, float r, float g, float b, float a);
 void Font_DrawStringCentered(int x, int y, const char* str, float r, float g, float b, float a);
+void Font_DrawStringScaled(int x, int y, const char* str, float r, float g, float b, float a, float scale);
+void Font_DrawStringCenteredScaled(int x, int y, const char* str, float r, float g, float b, float a, float scale);
+int Font_LoadTexture(void);
+void Font_DrawDigit(int texId, int digit, int x, int y, float scale);
+void Font_DrawNumber(int texId, int x, int y, int number, int digits, float scale);
 void Font_Shutdown(void);
 
 void Texture_Init(void);
@@ -371,6 +378,8 @@ void BGM_Play(bool loop);
 void BGM_Stop(void);
 bool BGM_IsPlaying(void);
 uint32_t BGM_GetPositionMs(void);
+uint32_t BGM_GetDurationMs(void);
+bool BGM_HasEnded(void);
 bool BGM_IsDSActive(void);
 void BGM_SetVolume(long volume);
 void BGM_Shutdown(void);
@@ -396,6 +405,9 @@ void Menu_ResetState(void);
 
 void Staff_Enter(void);
 void Staff_Update(float dt);
+void Result_Enter(void);
+void Result_Update(float dt);
+void Result_Render(void);
 
 void Loading_Enter(int songId);
 void Loading_Update(float dt);
@@ -454,10 +466,13 @@ bool Resource_LoadBGAByName(const char* datName);
 bool Resource_LoadBGADirect(const char* datPath);
 bool Resource_LoadStage(const char* path);
 int Resource_LoadAllSPRs(const char* datPath);
+int Resource_LoadSPR(const char* datPath, const char* sprName);
+void Resource_LoadFontAndArrows(const char* datPath);
 void Resource_ClearBGA(void);
 int Resource_LoadStateBGA(const char* stateName);
 int Resource_GetStateBGAIndex(const char* stateName);
 int Resource_SwitchBGA(const char* datName);
+int Resource_LoadTextureFromDAT(const char* datPath, const char* resName);
 uint8_t* Resource_DecryptENC1(const uint8_t* data, uint32_t dataSize, uint32_t* outSize);
 int Resource_LoadPNZ(const char* path);
 

@@ -27,6 +27,12 @@ typedef struct {
     uint8_t dr;
 } StepHalf;
 
+// Note type values:
+#define NT_TAP     1  // normal tap (0x01)
+#define NT_HOLD_H  10 // hold head (0x0A)
+#define NT_HOLD_B  11 // hold body (0x0B)
+#define NT_HOLD_T  12 // hold tail (0x0C)
+
 typedef struct {
     StepHalf half1;
     StepHalf half2;
@@ -40,6 +46,19 @@ typedef struct {
     uint32_t rowCount;
     StepRow* rows;
     int panelCount;
+    int totalNotes;
+    // Split section (BPM changes)
+    bool hasSplit;
+    // Per-segment timing (segments = main + each split block)
+    uint32_t segmentCount; // main + number of splits
+    struct {
+        float bpm;
+        uint32_t beatPerMeasure;
+        uint32_t beatSplit;
+        int32_t delay;
+        uint32_t rowStart; // first row of this segment
+        uint32_t rowCount; // rows in this segment
+    } segments[8]; // up to 7 splits
 } StepChart;
 
 typedef struct {

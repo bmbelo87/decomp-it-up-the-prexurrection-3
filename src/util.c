@@ -74,8 +74,11 @@ const char* State_ToString(GameState state) {
         case STATE_RESET_WARNING: return "RESET_WARNING";
         case STATE_GAME_INIT: return "GAME_INIT";
         case STATE_GAMEPLAY: return "GAMEPLAY";
-        case STATE_GAMEOVER: return "GAMEOVER";
-        case STATE_RESULT: return "RESULT";
+        case STATE_GAMEOVER:
+        case STATE_GAMEOVER_ENTER: return "GAMEOVER_ENTER";
+        case STATE_DANCE_GRADE_ENTER: return "DANCE_GRADE_ENTER";
+        case STATE_DANCE_GRADE_DISPLAY: return "DANCE_GRADE_DISPLAY";
+        case STATE_STAGE_TRANSITION: return "STAGE_TRANSITION";
         case STATE_GAMEOPTION_ENTER: return "GAMEOPTION_ENTER";
         case STATE_GAMEOPTION_ANIM: return "GAMEOPTION_ANIM";
         case STATE_GAMEOPTION: return "GAMEOPTION";
@@ -110,20 +113,24 @@ void Sprite_DrawTile(int tileIdx, float x, float y, float scaleX, float scaleY, 
     SPRTileDef* t = &g_game.sprTiles[tileIdx];
     if (t->texId < 0) return;
 
-    // Aplicar espelhamento nas coordenadas UV
-    float u1 = t->flipH ? (float)t->u2 : (float)t->u1;
-    float v1 = t->flipV ? (float)t->v2 : (float)t->v1;
-    float u2 = t->flipH ? (float)t->u1 : (float)t->u2;
-    float v2 = t->flipV ? (float)t->v1 : (float)t->v2;
-
     int tw = Texture_GetWidth(t->texId);
     int th = Texture_GetHeight(t->texId);
-    if (t->u1 == 0 && t->v1 == 0 && t->u2 == tw && t->v2 == th && !t->flipH && !t->flipV)
+    if (tw <= 0) tw = 256;
+    if (th <= 0) th = 256;
+
+    // SPRTileDef stores UV as NORMALIZED [0..1]
+    // Texture_DrawUV expects PIXEL coords, so multiply back
+    float u1 = (float)t->u1 * (float)tw;
+    float v1 = (float)t->v1 * (float)th;
+    float u2 = (float)t->u2 * (float)tw;
+    float v2 = (float)t->v2 * (float)th;
+
+    if (t->u1 == 0.0f && t->v1 == 0.0f && t->u2 == 1.0f && t->v2 == 1.0f && !t->flipH && !t->flipV)
     {
         float w = (float)t->srcW * scaleX;
         float h = (float)t->srcH * scaleY;
-        Texture_Draw(t->texId, x - w/2, y - h/2, w / Texture_GetWidth(t->texId),
-                    h / Texture_GetHeight(t->texId), alpha);
+        Texture_Draw(t->texId, x - w/2, y - h/2, w / (float)tw,
+                    h / (float)th, alpha);
     }
     else
     {
@@ -140,12 +147,28 @@ void Sprite_DrawTileUV(int tileIdx, float x, float y, float w, float h, float al
     SPRTileDef* t = &g_game.sprTiles[tileIdx];
     if (t->texId < 0) return;
 
-    // Aplicar espelhamento nas coordenadas UV
-    float u1 = t->flipH ? (float)t->u2 : (float)t->u1;
-    float v1 = t->flipV ? (float)t->v2 : (float)t->v1;
-    float u2 = t->flipH ? (float)t->u1 : (float)t->u2;
-    float v2 = t->flipV ? (float)t->v1 : (float)t->v2;
+    int tw = Texture_GetWidth(t->texId);
+    int th = Texture_GetHeight(t->texId);
+    if (tw <= 0) tw = 256;
+    if (th <= 0) th = 256;
+
+    float u1 = (float)t->u1 * (float)tw;
+    float v1 = (float)t->v1 * (float)th;
+    float u2 = (float)t->u2 * (float)tw;
+    float v2 = (float)t->v2 * (float)th;
 
     Texture_DrawUV(t->texId, x - w/2, y - h/2, w, h,
                   u1, v1, u2, v2, 1.0f, 1.0f, 1.0f, alpha);
+}
+
+int Sprite_GetTileW(int tileIdx)
+{
+    if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) return 0;
+    return g_game.sprTiles[tileIdx].srcW;
+}
+
+int Sprite_GetTileH(int tileIdx)
+{
+    if (tileIdx < 0 || tileIdx >= g_game.sprTileCount) return 0;
+    return g_game.sprTiles[tileIdx].srcH;
 }

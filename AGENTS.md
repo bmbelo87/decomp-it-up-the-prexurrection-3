@@ -454,3 +454,14 @@ Implementar tela de Staff (créditos) ativada via DL 2x no menu.
 - Staff.BGA2 tem 2 layers: S00.spr (frames 0-325) e S.spr (frames 115-1891)
 - S.SPR: 10 tiles, S00.spr: 2 tiles, todos referenciando `staffXX.tga` resolvido via `loadTextureFromRES` para `.png`
 - Texturas staff01~08.png: 256x256 cada
+
+## SPR Y/UV Convention
+
+SPR files armazenam **V com 0 no topo** (convenção TGA/Y-DOWN). O OpenGL espera **V=0 embaixo** (Y-UP).
+
+**Onde a correção é aplicada:**
+- `drawTileQuad()` / `renderSPTile()`: faz `1.0f - tile->v1` no momento do `glTexCoord2f`
+- `Sprite_DrawTileUV()` (util.c:156-159): converte V TGA → V OpenGL antes de passar pro `Texture_DrawUV`
+- `loadSPRFromRES()` (resource.c:671-674): armazena UV normalizado **sem flip** (preserva convenção TGA)
+
+**Sempre que carregar/desenhar SPRs, verificar se Y/V não está invertido.** Se um tile aparecer cortado ao contrário no eixo Y, a correção de V precisa ser aplicada (como em `Sprite_DrawTileUV`).

@@ -4,42 +4,41 @@
 
 | State | Hex | Enum | Observacao |
 |-------|-----|------|------------|
-| 0 | 0x00 | STATE_BOOT | Tela alterna entre preto e um frame do menu. State na memoria oscila entre 0, 4, 5, 10 e 11. Trigger inicial que determina a proxima tela. |
-| 1 | 0x01 | STATE_WARNING_INIT | Tela de Warning aparece mas nao progride. Possivel estado de espera ou trigger de carregamento de BGA. |
-| 2 | 0x02 | STATE_WARNING_ANIM | Exibe animacao completa do ultimo BGA/DAT carregado. Provavelmente o estado de renderizacao do Warning. |
-| 3 | 0x03 | STATE_WARNING_END | Possivel descarregamento do BGA de Warning. |
-| 4 | 0x04 | STATE_LOGO_ENTER | Aguarda para iniciar o logo. Reinicia o 81.DAT a cada frame. |
+| 0 | 0x00 | STATE_BOOT | Trigger inicial, se carregado diretamente via manipulação de memória, leva para 0x04, se for manipulada pelo próprio jogo então 0x00 que determina a proxima tela. (Essa parte eu não compreendi, as vezes estou na State 5, o final dela pula pra State 0 e depois pra State 10) |
+| 1 | 0x01 | STATE_WARNING_INIT | Trigger para carregamento de Warning_Anim |
+| 2 | 0x02 | STATE_WARNING_ANIM | Exibição de Warning_Anim, pula diretamente pra State 0x04|
+| 3 | 0x03 | ?????????????????? | Não possui cena, nem trigger, ao ser chamado não exibe STATE nenhum.|
+| 4 | 0x04 | STATE_LOGO_ENTER | Provavelmente Trigger, leva direto para State 0x05 |
 | 5 | 0x05 | STATE_LOGO_UPDATE | Executa o 81.DAT, exibindo o logo da empresa. |
-| 6 | 0x06 | STATE_RESET_FLOW | Saida do logo, transicao para o proximo estado (configuracao do menu). |
-| 7 | 0x07 | STATE_MENU_FADE_IN | Possivel entrada do HowToPlay / fade in do menu. |
-| 8 | 0x08 | STATE_MENU_IDLE | Carrega/exibe o HowToPlay. |
-| 9 | 0x09 | STATE_MENU_INPUT_WAIT | Reinicia a cena do 099.DAT (SongSelect) a cada frame. |
-| 10 | 0x0A | STATE_MENU_ENTER | Menu em espera / estado de transicao. |
-| 11 | 0x0B | STATE_MENU_INPUT | Menu carregado corretamente: animacoes e posicoes dos itens na tela. Loop eterno aguardando input do usuario. |
-| 12 | 0x0C | STATE_RESET_WARNING | Selecao/finalizacao do menu. Retorna ao Warning. |
-| 13 | 0x0D | STATE_UNKNOWN_D | TryNextStage. |
-| 14 | 0x0E | STATE_GAME_INIT | Pisca frames da 82W. |
+| 6 | 0x06 | ????????????????? | Não possui cena, nem trigger, ao ser chamado não exibe STATE nenhum. e envia para  |
+| 7 | 0x07 | STATE_HOWTOPLAY_ENTER | Trigger de entrada HowToPlay |
+| 8 | 0x08 | STATE_HOWTOPLAY_UPDATE | Carrega/exibe o HowToPlay. |
+| 9 | 0x09 | STATE_HOWTOPLAY_TO_SELECTSONG | Envia para SelectSong após HowToPlay (State 28 (0x1C)) |
+| 10 | 0x0A | STATE_MENU_ENTER | Trigger de chamada pro Menu |
+| 11 | 0x0B | STATE_MENU_INPUT | Menu carregado aguardando Input |
+| 12 | 0x0C |????????????????? | Reboot, volta pro 0x00 |
+| 13 | 0x0D | STATE_UNKNOWN_D | Envia para Trigger de chamada para SongSelect (0x1B) |
+| 14 | 0x0E | STATE_GAME_INIT | Trigger de Chamada para Gameplay (0x0F) |
 | 15 | 0x0F | STATE_GAMEPLAY | Gameplay: carrega 00.DAT e XXX.DAT (XXX = ID da musica). Executa XXX.AUD e XXX.STX. |
-| 16 | 0x10 | STATE_GAMEOVER | Pisca frames da 82W. |
-| 17 | 0x11 | STATE_RESULT | Entering_Service_Menu (exclusivo do arcade, via manipulacao de memoria). Pode ser reativado no futuro. |
-| 18 | 0x12 | STATE_STAFF_ROLL | Service Menu. |
-| 19 | 0x13 | STATE_AUTO_EXIT | Tela preta com sprite do 81.DAT resetando ao fundo. |
-| 20 | 0x14 | STATE_RANKING | Inicio do DanceGradeResult: animacao reinicia continuamente. |
-| 21 | 0x15 | STATE_RANKING_IN | Tela corrompida aparentando ser DanceGradeResult com .DAT de GameOver. |
-| 22 | 0x16 | STATE_RANKING_OUT | STAGE BREAK. |
-| 23 | 0x17 | STATE_COURSE | Tela de GameOver. |
-| 24 | 0x18 | STATE_COURSE_2 | DanceGradeResult Wait: trigger de entrada no DanceGrade. |
-| 25 | 0x19 | STATE_COURSE_3 | DanceGradeResult. |
-| 26 | 0x1A | STATE_BATTLE | GameOver resetando em loop (state 26 redireciona para 23). |
-| 27 | 0x1B | STATE_BATTLE_2 | 099.DAT (SongSelect) recarregando sem parar. |
-| 28 | 0x1C | STATE_BATTLE_3 | SongSelect com animacoes piscando (sprites de eventos instaveis). |
-| 29 | 0x1D | STATE_BATTLE_4 | SongSelect sem bugs nas animacoes, contador de tempo funcionando. |
-| 30 | 0x1E | STATE_BATTLE_5 | Title.PNZ da musica selecionada no SongSelect. |
-| 31 | 0x1F | STATE_CREDITS | Saida do Menu, entrada no GameOption. |
-| 32 | 0x20 | STATE_BATTLE_7 | Sequencia de entrada no GameOption. |
-| 33 | 0x21 | STATE_BATTLE_8 | Interno do GameOption. |
-| 34 | 0x22 | STATE_BATTLE_9 | - |
-| 35 | 0x23 | STATE_GAMEPLAY_ENTER | Entrada nos Creditos. |
-| 36 | 0x24 | STATE_STAFF | Creditos. |
-| 37 | 0x25 | STATE_STAFF_END | Saida dos Creditos (piscando/resetando). |
-| 38 | 0x26 | - | A partir deste valor, alterar o State nao produz mais efeito visivel. |
+| 16 | 0x10 | ??????????????? | Avançando pro próximo State valido... |
+| 17 | 0x11 | STATE_SERVICE_MENU_ENTER | Entering_Service_Menu (exclusivo do arcade, via manipulacao de memoria). Pode ser reativado no futuro. |
+| 18 | 0x12 | STATE_SERVICE_MENU_UPDATE | Service Menu. |
+| 19 | 0x13 | ??????????????? | Envia para State 0x04 (????) |
+| 20 | 0x14 | STATE_GRADE_UPDATE | Trigger de chamada DanceGrade |
+| 21 | 0x15 | ?????????????????? | Provavelmente Trigger para GameOver, ou NextStage |
+| 22 | 0x16 | STATE_BREAK_UPDATE | STAGE BREAK. ((LifeGauge == 0 && StageBreakOption == true) || (Miss Combo == 51 && StageBreakOption == false)) |
+| 23 | 0x17 | STATE_GAMEOVER | Tela de GameOver. |
+| 24 | 0x18 | ?????????????????? | Também chama DanceGrade |
+| 25 | 0x19 | STATE_NEXT_STAGE_IN | Trigger que inicio NextStage |
+| 26 | 0x1A | STATE_NEXT_STAGE_UPDATE | Chama NextStage e envia para State 13 (0x0d) e depois State 27 (0x1B) |
+| 27 | 0x1B | STATE_SONG_SELECT_IN | Song Select |
+| 28 | 0x1C | STAGE_SONG_SELECT_LOAD | Song Select carregando dados |
+| 29 | 0x1D | STATE_SONG_SELECT_UPDATE | Song Select carregada e pronta para inputs de seleção de musica |
+| 30 | 0x1E | STATE_SONG_TITLE | Title.PNZ da musica selecionada no SongSelect. (Momento de carregar tudo para a Gameplay) |
+| 31 | 0x1F | STATE_GAMEOPTION_IN | Trigger do GameOption. |
+| 32 | 0x20 | STATE_GAMEOPTION_LOAD | Carregamento de .DAT do GameOption |
+| 33 | 0x21 | STATE_GAMEOPTION_UPDATE | GameOption carregado aguardando inputs |
+| 34 | 0x22 | ???????????????? | Reseta igual outros triggers aparentemente... Talvez OptionSave? |
+| 35 | 0x23 | STATE_STAFF_IN | Entrada nos Creditos. |
+| 36 | 0x24 | STATE_STAFF_UPDATE (ou PLAY) | Creditos. |
+| 37 | 0x25 |??????? | Saida dos Creditos????? (reseta). |

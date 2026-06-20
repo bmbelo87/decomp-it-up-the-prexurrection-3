@@ -60,6 +60,10 @@ bool Step_LoadSong(const char* path, StepSong* song)
         if (compSize == 0 || compSize > (uint32_t)(fileSize - secOff - STX_SECTION_HEADER))
             continue;
 
+        uint32_t secEnd = secOff + STX_SECTION_HEADER + compSize;
+
+        // Read main section compressed data
+        fseek(f, secOff + STX_SECTION_HEADER, SEEK_SET);
         uint8_t* compData = (uint8_t*)malloc(compSize);
         if (!compData || fread(compData, 1, compSize, f) != compSize)
         {
@@ -109,6 +113,14 @@ bool Step_LoadSong(const char* path, StepSong* song)
         chart->beatSplit = beatSplit;
         chart->delay = delay;
         chart->rowCount = rowCount;
+        chart->hasSplit = false;
+        chart->segmentCount = 1;
+        chart->segments[0].bpm = bpm;
+        chart->segments[0].beatPerMeasure = beatPerMeasure;
+        chart->segments[0].beatSplit = beatSplit;
+        chart->segments[0].delay = delay;
+        chart->segments[0].rowStart = 0;
+        chart->segments[0].rowCount = rowCount;
 
         bool mirror = true;
         chart->panelCount = STEP_PANELS_SINGLE;
@@ -148,8 +160,107 @@ bool Step_LoadSong(const char* path, StepSong* song)
             }
         }
 
-        song->chartCount++;
         free(decompBuf);
+
+        // Check for split sections (gap before the NEXT non-zero section only)
+        int nextSi = si + 1;
+        while (nextSi < STX_SECTION_COUNT && sectionOffsets[nextSi] == 0)
+            nextSi++;
+        if (nextSi < STX_SECTION_COUNT)
+        {
+            uint32_t nextOff = sectionOffsets[nextSi];
+            uint32_t prevSecEnd = secEnd;
+
+            if (nextOff > prevSecEnd + 4)
+            {
+                uint32_t gapSize = nextOff - prevSecEnd;
+                uint8_t* gapBuf = (uint8_t*)malloc(gapSize);
+                if (gapBuf)
+                {
+                    fseek(f, prevSecEnd, SEEK_SET);
+                    if (fread(gapBuf, 1, gapSize, f) == gapSize)
+                    {
+                        for (uint32_t gapOff = 4; gapOff + 2 < gapSize; )
+                        {
+                            if (gapBuf[gapOff] != 0x78 || gapBuf[gapOff + 1] != 0x9C) { gapOff++; continue; }
+
+                            uint8_t* splitDecomp = (uint8_t*)malloc(65536);
+                            if (!splitDecomp) break;
+
+                            uint32_t sdl = 65536, sic = 0;
+                            int sret = zlib_decompress_ex(gapBuf + gapOff, gapSize - gapOff, splitDecomp, &sdl, &sic);
+                            if (sret != 0 || sdl < STX_GRID_OFFSET + STX_ROW_SIZE) { free(splitDecomp); break; }
+
+                            float sBpm;
+                            uint32_t sBpmM, sBpmS;
+                            int32_t sDelay;
+                            memcpy(&sBpm, splitDecomp, 4);
+                            memcpy(&sBpmM, splitDecomp + 4, 4);
+                            memcpy(&sBpmS, splitDecomp + 8, 4);
+                            memcpy(&sDelay, splitDecomp + 12, 4);
+
+                            uint32_t sRowCount;
+                            memcpy(&sRowCount, splitDecomp + STX_DECOMP_HEADER, 4);
+                            uint32_t expRows2 = (sdl - STX_GRID_OFFSET) / STX_ROW_SIZE;
+                            if (sRowCount > expRows2) sRowCount = expRows2;
+                            if (sRowCount == 0) { free(splitDecomp); break; }
+
+                            bool validBpm = (sBpm > 0.0f && sBpm < 2000.0f);
+                            bool validSplitVal = (sBpmS > 0 && sBpmS <= 256 && sBpmM > 0 && (sBpmM % sBpmS == 0));
+                            bool validDelay = (sDelay >= 0 && sDelay < 10000);
+                            bool validRowCount = (sRowCount > 0 && sRowCount < 50000);
+                            bool validSplit = (validBpm && validSplitVal && validDelay && validRowCount);
+                            if (!validSplit) { free(splitDecomp); break; }
+
+                            if (!chart->hasSplit) chart->hasSplit = true;
+
+                            int segIdx = chart->segmentCount;
+                            bool added = (segIdx < 8);
+                            if (added)
+                            {
+                                chart->segments[segIdx].bpm = sBpm;
+                                chart->segments[segIdx].beatPerMeasure = sBpmM;
+                                chart->segments[segIdx].beatSplit = sBpmS;
+                                chart->segments[segIdx].delay = sDelay;
+                                chart->segments[segIdx].rowStart = rowCount;
+                                chart->segments[segIdx].rowCount = sRowCount;
+                                chart->segmentCount++;
+                            }
+
+                            if (added) {
+                                uint32_t totalRows = rowCount + sRowCount;
+                                StepRow* merged = (StepRow*)realloc(chart->rows, totalRows * sizeof(StepRow));
+                                if (!merged) { free(splitDecomp); break; }
+                                chart->rows = merged;
+                                for (uint32_t ri = 0; ri < sRowCount; ri++)
+                                {
+                                    const uint8_t* src = splitDecomp + STX_GRID_OFFSET + ri * STX_ROW_SIZE;
+                                    StepRow* dst = &chart->rows[rowCount + ri];
+                                    dst->half1.dl = src[0]; dst->half1.ul = src[1];
+                                    dst->half1.cn = src[2]; dst->half1.ur = src[3];
+                                    dst->half1.dr = src[4];
+                                    if (mirror) {
+                                        dst->half2.dl = src[0]; dst->half2.ul = src[1];
+                                        dst->half2.cn = src[2]; dst->half2.ur = src[3];
+                                        dst->half2.dr = src[4];
+                                    } else {
+                                        dst->half2.dl = src[5]; dst->half2.ul = src[6];
+                                        dst->half2.cn = src[7]; dst->half2.ur = src[8];
+                                        dst->half2.dr = src[9];
+                                    }
+                                }
+                                rowCount += sRowCount;
+                                chart->rowCount = rowCount;
+                            }
+                            free(splitDecomp);
+                            if (sic > 0) gapOff += sic - 1;
+                        }
+                    }
+                    free(gapBuf);
+                }
+            }
+        }
+        song->chartCount++;
     }
 
     fclose(f);

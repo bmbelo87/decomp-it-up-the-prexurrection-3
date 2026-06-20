@@ -50,15 +50,16 @@ static void LoadBGAForState(GameState state) {
             bgaName = "00";
         }
         break;
-    case STATE_RESULT:       bgaName = "83"; break;
-    case STATE_GAMEOVER:     bgaName = "84"; break;
+    case STATE_GAMEOVER:     bgaName = "084"; break;
     case STATE_SONG_SELECT:
     case STATE_SONG_SELECT_B:
     case STATE_LOADING_PNZ:
     case STATE_LOADING_PNZ_B: bgaName = ""; break;
     case STATE_STAFF_ENTER:
     case STATE_STAFF:
-    case STATE_STAFF_END:      bgaName = ""; break;
+    case STATE_STAFF_END:        bgaName = ""; break;
+    case STATE_DANCE_GRADE_ENTER:
+    case STATE_DANCE_GRADE_DISPLAY: bgaName = "83"; break;
     default: break;
     }
 
@@ -212,6 +213,7 @@ void Game_Update(float dt) {
 
     if (g_game.bgaPicCount > 0 && g_game.state != STATE_WARNING_END) {
         bool manualBGA = (g_game.state == STATE_GAMEPLAY ||
+                          g_game.state == STATE_DANCE_GRADE_DISPLAY ||
                           g_game.state == STATE_GAMEOPTION_ENTER ||
                           g_game.state == STATE_GAMEOPTION_ANIM ||
                           g_game.state == STATE_GAMEOPTION ||
@@ -272,6 +274,14 @@ void Game_Update(float dt) {
         break;
     case STATE_GAMEPLAY:
         Gameplay_Update(dt);
+        break;
+    case STATE_DANCE_GRADE_ENTER:
+        if (g_game.stateFrame == 1)
+            Result_Enter();
+        Result_Update(dt);
+        break;
+    case STATE_DANCE_GRADE_DISPLAY:
+        Result_Update(dt);
         break;
     case STATE_STAFF_ENTER:
         Staff_Enter();
@@ -403,6 +413,7 @@ void Game_Render(void) {
         VSL_Render(g_game.bgaFrame);
     } else if (g_game.bgaPicCount > 0 &&
         g_game.state != STATE_LOGO_SKIP &&
+        g_game.state != STATE_DANCE_GRADE_DISPLAY &&
         g_game.state != STATE_GAMEOPTION_ENTER &&
         g_game.state != STATE_GAMEOPTION_ANIM &&
         g_game.state != STATE_GAMEOPTION &&
@@ -426,6 +437,9 @@ void Game_Render(void) {
         break;
     case STATE_GAMEPLAY:
         Gameplay_Render();
+        break;
+    case STATE_DANCE_GRADE_DISPLAY:
+        Result_Render();
         break;
     case STATE_GAMEOPTION_ENTER:
     case STATE_GAMEOPTION_ANIM:

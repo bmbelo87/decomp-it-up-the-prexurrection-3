@@ -436,6 +436,7 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
 
             BGALayer* layer = &bga->layers[bga->layerCount];
 
+            // Increment layerCount for ALL entries (empty entries keep indices in sync)
             if (count > 0 && nameLen > 0)
             {
                 for (int ci = 0; filename[ci]; ci++)
@@ -486,13 +487,12 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
 
                 Log_Print("BGA2: evt[%d] '%s' %s kf=%d maxFrame=%d\n",
                     evt, filename, layer->isSPR ? "SPR" : "TGA", layer->kfCount, bga->maxFrame);
-
-                bga->layerCount++;
             }
             else
             {
                 Log_Print("BGA2: evt[%d] (empty)\n", evt);
             }
+            bga->layerCount++;
 
             evPos += 64 + 4 + (count > 0 ? count * 64 : 0);
         }
@@ -669,9 +669,16 @@ int loadSPRFromRES(const char* sprName, int* outPatCols, int* outPatRows, int* o
             if (texW <= 0) texW = 256.0f;
             if (texH <= 0) texH = 256.0f;
             t->u1 = (float)spr.tiles[i].u1 / texW;
-            t->v1 = (float)spr.tiles[i].v1 / texH;
             t->u2 = (float)spr.tiles[i].u2 / texW;
-            t->v2 = (float)spr.tiles[i].v2 / texH;
+            float v1r = (float)spr.tiles[i].v1 / texH;
+            float v2r = (float)spr.tiles[i].v2 / texH;
+            if (_stricmp(sprFileName, "01.SPR") == 0) {
+                t->v1 = 1.0f - v2r;
+                t->v2 = 1.0f - v1r;
+            } else {
+                t->v1 = 1.0f - v1r;
+                t->v2 = 1.0f - v2r;
+            }
         } else {
             t->u1 = 0.0f; t->v1 = 0.0f;
             t->u2 = 1.0f; t->v2 = 1.0f;
@@ -1107,6 +1114,17 @@ int Resource_LoadPNZ(const char* path) {
     return texId;
 }
 
+int Resource_LoadTextureFromDAT(const char* datPath, const char* resName)
+{
+    if (!RES_Open(datPath)) {
+        Log_Print("RES: failed to open '%s' for texture '%s'\n", datPath, resName);
+        return -1;
+    }
+    int texId = loadTextureFromRES(resName);
+    RES_Close();
+    return texId;
+}
+
 void Resource_ClearBGA(void)
 {
     BGA_Shutdown();
@@ -1126,4 +1144,44 @@ int Resource_SwitchBGA(const char* datName)
     }
     BGA_Reset();
     return g_game.bgaPicCount - 1;
+}
+
+int Resource_LoadSPR(const char* datPath, const char* sprName) {
+    if (!RES_Open(datPath)) return 0;
+    int count = loadSPRFromRES(sprName, NULL, NULL, NULL);
+    RES_Close();
+    return count;
+}
+
+void Resource_LoadFontAndArrows(const char* datPath) {
+    if (!RES_Open(datPath)) return;
+    loadSPRFromRES("01.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("02.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("w01.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("w02.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("03.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("04.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("w03.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("w04.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("05.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("w05.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("m01.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("m02.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("m03.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("m04.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("m05.spr", NULL, NULL, NULL);
+    //loadSPRFromRES("HD01.SPR", NULL, NULL, NULL);
+    //loadSPRFromRES("HD02.SPR", NULL, NULL, NULL);
+    //loadSPRFromRES("HD03.SPR", NULL, NULL, NULL);
+    //loadSPRFromRES("HD05.SPR", NULL, NULL, NULL);
+    //loadSPRFromRES("BT_MC01.SPR", NULL, NULL, NULL);
+    //loadSPRFromRES("BT_MC02.SPR", NULL, NULL, NULL);
+    //loadSPRFromRES("arrow541.sp2", NULL, NULL, NULL);
+    //loadSPRFromRES("arrow542.sp2", NULL, NULL, NULL);
+    //loadSPRFromRES("arrow543.sp2", NULL, NULL, NULL);
+    //loadSPRFromRES("arrow544.sp2", NULL, NULL, NULL);
+    //loadSPRFromRES("arrow545.sp2", NULL, NULL, NULL);
+    //loadSPRFromRES("arrowETC.sp2", NULL, NULL, NULL);
+    //loadSPRFromRES("arrowf.spr", NULL, NULL, NULL);
+    RES_Close();
 }

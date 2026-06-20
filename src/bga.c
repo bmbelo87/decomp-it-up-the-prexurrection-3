@@ -308,6 +308,9 @@ void BGA_Reset(void) {
 }
 
 static void drawTileQuad(SPRTileDef* tile, float offsetX, float offsetY) {
+    if (strstr(tile->name, "01.spr")) {
+        Log_Print("BGA_drawTileQuad: %s\n", tile->name);
+    }
     GLuint glTexId = (tile->texId >= 0 && tile->texId < MAX_TEXTURES && g_game.textures[tile->texId].inUse) ? g_game.textures[tile->texId].id : 0;
     if (!glTexId) return;
 
@@ -315,9 +318,9 @@ static void drawTileQuad(SPRTileDef* tile, float offsetX, float offsetY) {
     glBindTexture(GL_TEXTURE_2D, glTexId);
 
     float u1 = tile->u1;
-    float v1 = 1.0f - tile->v1;
+    float v1 = tile->v1;
     float u2 = tile->u2;
-    float v2 = 1.0f - tile->v2;
+    float v2 = tile->v2;
 
     glBegin(GL_QUADS);
     glTexCoord2f(u1, v1);

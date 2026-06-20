@@ -10,7 +10,7 @@ bool Font_Init(void) {
     if (!hDC) return false;
 
     HFONT hFont = CreateFontA(
-        -16, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+        -16, 0, 0, 0, FW_HEAVY, FALSE, FALSE, FALSE,
         DEFAULT_CHARSET, OUT_TT_PRECIS, CLIP_DEFAULT_PRECIS,
         ANTIALIASED_QUALITY, FIXED_PITCH | FF_MODERN, "Courier New");
 
@@ -64,6 +64,111 @@ void Font_DrawStringCentered(int x, int y, const char* str, float r, float g, fl
     int len = (int)strlen(str);
     x -= (len * 8) / 2;
     Font_DrawString(x, y, str, r, g, b, a);
+}
+
+void Font_DrawStringScaled(int x, int y, const char* str, float r, float g, float b, float a, float scale) {
+    if (!str || !g_fontInit) return;
+    glPushAttrib(GL_ENABLE_BIT | GL_CURRENT_BIT | GL_DEPTH_BUFFER_BIT | GL_TRANSFORM_BIT);
+    glDisable(GL_TEXTURE_2D);
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(r, g, b, a);
+
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glTranslatef((float)x, (float)y + 16.0f, 0.0f);
+    glScalef(scale, scale, 1.0f);
+
+    int ox = 0;
+    while (*str) {
+        if (*str == '\n') { /* skip */ }
+        else {
+            glRasterPos2i(ox, 0);
+            glCallList(FONT_LIST_BASE + (unsigned char)*str);
+            ox += 8;
+        }
+        str++;
+    }
+    glPopMatrix();
+    glPopAttrib();
+}
+
+void Font_DrawStringCenteredScaled(int x, int y, const char* str, float r, float g, float b, float a, float scale) {
+    int len = (int)strlen(str);
+    x -= (int)((len * 8 * scale) / 2);
+    Font_DrawStringScaled(x, y, str, r, g, b, a, scale);
+}
+
+static int g_fontTexId = -1;
+
+int Font_LoadTexture(void)
+{
+    if (g_fontTexId >= 0) return g_fontTexId;
+
+    // Method 1: load from 00.DAT via RES system
+    char datPath[MAX_PATH];
+    snprintf(datPath, sizeof(datPath), "%s/BGA/00.DAT", g_game.currentDirectory);
+    Log_Print("Font: trying RES load from '%s'\n", datPath);
+
+    if (RES_Open(datPath)) {
+        g_fontTexId = loadTextureFromRES("font.png");
+        RES_Close();
+        if (g_fontTexId >= 0) {
+            Log_Print("Font: loaded via RES, texId=%d\n", g_fontTexId);
+            return g_fontTexId;
+        }
+        Log_Print("Font: loadTextureFromRES failed\n");
+    } else {
+        Log_Print("Font: RES_Open failed for '%s'\n", datPath);
+    }
+
+    // Method 2: load directly from extracted file
+    char extPath[MAX_PATH];
+    snprintf(extPath, sizeof(extPath), "%s/BGA_extracted/00/FONT.PNG", g_game.currentDirectory);
+    Log_Print("Font: trying direct load from '%s'\n", extPath);
+    g_fontTexId = Texture_Load(extPath);
+    if (g_fontTexId >= 0) {
+        Log_Print("Font: loaded via direct file, texId=%d\n", g_fontTexId);
+        return g_fontTexId;
+    }
+
+    Log_Print("Font: ALL loading methods failed for font texture\n");
+    return -1;
+}
+
+void Font_DrawDigit(int texId, int digit, int x, int y, float scale)
+{
+    if (texId < 0 || digit < 0 || digit > 9) return;
+
+    int col = digit % 8;
+    int row = digit / 8;
+
+    int u1 = col * 32;
+    int v1 = row * 31 + 73;
+    int u2 = u1 + 32;
+    int v2 = v1 + 31;
+
+    int w = (int)(36 * scale);
+    int h = (int)(39 * scale);
+
+    Texture_DrawUV(texId, (float)x, (float)y, (float)w, (float)h,
+                   (float)u1, (float)v1, (float)u2, (float)v2,
+                   1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+void Font_DrawNumber(int texId, int x, int y, int number, int digits, float scale)
+{
+    int spacing = (int)(22 * scale);
+    int totalW = digits * spacing;
+    int startX = x - totalW / 2 + spacing;
+
+    for (int i = digits - 1; i >= 0; i--)
+    {
+        int d = number % 10;
+        number /= 10;
+        Font_DrawDigit(texId, d, startX + i * spacing, y, scale);
+    }
 }
 
 void Font_Shutdown(void) {
