@@ -1134,81 +1134,81 @@ void Gameplay_Render(void)
             }
         }
 
-        // Life bar com sprites da 00.DAT (posição original Ghidra)
-        {
-            static int sprBorder = -1, sprFill = -1, sprGlow = -1;
-            static bool sprLogged = false;
-            if (sprBorder < 0 && !sprLogged) {
-                sprBorder = Sprite_FindTile("03.spr_0");
-                sprFill = Sprite_FindTile("04.spr_0");
-                sprGlow = Sprite_FindTile("05.spr_0");
-                Log_Print("LIFEBAR: border=%d fill=%d glow=%d (sprTileCount=%d)\n",
-                    sprBorder, sprFill, sprGlow, g_game.sprTileCount);
-                sprLogged = true;
-            }
+        // // Life bar com sprites da 00.DAT (posição original Ghidra)
+        // {
+        //     static int sprBorder = -1, sprFill = -1, sprGlow = -1;
+        //     static bool sprLogged = false;
+        //     if (sprBorder < 0 && !sprLogged) {
+        //         sprBorder = Sprite_FindTile("03.spr_0");
+        //         sprFill = Sprite_FindTile("04.spr_0");
+        //         sprGlow = Sprite_FindTile("05.spr_0");
+        //         Log_Print("LIFEBAR: border=%d fill=%d glow=%d (sprTileCount=%d)\n",
+        //             sprBorder, sprFill, sprGlow, g_game.sprTileCount);
+        //         sprLogged = true;
+        //     }
 
-            float lifePct = g_game.stats.life[p] / 100.0f;
+        //     float lifePct = g_game.stats.life[p] / 100.0f;
 
-            // Posição: no topo da tela
-            float ox = (float)((p == 0) ? 28 : 348);
-            float oy = -12.0f;
+        //     // Posição: no topo da tela
+        //     float ox = (float)((p == 0) ? 28 : 348);
+        //     float oy = -12.0f;
 
-            // Border (03.SPR) - srcX=35, srcY=12, srcW=126, srcH=23
-            if (sprBorder >= 0) {
-                int bx = (int)ox + 35, by = (int)oy + 12;
-                int bw = Sprite_GetTileW(sprBorder), bh = Sprite_GetTileH(sprBorder);
-                Sprite_DrawTileUV(sprBorder, (float)(bx + bw/2), (float)(by + bh/2), (float)bw, (float)bh, 1.0f);
-            }
+        //     // Border (03.SPR) - srcX=35, srcY=12, srcW=126, srcH=23
+        //     if (sprBorder >= 0) {
+        //         int bx = (int)ox + 35, by = (int)oy + 12;
+        //         int bw = Sprite_GetTileW(sprBorder), bh = Sprite_GetTileH(sprBorder);
+        //         Sprite_DrawTileUV(sprBorder, (float)(bx + bw/2), (float)(by + bh/2), (float)bw, (float)bh, 1.0f);
+        //     }
 
-            // Fill (04.SPR) - srcX=44, srcY=17, srcW=236, srcH=15
-            if (sprFill >= 0) {
-                int fx = (int)ox + 44, fy = (int)oy + 17;
-                int fw = Sprite_GetTileW(sprFill), fh = Sprite_GetTileH(sprFill);
-                float fillW = (float)fw * lifePct;
-                Sprite_DrawTileUV(sprFill, (float)(fx + (int)fillW/2), (float)(fy + fh/2), fillW, (float)fh, 1.0f);
-            }
+        //     // Fill (04.SPR) - srcX=44, srcY=17, srcW=236, srcH=15
+        //     if (sprFill >= 0) {
+        //         int fx = (int)ox + 44, fy = (int)oy + 17;
+        //         int fw = Sprite_GetTileW(sprFill), fh = Sprite_GetTileH(sprFill);
+        //         float fillW = (float)fw * lifePct;
+        //         Sprite_DrawTileUV(sprFill, (float)(fx + (int)fillW/2), (float)(fy + fh/2), fillW, (float)fh, 1.0f);
+        //     }
 
-            // Glow (05.SPR) - srcX=44, srcY=17, srcW=236, srcH=15
-            if (sprGlow >= 0 && lifePct > 0.8f) {
-                int gx = (int)ox + 44, gy = (int)oy + 17;
-                int gw = Sprite_GetTileW(sprGlow), gh = Sprite_GetTileH(sprGlow);
-                float glowA = (lifePct - 0.8f) * 5.0f;
-                if (glowA > 1.0f) glowA = 1.0f;
-                Sprite_DrawTileUV(sprGlow, (float)(gx + gw/2), (float)(gy + gh/2), (float)gw, (float)gh, glowA);
-            }
-        }
+        //     // Glow (05.SPR) - srcX=44, srcY=17, srcW=236, srcH=15
+        //     if (sprGlow >= 0 && lifePct > 0.8f) {
+        //         int gx = (int)ox + 44, gy = (int)oy + 17;
+        //         int gw = Sprite_GetTileW(sprGlow), gh = Sprite_GetTileH(sprGlow);
+        //         float glowA = (lifePct - 0.8f) * 5.0f;
+        //         if (glowA > 1.0f) glowA = 1.0f;
+        //         Sprite_DrawTileUV(sprGlow, (float)(gx + gw/2), (float)(gy + gh/2), (float)gw, (float)gh, glowA);
+        //     }
+        // }
     }
 
     // 01.SPR e 02.SPR (srcX/srcY absolutos)
-    {
-        static int s01_0 = -1, s01_1 = -1, s02_0 = -1, s02_1 = -1;
-        if (s01_0 < 0) {
-            s01_0 = Sprite_FindTile("01.spr_0");
-            s01_1 = Sprite_FindTile("01.spr_1");
-            s02_0 = Sprite_FindTile("02.spr_0");
-            s02_1 = Sprite_FindTile("02.spr_1");
-        }
-        // 01.SPR tile 0: (32,32) 129x64
-        if (s01_0 >= 0) {
-            int sx = 32, sy = 32, sw = Sprite_GetTileW(s01_0), sh = Sprite_GetTileH(s01_0);
-            Sprite_DrawTileUV(s01_0, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
-        }
-        // 01.SPR tile 1: (160,33) 133x63
-        if (s01_1 >= 0) {
-            int sx = 160, sy = 33, sw = Sprite_GetTileW(s01_1), sh = Sprite_GetTileH(s01_1);
-            Sprite_DrawTileUV(s01_1, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
-        }
-        // 02.SPR tile 0: (32,38) 129x59
-        if (s02_0 >= 0) {
-            int sx = 32, sy = 38, sw = Sprite_GetTileW(s02_0), sh = Sprite_GetTileH(s02_0);
-            Sprite_DrawTileUV(s02_0, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
-        }
-        // 02.SPR tile 1: (160,38) 127x59
-        if (s02_1 >= 0) {
-            int sx = 160, sy = 38, sw = Sprite_GetTileW(s02_1), sh = Sprite_GetTileH(s02_1);
-            Sprite_DrawTileUV(s02_1, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
-        }
-    }
+    // {
+    //     static int s01_0 = -1, s01_1 = -1, s02_0 = -1, s02_1 = -1;
+    //     if (s01_0 < 0) {
+    //         s01_0 = Sprite_FindTile("01.spr_0");
+    //         s01_1 = Sprite_FindTile("01.spr_1");
+    //         s02_0 = Sprite_FindTile("02.spr_0");
+    //         s02_1 = Sprite_FindTile("02.spr_1");
+    //     }
+    //     // 01.SPR tile 0: (32,32) 129x64
+    //     if (s01_0 >= 0) {
+    //         int sx = 32, sy = 32, sw = Sprite_GetTileW(s01_0), sh = Sprite_GetTileH(s01_0);
+    //         Sprite_DrawTileUV(s01_0, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
+    //     }
+    //     // 01.SPR tile 1: (160,33) 133x63
+    //     if (s01_1 >= 0) {
+    //         int sx = 160, sy = 33, sw = Sprite_GetTileW(s01_1), sh = Sprite_GetTileH(s01_1);
+    //         Sprite_DrawTileUV(s01_1, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
+    //     }
+    //     // 02.SPR tile 0: (32,38) 129x59
+    //     if (s02_0 >= 0) {
+    //         int sx = 32, sy = 38, sw = Sprite_GetTileW(s02_0), sh = Sprite_GetTileH(s02_0);
+    //         Sprite_DrawTileUV(s02_0, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
+    //     }
+    //     // 02.SPR tile 1: (160,38) 127x59
+    //     if (s02_1 >= 0) {
+    //         int sx = 160, sy = 38, sw = Sprite_GetTileW(s02_1), sh = Sprite_GetTileH(s02_1);
+    //         Sprite_DrawTileUV(s02_1, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
+    //     }
+    // }
 
     // Timer regressivo
     {
