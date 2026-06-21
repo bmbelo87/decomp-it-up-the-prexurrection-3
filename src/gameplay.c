@@ -185,6 +185,42 @@ static int g_holdRows[2][5]; // row index of active hold (-1 = none)
 static float g_judgeDisplayTimer[2];
 static JudgeType g_judgeDisplayType[2];
 static int g_judgeDisplayCombo[2];
+static int g_blindTimer[2];
+static int g_prevBlindRow;
+static int g_lastPerfectRow[2][5];
+
+// Linhas com multiplas setas aguardando julgamento (ate BAD window expirar)
+#define MAX_PENDING 32
+static struct {
+    int row;
+    double deadline;
+    int totalMask;    // bits 0-4: setas que EXISTEM na linha
+    int hitMask;      // bits 0-4: setas que ja foram pressionadas
+    float worstDiff;
+    bool active;
+} g_pending[MAX_PENDING];
+static int g_pendingCount;
+
+// Conta tiles consecutivos de um SPR pelo nome (ex: 01.spr_0, 01.spr_1 = 2)
+static int sprTileCount(int startIdx) {
+    if (startIdx < 0 || startIdx >= g_game.sprTileCount) return 0;
+    const char* name = g_game.sprTiles[startIdx].name;
+    const char* us = strrchr(name, '_');
+    if (!us) return 1;
+    char prefix[64];
+    int plen = (int)(us - name);
+    if (plen > 63) plen = 63;
+    memcpy(prefix, name, plen);
+    prefix[plen] = '\0';
+    int c = 0;
+    while (startIdx + c < g_game.sprTileCount) {
+        char exp[64];
+        snprintf(exp, sizeof(exp), "%s_%d", prefix, c);
+        if (stricmp(g_game.sprTiles[startIdx + c].name, exp) != 0) break;
+        c++;
+    }
+    return c;
+}
 
 static bool loadChartForSong(int songId, int diffTier, const char* modeName)
 {
@@ -319,6 +355,63 @@ static uint8_t getPanelValue(StepRow* row, int panel, int player)
     return 0;
 }
 
+// Processa o julgamento final de uma linha
+static void processRowJudgment(int player, int row, JudgeType jt) {
+    if (jt == JT_PERFECT || jt == JT_GREAT) {
+        memset(&g_chart->rows[row], 0, sizeof(StepRow));
+        for (int pan = 0; pan < 5; pan++)
+            if (getPanelValue(&g_chart->rows[row], pan, player))
+                g_lastPerfectRow[player][pan] = row;
+    }
+    g_judgeDisplayType[player] = jt;
+    g_judgeDisplayTimer[player] = 0.6f;
+    switch (jt) {
+        case JT_PERFECT:
+        case JT_GREAT:
+            g_game.stats.combo[player]++;
+            g_judgeDisplayCombo[player] = g_game.stats.combo[player];
+            g_game.stats.missCombo[player] = 0;
+            break;
+        case JT_GOOD:
+            g_judgeDisplayCombo[player] = g_game.stats.combo[player];
+            g_game.stats.missCombo[player] = 0;
+            break;
+        case JT_BAD:
+            g_game.stats.combo[player] = 0;
+            g_judgeDisplayCombo[player] = 0;
+            g_game.stats.missCombo[player] = 0;
+            break;
+        default: break;
+    }
+    switch (jt) {
+        case JT_PERFECT: g_game.stats.perfectCount[player]++; g_game.stats.score[player] += 1000; break;
+        case JT_GREAT:   g_game.stats.greatCount[player]++;   g_game.stats.score[player] += 500;  break;
+        case JT_GOOD:    g_game.stats.goodCount[player]++;    g_game.stats.score[player] += 200;  break;
+        case JT_BAD:     g_game.stats.badCount[player]++;     g_game.stats.score[player] += 0;    break;
+        default: break;
+    }
+    if (g_game.stats.combo[player] > g_game.stats.maxCombo[player])
+        g_game.stats.maxCombo[player] = g_game.stats.combo[player];
+}
+
+// Processa linhas multi-seta pendentes
+static void processPendingRows(int player) {
+    double now = g_songTime;
+    for (int i = 0; i < MAX_PENDING; i++) {
+        if (!g_pending[i].active) continue;
+        if (g_pending[i].deadline > now && g_pending[i].hitMask != g_pending[i].totalMask) continue;
+        g_pending[i].active = false;
+        g_pendingCount--;
+        JudgeType jt;
+        if (g_pending[i].hitMask == g_pending[i].totalMask)
+            jt = evaluateTiming(g_pending[i].worstDiff);
+        else
+            jt = JT_MISS;
+        g_nextNoteRow[player][0] = g_pending[i].row + 1;
+        processRowJudgment(player, g_pending[i].row, jt);
+    }
+}
+
 static int rowAnyNote(StepRow* row, int player)
 {
     StepHalf* h = (player == 0) ? &row->half1 : &row->half2;
@@ -411,7 +504,51 @@ static void processInput(int player)
 
         if (bestRow >= 0)
         {
+            // Conta quantas setas tem nesta linha
+            int arrowCount = 0;
+            for (int pan = 0; pan < 5; pan++)
+                if (getPanelValue(&g_chart->rows[bestRow], pan, player)) arrowCount++;
+
+            if (arrowCount > 1) {
+                // Multi-seta: adiar julgamento
+                g_nextNoteRow[player][panel] = bestRow + 1;
+                // Procura entrada pendente existente ou cria nova
+                int slot = -1;
+                for (int i = 0; i < MAX_PENDING; i++) {
+                    if (g_pending[i].active && g_pending[i].row == bestRow) { slot = i; break; }
+                }
+                if (slot < 0) {
+                    for (int i = 0; i < MAX_PENDING; i++) {
+                        if (!g_pending[i].active) { slot = i; break; }
+                    }
+                }
+                if (slot >= 0) {
+                    g_pending[slot].row = bestRow;
+                    g_pending[slot].deadline = g_songTime + JUDGE_BAD;
+                    g_pending[slot].totalMask = 0;
+                    for (int pan = 0; pan < 5; pan++)
+                        if (getPanelValue(&g_chart->rows[bestRow], pan, player))
+                            g_pending[slot].totalMask |= (1 << pan);
+                    g_pending[slot].hitMask |= (1 << panel);
+                    double adBest = bestDiff < 0 ? -bestDiff : bestDiff;
+                    if (adBest > g_pending[slot].worstDiff)
+                        g_pending[slot].worstDiff = adBest;
+                    if (!g_pending[slot].active) {
+                        g_pending[slot].active = true;
+                        g_pendingCount++;
+                    }
+                }
+                continue;  // Não processa agora, aguarda outras setas
+            }
+
+            // 1 seta apenas: processa imediatamente (comportamento atual)
             g_nextNoteRow[player][panel] = bestRow + 1;
+            JudgeType hitJt = evaluateTiming(bestDiff);
+            if (hitJt == JT_PERFECT || hitJt == JT_GREAT) {
+                memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
+                g_lastPerfectRow[player][panel] = bestRow;
+                Log_Print("SET PERFECT ROW: p=%d pan=%d row=%d\n", player, panel, bestRow);
+            }
             hitRows[hitCount] = bestRow;
             hitDiffs[hitCount] = bestDiff;
             hitPanels[hitCount] = panel;
@@ -464,6 +601,11 @@ static void processInput(int player)
                 nh->judgment = jt;
                 nh->hitTime = g_songTime;
             }
+        }
+
+        // Perfect/Great: remover a nota do chart pra não renderizar mais
+        if (jt == JT_PERFECT || jt == JT_GREAT) {
+            memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
         }
 
         g_judgeDisplayType[player] = jt;
@@ -573,7 +715,14 @@ static void processAutoplay(void)
                 uint8_t val = getPanelValue(&g_chart->rows[hitRows[i]], panel, p);
                 if (val == NT_HOLD_H)
                     g_holdRows[p][panel] = hitRows[i];
+
+                // Autoplay: marca row como consumida pra não renderizar
+                if (val)
+                    g_lastPerfectRow[p][panel] = hitRows[i];
             }
+
+            // Autoplay sempre Perfect: limpa a nota do chart
+            memset(&g_chart->rows[hitRows[i]], 0, sizeof(StepRow));
         }
     }
 }
@@ -751,8 +900,15 @@ void Gameplay_Start(int songId)
             g_holdRows[p][pan] = -1;
 
     g_game.bgaFrame = 0;
+    g_blindTimer[0] = 0;
+    g_blindTimer[1] = 0;
+    g_prevBlindRow = -1;
+    memset(g_lastPerfectRow, -1, sizeof(g_lastPerfectRow));
+    g_pendingCount = 0;
+    memset(g_pending, 0, sizeof(g_pending));
+    Log_Print("GP: initialized\n");
 
-    // Carrega sprites 00.DAT (igual Font_LoadFontAndArrows no Ghidra)
+    // Igual Font_LoadFontAndArrows no Ghidra — carrega font.tga, dec00.tga e todos os SPRs da 00.DAT
     {
         char datPath[MAX_PATH];
         snprintf(datPath, sizeof(datPath), "%s\\BGA\\00.DAT", g_game.currentDirectory);
@@ -831,6 +987,8 @@ void Gameplay_Update(float dt)
 
     processInput(0);
     processInput(1);
+    processPendingRows(0);
+    processPendingRows(1);
     processAutoplay();
     processHolds();
     processMisses();
@@ -839,6 +997,19 @@ void Gameplay_Update(float dt)
     {
         if (g_judgeDisplayTimer[p] > 0)
             g_judgeDisplayTimer[p] -= dt;
+    }
+
+    // Blind por beat (ativa 02.SPR em cada batida)
+    if (g_chart && g_chart->beatSplit > 0 && g_songTime > 0) {
+        int curBeatRow = (int)(getRowAtTimeFloat(g_songTime) / (double)g_chart->beatSplit);
+        if (curBeatRow != g_prevBlindRow) {
+            g_prevBlindRow = curBeatRow;
+            g_blindTimer[0] = 10;
+            g_blindTimer[1] = 10;
+        }
+    }
+    for (int p = 0; p < 2; p++) {
+        if (g_blindTimer[p] > 0) g_blindTimer[p]--;
     }
 
     // ===== Detecção de fim de música =====
@@ -936,32 +1107,32 @@ void Gameplay_Render(void)
         int baseX = centerX - 80;
 
         float posX[5];
-        int pW[5] = {56, 56, 55, 56, 56};    // DL, UL, CN, UR, DR
-        posX[0] = 36.0f;  // DL
-        posX[1] = posX[0] + pW[0] + 6;        // UL
-        posX[2] = posX[1] + pW[1] + 6;        // CN
-        posX[3] = posX[2] + pW[2] + 6;        // UR
-        posX[4] = posX[3] + pW[3] + 6;        // DR
+        int pW[5] = {54, 54, 54, 54, 54};
+        posX[0] = 38.0f;  // DL
+        posX[1] = posX[0] + 48.0f;  // UL
+        posX[2] = posX[1] + 48.0f;  // CN
+        posX[3] = posX[2] + 48.0f;  // UR
+        posX[4] = posX[3] + 48.0f;  // DR
 
-        // Zonas de acerto (julgamento) - sized by current BPM
+        /* // Zonas de acerto (julgamento) - desativadas, 01.SPR substitui
         {
             float jColors[4][4] = {
-                {1, 0.3f, 0.3f, 0.50f},   // Bad - vermelho
-                {1, 1, 0, 0.55f},         // Good - amarelo
-                {0.5f, 1, 0.5f, 0.55f},   // Great - verde claro
-                {0.5f, 0.8f, 1, 0.60f},   // Perfect - azul claro
+                {1, 0.3f, 0.3f, 0.50f},
+                {1, 1, 0, 0.55f},
+                {0.5f, 1, 0.5f, 0.55f},
+                {0.5f, 0.8f, 1, 0.60f},
             };
             for (int j = 0; j < 4; j++)
             {
                 int halfH = (int)(jZoneHalf[j] + 0.5f);
                 for (int panel = 0; panel < 5; panel++)
-                {
                     Render_Rect(posX[panel] + 1, (float)(receptorY - halfH + 2), (float)(pW[panel] - 2), (float)(halfH * 2 - 4),
                         (uint8_t)(jColors[j][0] * 255), (uint8_t)(jColors[j][1] * 255),
                         (uint8_t)(jColors[j][2] * 255), (uint8_t)(jColors[j][3] * 255));
                 }
             }
         }
+        */
 
         // Grid de fundo (compasso/batida/sub-batida)
         if (g_chart->beatPerMeasure > 0 && g_chart->beatSplit > 0)
@@ -996,7 +1167,7 @@ void Gameplay_Render(void)
             }
         }
 
-        // Receptor no topo
+        /* // Receptor no topo - desativado, 01.SPR substitui
         int rh = 57;
         for (int panel = 0; panel < 5; panel++)
         {
@@ -1009,8 +1180,39 @@ void Gameplay_Render(void)
             Render_Rect(px, receptorY, (float)rw, (float)rh, rr, rg, rb, 180);
             Render_Rect(px + 2, receptorY + 2, (float)(rw - 4), (float)(rh - 4), 0, 0, 0, 120);
         }
+        */
 
+        // 01.SPR receptor (g_fontSpr01) — renderiza ANTES das notas (abaixo delas)
+        if (g_fontSpr01 >= 0) {
+            int cnt = sprTileCount(g_fontSpr01);
+            for (int t = cnt - 1; t >= 0; t--) {
+                int idx = g_fontSpr01 + t;
+                float sx = (float)g_game.sprTiles[idx].srcX;
+                float sy = (float)g_game.sprTiles[idx].srcY;
+                float sw = (float)g_game.sprTiles[idx].srcW;
+                float sh = (float)g_game.sprTiles[idx].srcH;
+                Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 1.0f);
+            }
+        }
+        // 02.SPR blind (g_fontSpr02) — também antes das notas
+        if (g_fontSpr02 >= 0 && g_blindTimer[p] > 0) {
+            float blindA = (float)g_blindTimer[p] / 10.0f;
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+            int cnt = sprTileCount(g_fontSpr02);
+            for (int t = cnt - 1; t >= 0; t--) {
+                int idx = g_fontSpr02 + t;
+                float sx = (float)g_game.sprTiles[idx].srcX;
+                float sy = (float)g_game.sprTiles[idx].srcY;
+                float sw = (float)g_game.sprTiles[idx].srcW;
+                float sh = (float)g_game.sprTiles[idx].srcH;
+                Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, blindA);
+            }
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        }
+
+        int rh = 57;
         // Notas (scroll do fundo para o topo)
+        static const int kPanelOrder[5] = {1, 3, 0, 2, 4};  // UL/UR atras, DL/CN/DR frente
         for (int ri = startRow; ri <= endRow; ri++)
         {
             StepRow* row = &g_chart->rows[ri];
@@ -1030,27 +1232,26 @@ void Gameplay_Render(void)
             {
                 if (getPanelValue(row, panel, p)) { anyNote = true; break; }
             }
+            // Perfect/Great consumiu esta row? Não mostrar NADA desta row
+            // Ordem: UL/UR atras, DL/CN/DR na frente
+            for (int rio = 0; rio < 5; rio++)
+            {
+                int panel = kPanelOrder[rio];
+                if (ri == g_lastPerfectRow[p][panel]) { 
+                    if (p == 0) Log_Print("BLOCKED ROW: ri=%d panel=%d g_lastPerfectRow=%d\n", ri, panel, g_lastPerfectRow[p][panel]);
+                    anyNote = false; break; 
+                }
+            }
             if (!anyNote) continue;
 
-            for (int panel = 0; panel < 5; panel++)
+            static const int kPanelOrder[5] = {1, 3, 0, 2, 4};
+            for (int rio = 0; rio < 5; rio++)
             {
+                int panel = kPanelOrder[rio];
                 uint8_t val = getPanelValue(row, panel, p);
                 if (!val) continue;
 
-                bool isJudged = false;
-                JudgeType jt = JT_NONE;
-                for (int h = 0; h < g_noteHitCount[p][panel]; h++)
-                {
-                    if (g_noteHits[p][panel][h].rowIndex == ri)
-                    {
-                        isJudged = true;
-                        jt = g_noteHits[p][panel][h].judgment;
-                        break;
-                    }
-                }
-
-                float sc = 1.0f;
-                float a = alpha * (isJudged ? 0.4f : 0.85f);
+                float a = alpha * 0.85f;
                 float nw = (float)pW[panel];
                 float nh = (float)rh;
                 uint8_t aa = (uint8_t)(a * 255);
@@ -1063,21 +1264,43 @@ void Gameplay_Render(void)
 
                 if (nt == NT_HOLD_B)
                 {
-                    // Hold body: filled rectangle with 50% alpha, same color as panel
                     float bodyH = rh * 2.5f;
                     uint8_t ba = (uint8_t)(a * 128);
                     Render_Rect(posX[panel], y - bodyH / 2, nw, bodyH, nr, ng, nb, ba);
                 }
+                else if (panel == 0 && g_fontArrow542 >= 0) {
+                    float sw = (float)g_game.sprTiles[g_fontArrow542].srcW;
+                    float sh = (float)g_game.sprTiles[g_fontArrow542].srcH;
+                    Sprite_DrawTileUV(g_fontArrow542, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                }
+                else if (panel == 1 && g_fontArrow541 >= 0) {
+                    float sw = (float)g_game.sprTiles[g_fontArrow541].srcW;
+                    float sh = (float)g_game.sprTiles[g_fontArrow541].srcH;
+                    Sprite_DrawTileUV(g_fontArrow541, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                }
+                else if (panel == 2 && g_fontArrow545 >= 0) {
+                    float sw = (float)g_game.sprTiles[g_fontArrow545].srcW;
+                    float sh = (float)g_game.sprTiles[g_fontArrow545].srcH;
+                    Sprite_DrawTileUV(g_fontArrow545, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                }
+                else if (panel == 3 && g_fontArrow543 >= 0) {
+                    float sw = (float)g_game.sprTiles[g_fontArrow543].srcW;
+                    float sh = (float)g_game.sprTiles[g_fontArrow543].srcH;
+                    Sprite_DrawTileUV(g_fontArrow543, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                }
+                else if (panel == 4 && g_fontArrow544 >= 0) {
+                    float sw = (float)g_game.sprTiles[g_fontArrow544].srcW;
+                    float sh = (float)g_game.sprTiles[g_fontArrow544].srcH;
+                    Sprite_DrawTileUV(g_fontArrow544, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                }
                 else if (nt == NT_HOLD_H || nt == NT_HOLD_T)
                 {
-                    // Hold head/tail: full rectangle
                     float hh = rh * 1.0f;
                     Render_Rect(posX[panel] - 1, y - hh / 2 - 1, nw + 2, hh + 2, 0, 0, 0, aa);
                     Render_Rect(posX[panel], y - hh / 2, nw, hh, nr, ng, nb, aa);
                 }
                 else
                 {
-                    // Normal tap
                     Render_Rect(posX[panel] - 1, y - nh / 2 - 1, nw + 2, nh + 2, 0, 0, 0, aa);
                     Render_Rect(posX[panel], y - nh / 2, nw, nh, nr, ng, nb, aa);
                 }
@@ -1123,92 +1346,72 @@ void Gameplay_Render(void)
 
             if (showCombo)
             {
-                char numBuf[16];
-                snprintf(numBuf, sizeof(numBuf), "%03u", comboVal);
-                bool isMiss = (jt == JT_MISS);
-                float cr = isMiss ? 1.0f : 1.0f;
-                float cg = isMiss ? 0.2f : 1.0f;
-                float cb = isMiss ? 0.2f : 1.0f;
-                Font_DrawStringCenteredScaled(centerX, centerY + 15, numBuf, cr, cg, cb, brightA, 2.2f);
-                Font_DrawStringCenteredScaled(centerX, centerY - 12, "COMBO", cr, cg, cb, brightA, 1.6f);
+                float decW = 48.4f;
+                float decSpacing = -8.0f;
+                float step = decW + decSpacing;  // 32
+                // Ghidra: unidades primeiro (direita), centenas por ultimo (esquerda)
+                int d3 = comboVal % 10;          // unidades
+                int d2 = (comboVal / 10) % 10;   // dezenas
+                int d1 = comboVal / 100;         // centenas
+                float totalW = decW * 3 + decSpacing * 2;
+                float dx = (float)centerX - totalW / 2.0f;
+                float dy = (float)(centerY + 20);
+                float da = brightA;
+                // Renderiza da direita pra esquerda: unidades → dezenas → centenas
+                Font_DrawDecDigit(g_fontDec00Id, dx + step * 2, dy, d3, da);
+                Font_DrawDecDigit(g_fontDec00Id, dx + step, dy, d2, da);
+                Font_DrawDecDigit(g_fontDec00Id, dx, dy, d1, da);
+                Font_DrawStringCenteredScaled(centerX, centerY - 12, "COMBO", 1.0f, 1.0f, 1.0f, brightA, 1.6f);
+            }
+        }  // end judge/combo
+    }  // end for p
+
+    // Life bars (03/04/05) — renderizadas DEPOIS de todos os players, por cima de tudo
+    for (int p = 0; p < 2; p++) {
+        // 03.SPR life bar border (g_fontSpr03)
+        if (g_fontSpr03 >= 0) {
+            float px = (p == 0) ? 0.0f : 320.0f;
+            int cnt = sprTileCount(g_fontSpr03);
+            for (int t = cnt - 1; t >= 0; t--) {
+                int idx = g_fontSpr03 + t;
+                float sx = px + (float)g_game.sprTiles[idx].srcX;
+                float sy = (float)g_game.sprTiles[idx].srcY;
+                float sw = (float)g_game.sprTiles[idx].srcW;
+                float sh = (float)g_game.sprTiles[idx].srcH;
+                Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 1.0f);
             }
         }
-
-        // // Life bar com sprites da 00.DAT (posição original Ghidra)
-        // {
-        //     static int sprBorder = -1, sprFill = -1, sprGlow = -1;
-        //     static bool sprLogged = false;
-        //     if (sprBorder < 0 && !sprLogged) {
-        //         sprBorder = Sprite_FindTile("03.spr_0");
-        //         sprFill = Sprite_FindTile("04.spr_0");
-        //         sprGlow = Sprite_FindTile("05.spr_0");
-        //         Log_Print("LIFEBAR: border=%d fill=%d glow=%d (sprTileCount=%d)\n",
-        //             sprBorder, sprFill, sprGlow, g_game.sprTileCount);
-        //         sprLogged = true;
-        //     }
-
-        //     float lifePct = g_game.stats.life[p] / 100.0f;
-
-        //     // Posição: no topo da tela
-        //     float ox = (float)((p == 0) ? 28 : 348);
-        //     float oy = -12.0f;
-
-        //     // Border (03.SPR) - srcX=35, srcY=12, srcW=126, srcH=23
-        //     if (sprBorder >= 0) {
-        //         int bx = (int)ox + 35, by = (int)oy + 12;
-        //         int bw = Sprite_GetTileW(sprBorder), bh = Sprite_GetTileH(sprBorder);
-        //         Sprite_DrawTileUV(sprBorder, (float)(bx + bw/2), (float)(by + bh/2), (float)bw, (float)bh, 1.0f);
-        //     }
-
-        //     // Fill (04.SPR) - srcX=44, srcY=17, srcW=236, srcH=15
-        //     if (sprFill >= 0) {
-        //         int fx = (int)ox + 44, fy = (int)oy + 17;
-        //         int fw = Sprite_GetTileW(sprFill), fh = Sprite_GetTileH(sprFill);
-        //         float fillW = (float)fw * lifePct;
-        //         Sprite_DrawTileUV(sprFill, (float)(fx + (int)fillW/2), (float)(fy + fh/2), fillW, (float)fh, 1.0f);
-        //     }
-
-        //     // Glow (05.SPR) - srcX=44, srcY=17, srcW=236, srcH=15
-        //     if (sprGlow >= 0 && lifePct > 0.8f) {
-        //         int gx = (int)ox + 44, gy = (int)oy + 17;
-        //         int gw = Sprite_GetTileW(sprGlow), gh = Sprite_GetTileH(sprGlow);
-        //         float glowA = (lifePct - 0.8f) * 5.0f;
-        //         if (glowA > 1.0f) glowA = 1.0f;
-        //         Sprite_DrawTileUV(sprGlow, (float)(gx + gw/2), (float)(gy + gh/2), (float)gw, (float)gh, glowA);
-        //     }
-        // }
-    }
-
-    // 01.SPR e 02.SPR (srcX/srcY absolutos)
-    // {
-    //     static int s01_0 = -1, s01_1 = -1, s02_0 = -1, s02_1 = -1;
-    //     if (s01_0 < 0) {
-    //         s01_0 = Sprite_FindTile("01.spr_0");
-    //         s01_1 = Sprite_FindTile("01.spr_1");
-    //         s02_0 = Sprite_FindTile("02.spr_0");
-    //         s02_1 = Sprite_FindTile("02.spr_1");
-    //     }
-    //     // 01.SPR tile 0: (32,32) 129x64
-    //     if (s01_0 >= 0) {
-    //         int sx = 32, sy = 32, sw = Sprite_GetTileW(s01_0), sh = Sprite_GetTileH(s01_0);
-    //         Sprite_DrawTileUV(s01_0, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
-    //     }
-    //     // 01.SPR tile 1: (160,33) 133x63
-    //     if (s01_1 >= 0) {
-    //         int sx = 160, sy = 33, sw = Sprite_GetTileW(s01_1), sh = Sprite_GetTileH(s01_1);
-    //         Sprite_DrawTileUV(s01_1, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
-    //     }
-    //     // 02.SPR tile 0: (32,38) 129x59
-    //     if (s02_0 >= 0) {
-    //         int sx = 32, sy = 38, sw = Sprite_GetTileW(s02_0), sh = Sprite_GetTileH(s02_0);
-    //         Sprite_DrawTileUV(s02_0, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
-    //     }
-    //     // 02.SPR tile 1: (160,38) 127x59
-    //     if (s02_1 >= 0) {
-    //         int sx = 160, sy = 38, sw = Sprite_GetTileW(s02_1), sh = Sprite_GetTileH(s02_1);
-    //         Sprite_DrawTileUV(s02_1, (float)(sx + sw/2), (float)(sy + sh/2), (float)sw, (float)sh, 1.0f);
-    //     }
-    // }
+        // 04.SPR life bar fill (g_fontSpr04)
+        if (g_fontSpr04 >= 0) {
+            float px = (p == 0) ? 0.0f : 320.0f;
+            float lifePct = g_game.stats.life[p] / 100.0f;
+            int cnt = sprTileCount(g_fontSpr04);
+            for (int t = cnt - 1; t >= 0; t--) {
+                int idx = g_fontSpr04 + t;
+                float sx = px + (float)g_game.sprTiles[idx].srcX;
+                float sy = (float)g_game.sprTiles[idx].srcY;
+                float sw = (float)g_game.sprTiles[idx].srcW;
+                float sh = (float)g_game.sprTiles[idx].srcH;
+                Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw * lifePct, sh, 1.0f);
+            }
+        }
+        // 05.SPR life bar glow (g_fontSpr05) — Ghidra: pisca em vida critica a cada 3 frames
+        if (g_fontSpr05 >= 0) {
+            float px = (p == 0) ? 0.0f : 320.0f;
+            float lifePct = g_game.stats.life[p] / 100.0f;
+            if (lifePct < 0.25f && (g_game.frameCounter % 6) < 3) {
+                int cnt = sprTileCount(g_fontSpr05);
+                for (int t = cnt - 1; t >= 0; t--) {
+                    int idx = g_fontSpr05 + t;
+                    float sx = px + (float)g_game.sprTiles[idx].srcX;
+                    float sy = (float)g_game.sprTiles[idx].srcY;
+                    float sw = (float)g_game.sprTiles[idx].srcW;
+                    float sh = (float)g_game.sprTiles[idx].srcH;
+                    Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 0.8f);
+                }
+            }
+        }
+    }  // end for p (life bars)
 
     // Timer regressivo
     {

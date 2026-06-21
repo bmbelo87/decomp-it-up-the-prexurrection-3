@@ -100,7 +100,7 @@ void Font_DrawStringCenteredScaled(int x, int y, const char* str, float r, float
     Font_DrawStringScaled(x, y, str, r, g, b, a, scale);
 }
 
-static int g_fontTexId = -1;
+int g_fontTexId = -1;
 
 int Font_LoadTexture(void)
 {
@@ -176,4 +176,51 @@ void Font_Shutdown(void) {
         glDeleteLists(FONT_LIST_BASE, 256);
         g_fontInit = false;
     }
+}
+
+// dec00.tga digit — igual FUN_0040c780. (x,y) em screen Y-DOWN
+void Font_DrawDecDigit(int texId, float x, float y, int digit, float alpha)
+{
+    if (texId < 0 || digit < 0 || digit > 9) return;
+    int col = digit % 5;
+    int row = digit / 5;
+    float yUp = 480.0f - y - 49.5f;
+    float u0 = (float)col * 0.171875f;
+    float u1 = u0 + 0.171875f;
+    float vTga = (float)row * 0.17578125f + 0.65625f;  // TGA top do digito
+    float vEnd = vTga + 0.17578125f;                     // TGA bottom (45/256 - igual Ghidra)
+    Texture_Bind(texId);
+    glEnable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(1, 1, 1, alpha);
+    glBegin(GL_QUADS);
+    // Ghidra: topo quad recebe TGA_top, base recebe TGA_bottom
+    // Nosso loader flipa → base: 1-TGA_bottom, topo: 1-TGA_top
+    glTexCoord2f(u0, 1.0f - vEnd); glVertex2f(x, yUp);
+    glTexCoord2f(u1, 1.0f - vEnd); glVertex2f(x + 48.4f, yUp);
+    glTexCoord2f(u1, 1.0f - vTga); glVertex2f(x + 48.4f, yUp + 49.5f);
+    glTexCoord2f(u0, 1.0f - vTga); glVertex2f(x, yUp + 49.5f);
+    glEnd();
+}
+
+// Combo number — igual FUN_0040c840. (centerX, centerY) em screen Y-DOWN
+void Font_DrawDecNumber(int texId, float centerX, float centerY, int value, float alpha)
+{
+    if (texId < 0) return;
+    if (value < 0) value = 0;
+    if (value > 999) value = 999;
+    int d1 = value / 100;
+    int d2 = (value / 10) % 10;
+    int d3 = value % 10;
+    glPushMatrix();
+    glTranslatef(centerX, 480.0f - centerY, 0.0f);  // screen → OpenGL Y-UP
+    glTranslatef(24.0f, 0.0f, 0.0f);
+    glScalef(1.1f, 1.1f, 1.0f);
+    Font_DrawDecDigit(texId, 0.0f, 0.0f, d1, alpha);
+    glTranslatef(-10.0f, 0.0f, 0.0f);
+    Font_DrawDecDigit(texId, 0.0f, 0.0f, d2, alpha);
+    glTranslatef(-10.0f, 0.0f, 0.0f);
+    Font_DrawDecDigit(texId, 0.0f, 0.0f, d3, alpha);
+    glPopMatrix();
 }

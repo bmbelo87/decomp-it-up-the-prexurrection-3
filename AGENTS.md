@@ -239,6 +239,16 @@ Before modifying any code:
 3. Explain possible side effects.
 4. Only then propose modifications.
 
+### Regra de Leitura de Funções
+
+Antes de chamar qualquer função de renderização/posicionamento (ou qualquer função que receba coordenadas), **ler a implementação primeiro** — não assumir o que os parâmetros significam. Verificar:
+
+- O que `x, y` representam (canto? centro? topo? base?)
+- Qual convenção de eixos (Y-down? Y-up?)
+- Como a função calcula posições internamente
+
+**NUNCA** chamar uma função de posicionamento sem ter lido o código dela antes.
+
 ---
 
 ## Data Analysis
@@ -301,21 +311,56 @@ Avoid mixing speculation with confirmed information.
 
 ## Build Process
 
-**Compilation:**
+**Compilation + copy:**
 
 ```sh
-cmake --build build
+cmake --build build --target Pumpy --config Debug -- /m; if ($?) { Copy-Item -LiteralPath "build\Debug\Pumpy.exe" "E:\Pumps\PREX3-Original\PUMPYTESTE.EXE" -Force }
 ```
 
-Assets are copied automatically.
-
-**After building:**
-
-1. Copy: `PUMPY.EXE`
-2. Rename to: `PUMPYTESTE.EXE`
-3. Copy it to: `E:\Pumps\PREX3-Original` (for validation using original game assets).
+Assets are copied automatically. O target `Pumpy` evita buildar as ferramentas (dump_bga2, etc.).
 
 **After build and copy process, always ASK if I want to continue another thing.**
+
+---
+
+## Common Pitfalls
+
+### Divisão inteira no centro de sprites
+
+Quando for calcular o centro de um tile de SPR para `Sprite_DrawTileUV`, **nunca** use:
+
+```c
+// ERRADO: sw/2 trunca pra int se sw for int
+Sprite_DrawTileUV(idx, (float)(sx + sw/2), ...);
+```
+
+Sempre converta pra `float` **antes** da divisão:
+
+```c
+// CERTO
+float sx = (float)g_game.sprTiles[idx].srcX;
+float sw = (float)g_game.sprTiles[idx].srcW;
+Sprite_DrawTileUV(idx, sx + sw / 2.0f, ...);
+```
+
+Sprites com largura/altura ímpar (ex: 133x63) sofrem deslocamento de 0.5px se usar divisão inteira.
+
+### Posição de sprites da 00.DAT
+
+**Regra:** renderizar SEMPRE na posição natural do `srcX`/`srcY` do tile definido no `.spr`. Única exceção é o offset de +320px no eixo X para o P2 (definido pelo Ghidra em `FUN_0040d960`).
+
+**NUNCA** adicione offsets manuais (tipo `ox=28`, `oy=-12`) — a posição correta já está no arquivo `.spr`.
+
+### Tile count do SPR
+
+Sempre verifique o `NUM` na segunda linha do arquivo `.spr` antes de assumir quantos tiles um SPR tem. Use a função `sprTileCount(startIdx)` que conta automaticamente pelo padrão de nome (`nome_N`):
+
+```c
+int cnt = sprTileCount(g_fontSprXX);
+for (int t = cnt - 1; t >= 0; t--) { ... }
+```
+
+**NUNCA** hardcode `for (int t = 1; t >= 0; t--)` — se o SPR tiver `NUM 1`, o `t=1` renderiza um tile de outro SPR (o próximo na ordem de carregamento).
 
 ---
 

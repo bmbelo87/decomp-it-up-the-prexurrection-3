@@ -313,6 +313,38 @@ typedef struct {
 extern GameContext g_game;
 extern StepChart* g_chart;
 
+// Font/arrow globals (loaded from 00.DAT via Resource_LoadFontAndArrows)
+extern int g_fontTexId;      // font.tga
+extern int g_fontDec00Id;    // dec00.tga
+extern int g_fontSpr01;      // 01.spr start index
+extern int g_fontSpr02;      // 02.spr
+extern int g_fontSpr03;      // 03.spr
+extern int g_fontSpr04;      // 04.spr
+extern int g_fontSpr05;      // 05.spr
+extern int g_fontSprW01;     // w01.spr
+extern int g_fontSprW02;     // w02.spr
+extern int g_fontSprW03;     // w03.spr
+extern int g_fontSprW04;     // w04.spr
+extern int g_fontSprW05;     // w05.spr
+extern int g_fontSprM01;     // m01.spr
+extern int g_fontSprM02;     // m02.spr
+extern int g_fontSprM03;     // m03.spr
+extern int g_fontSprM04;     // m04.spr
+extern int g_fontSprM05;     // m05.spr
+extern int g_fontSprHD01;    // HD01.SPR
+extern int g_fontSprHD02;    // HD02.SPR
+extern int g_fontSprHD03;    // HD03.SPR
+extern int g_fontSprHD05;    // HD05.SPR
+extern int g_fontSprBT01;    // BT_MC01.SPR
+extern int g_fontSprBT02;    // BT_MC02.SPR
+extern int g_fontArrow541;
+extern int g_fontArrow542;
+extern int g_fontArrow543;
+extern int g_fontArrow544;
+extern int g_fontArrow545;
+extern int g_fontArrowETC;
+extern int g_fontArrowF;
+
 void Game_Init(HINSTANCE hInstance);
 void Game_Shutdown(void);
 void Game_MainLoop(void);
@@ -345,6 +377,8 @@ void Font_DrawStringScaled(int x, int y, const char* str, float r, float g, floa
 void Font_DrawStringCenteredScaled(int x, int y, const char* str, float r, float g, float b, float a, float scale);
 int Font_LoadTexture(void);
 void Font_DrawDigit(int texId, int digit, int x, int y, float scale);
+void Font_DrawNumber(int texId, int x, int y, int number, int digits, float scale);
+void Font_DrawDecDigit(int texId, float x, float y, int digit, float alpha);
 void Font_DrawNumber(int texId, int x, int y, int number, int digits, float scale);
 void Font_Shutdown(void);
 
@@ -478,5 +512,7 @@ int Resource_LoadPNZ(const char* path);
 
 int loadTextureFromRES(const char* resName);
 int loadSPRFromRES(const char* name, int* outCols, int* outRows, int* outFlags);
+int SPR_LoadSPR(const char* sprName, int* outPatCols, int* outPatRows, int* outPatFlags);
+int SPR_LoadSP2(const char* sprName, int* outPatCols, int* outPatRows, int* outPatFlags);
 
 #endif

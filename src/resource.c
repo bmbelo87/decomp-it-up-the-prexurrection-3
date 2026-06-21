@@ -261,6 +261,56 @@ typedef struct {
     SPRTile tiles[SPR_MAX_TILES];
 } SPRFile;
 
+static void ParseSPR_TileDefinition(SPRFile* spr, char tokens[10][64], int tokCount) {
+    SPRTile* t = &spr->tiles[spr->tileCount];
+    memset(t, 0, sizeof(SPRTile));
+    int ti = 0;
+    strncpy(t->texture, tokens[ti], sizeof(t->texture) - 1); ti++;
+    t->srcX = atoi(tokens[ti+0]);
+    t->srcY = atoi(tokens[ti+1]);
+    t->srcW = atoi(tokens[ti+2]);
+    t->srcH = atoi(tokens[ti+3]);
+    int u1 = atoi(tokens[ti+4]);
+    int v1 = atoi(tokens[ti+5]);
+    int u2 = atoi(tokens[ti+6]);
+    int v2 = atoi(tokens[ti+7]);
+    t->u1 = u1; t->v1 = v1;
+    t->u2 = u2; t->v2 = v2;
+    t->flipH = (u1 > u2);
+    t->flipV = (v1 > v2);
+    for (int ci = 0; t->texture[ci]; ci++)
+        if (t->texture[ci] >= 'A' && t->texture[ci] <= 'Z')
+            t->texture[ci] = (char)(t->texture[ci] + 32);
+    spr->tileCount++;
+}
+
+static void ParseSP2_TileDefinition(SPRFile* spr, char tokens[10][64], int tokCount) {
+    SPRTile* t = &spr->tiles[spr->tileCount];
+    memset(t, 0, sizeof(SPRTile));
+    int ti = 0;
+    // .sp2: primeiro token é nome do tile
+    if (tokCount >= 10 && !strchr(tokens[0], '.')) {
+        ti = 1;  // pular nome
+    }
+    strncpy(t->texture, tokens[ti], sizeof(t->texture) - 1); ti++;
+    t->srcX = atoi(tokens[ti+0]);
+    t->srcY = atoi(tokens[ti+1]);
+    t->srcW = atoi(tokens[ti+2]);
+    t->srcH = atoi(tokens[ti+3]);
+    int u1 = atoi(tokens[ti+4]);
+    int v1 = atoi(tokens[ti+5]);
+    int u2 = atoi(tokens[ti+6]);
+    int v2 = atoi(tokens[ti+7]);
+    t->u1 = u1; t->v1 = v1;
+    t->u2 = u2; t->v2 = v2;
+    t->flipH = (u2 < 0);
+    t->flipV = (v2 < 0);
+    for (int ci = 0; t->texture[ci]; ci++)
+        if (t->texture[ci] >= 'A' && t->texture[ci] <= 'Z')
+            t->texture[ci] = (char)(t->texture[ci] + 32);
+    spr->tileCount++;
+}
+
 static bool parseSPR(const uint8_t* data, uint32_t size, SPRFile* spr) {
     memset(spr, 0, sizeof(SPRFile));
     const char* text = (const char*)data;
@@ -343,45 +393,15 @@ static bool parseSPR(const uint8_t* data, uint32_t size, SPRFile* spr) {
             tokCount++;
         }
 
-        if (tokCount < 9) continue;  // T texture srcX srcY srcW srcH u1 v1 u2 v2
+        if (tokCount < 9) continue;
 
-        SPRTile* t = &spr->tiles[spr->tileCount];
-        memset(t, 0, sizeof(SPRTile));
-
-        // Formato: T Arquivo.tga A B C D E F G H
-        // A=srcX, B=srcY, C=srcW, D=srcH
-        // E=u1 (X inicial recorte), F=v1 (Y inicial recorte)
-        // G=u2 (X final recorte), H=v2 (Y final recorte)
-        
-        int ti = 0;
-        strncpy(t->texture, tokens[ti], sizeof(t->texture) - 1); ti++;
-        
-        t->srcX = atoi(tokens[ti+0]);
-        t->srcY = atoi(tokens[ti+1]);
-        t->srcW = atoi(tokens[ti+2]);
-        t->srcH = atoi(tokens[ti+3]);
-        
-        int E = atoi(tokens[ti+4]);  // u1 (X inicial recorte)
-        int F = atoi(tokens[ti+5]);  // v1 (Y inicial recorte)
-        int G = atoi(tokens[ti+6]);  // u2 (X final recorte)
-        int H = atoi(tokens[ti+7]);  // v2 (Y final recorte)
-        
-        // No .sp2, valores negativos são offsets relativos
-        // Se u1 > u2, a imagem é espelhada horizontalmente
-        // Se v1 > v2, a imagem é espelhada verticalmente
-        t->u1 = E;
-        t->v1 = F;
-        t->u2 = G;
-        t->v2 = H;
-        t->flipH = (E > G);  // Espelhado se inicial > final
-        t->flipV = (F > H);  // Espelhado se inicial > final
-
-        for (int ci = 0; t->texture[ci]; ci++) {
-            if (t->texture[ci] >= 'A' && t->texture[ci] <= 'Z')
-                t->texture[ci] = (char)(t->texture[ci] + 32);
+        // Detecta formato: .sp2 tem nome do tile (token sem '.') antes da textura
+        if (tokCount >= 10 && !strchr(tokens[0], '.')) {
+            ParseSP2_TileDefinition(spr, tokens, tokCount);
+        } else {
+            ParseSPR_TileDefinition(spr, tokens, tokCount);
         }
 
-        spr->tileCount++;
         if (spr->tileCount >= SPR_MAX_TILES) break;
     }
 
@@ -660,7 +680,6 @@ int loadSPRFromRES(const char* sprName, int* outPatCols, int* outPatRows, int* o
             if (texName[ci] >= 'A' && texName[ci] <= 'Z')
                 texName[ci] = (char)(texName[ci] + 32);
         }
-
         t->texId = loadTextureFromRES(texName);
 
         if (t->texId >= 0 && t->texId < MAX_TEXTURES && g_game.textures[t->texId].inUse) {
@@ -668,17 +687,32 @@ int loadSPRFromRES(const char* sprName, int* outPatCols, int* outPatRows, int* o
             float texH = (float)g_game.textures[t->texId].height;
             if (texW <= 0) texW = 256.0f;
             if (texH <= 0) texH = 256.0f;
+
+            bool isSp2 = (ext && _stricmp(ext, ".sp2") == 0);
+            if (isSp2) {
+                // .sp2: u2/v2 são largura/altura a partir de u1/v1 (negativo = flip)
+                // NÃO inverter start/end — a ordem original codifica o flip
+                float uStart = (float)spr.tiles[i].u1;
+                float uEnd = uStart + (float)spr.tiles[i].u2;
+                float vStart = (float)spr.tiles[i].v1;
+                float vEnd = vStart + (float)spr.tiles[i].v2;
+                t->u1 = uStart / texW;
+                t->u2 = uEnd / texW;
+            if (spr.tiles[i].v2 < 0) {
+                t->v1 = 1.0f - vEnd / texH;
+                t->v2 = 1.0f - vStart / texH;
+            } else {
+                t->v1 = 1.0f - vStart / texH;
+                t->v2 = 1.0f - vEnd / texH;
+            }
+        } else {
             t->u1 = (float)spr.tiles[i].u1 / texW;
             t->u2 = (float)spr.tiles[i].u2 / texW;
             float v1r = (float)spr.tiles[i].v1 / texH;
             float v2r = (float)spr.tiles[i].v2 / texH;
-            if (_stricmp(sprFileName, "01.SPR") == 0) {
-                t->v1 = 1.0f - v2r;
-                t->v2 = 1.0f - v1r;
-            } else {
-                t->v1 = 1.0f - v1r;
-                t->v2 = 1.0f - v2r;
-            }
+            t->v1 = 1.0f - v1r;
+            t->v2 = 1.0f - v2r;
+        }
         } else {
             t->u1 = 0.0f; t->v1 = 0.0f;
             t->u2 = 1.0f; t->v2 = 1.0f;
@@ -1153,35 +1187,284 @@ int Resource_LoadSPR(const char* datPath, const char* sprName) {
     return count;
 }
 
+// ─── SPR_LoadSPR / SPR_LoadSP2 (igual Ghidra) ──────────────────────────────
+// .spr: u2/v2 são coordenadas absolutas
+int SPR_LoadSPR(const char* sprName, int* outPatCols, int* outPatRows, int* outPatFlags) {
+    char sprFileName[64];
+    const char* ext = strrchr(sprName, '.');
+    if (ext && _stricmp(ext, ".spr") == 0) {
+        strncpy(sprFileName, sprName, sizeof(sprFileName) - 1);
+    } else {
+        snprintf(sprFileName, sizeof(sprFileName), "%s.spr", sprName);
+    }
+
+    int sprIdx = RES_Find(sprFileName);
+    if (sprIdx < 0) {
+        char altName[64];
+        snprintf(altName, sizeof(altName), "%s.sp2", sprName);
+        // Also try without extension
+        const char* dot = strrchr(sprName, '.');
+        int baseLen = dot ? (int)(dot - sprName) : (int)strlen(sprName);
+        if (baseLen > 63) baseLen = 63;
+        memcpy(altName, sprName, baseLen);
+        altName[baseLen] = '\0';
+        sprIdx = RES_Find(altName);
+    }
+    if (sprIdx < 0) return 0;
+
+    uint32_t sprSize = RES_GetSize(sprIdx);
+    uint8_t* sprData = RES_ReadAlloc(sprIdx);
+    if (!sprData) return 0;
+
+    SPRFile spr;
+    if (!parseSPR(sprData, sprSize, &spr)) {
+        free(sprData);
+        return 0;
+    }
+    free(sprData);
+
+    int startIdx = g_game.sprTileCount;
+    for (int i = 0; i < spr.tileCount && g_game.sprTileCount < MAX_SPR_TILES; i++) {
+        SPRTileDef* t = &g_game.sprTiles[g_game.sprTileCount];
+        snprintf(t->name, sizeof(t->name), "%s_%d", sprFileName, i);
+        for (int ci = 0; t->name[ci]; ci++) {
+            if (t->name[ci] >= 'A' && t->name[ci] <= 'Z')
+                t->name[ci] = (char)(t->name[ci] + 32);
+        }
+        strncpy(t->texture, spr.tiles[i].texture, sizeof(t->texture) - 1);
+        t->srcX = spr.tiles[i].srcX;
+        t->srcY = spr.tiles[i].srcY;
+        t->srcW = spr.tiles[i].srcW;
+        t->srcH = spr.tiles[i].srcH;
+        t->flipH = spr.tiles[i].flipH;
+        t->flipV = spr.tiles[i].flipV;
+        t->texId = -1;
+
+        char texName[64];
+        strncpy(texName, spr.tiles[i].texture, sizeof(texName) - 1);
+        for (int ci = 0; texName[ci]; ci++) {
+            if (texName[ci] >= 'A' && texName[ci] <= 'Z')
+                texName[ci] = (char)(texName[ci] + 32);
+        }
+        t->texId = loadTextureFromRES(texName);
+
+        if (t->texId >= 0 && g_game.textures[t->texId].inUse) {
+            float texW = (float)g_game.textures[t->texId].width;
+            float texH = (float)g_game.textures[t->texId].height;
+            if (texW <= 0) texW = 256.0f;
+            if (texH <= 0) texH = 256.0f;
+            // .spr: u2/v2 são absolutos
+            t->u1 = (float)spr.tiles[i].u1 / texW;
+            t->u2 = (float)spr.tiles[i].u2 / texW;
+            float v1r = (float)spr.tiles[i].v1 / texH;
+            float v2r = (float)spr.tiles[i].v2 / texH;
+            t->v1 = 1.0f - v1r;
+            t->v2 = 1.0f - v2r;
+        } else {
+            t->u1 = 0.0f; t->v1 = 0.0f;
+            t->u2 = 1.0f; t->v2 = 1.0f;
+        }
+        g_game.sprTileCount++;
+    }
+
+    if (spr.patCols > 0 && spr.patRows > 0) {
+        if (outPatCols) *outPatCols = spr.patCols;
+        if (outPatRows) *outPatRows = spr.patRows;
+        if (outPatFlags) *outPatFlags = spr.patFlags;
+        return spr.tileCount;
+    }
+    return spr.isAni ? spr.tileCount : 0;
+}
+
+// .sp2: u2/v2 são OFFSETS (largura/altura) a partir de u1/v1, negativo = flip
+int SPR_LoadSP2(const char* sprName, int* outPatCols, int* outPatRows, int* outPatFlags) {
+    char sprFileName[64];
+    const char* ext = strrchr(sprName, '.');
+    if (ext && _stricmp(ext, ".sp2") == 0) {
+        strncpy(sprFileName, sprName, sizeof(sprFileName) - 1);
+    } else {
+        snprintf(sprFileName, sizeof(sprFileName), "%s.sp2", sprName);
+    }
+
+    int sprIdx = RES_Find(sprFileName);
+    if (sprIdx < 0) return 0;
+
+    uint32_t sprSize = RES_GetSize(sprIdx);
+    uint8_t* sprData = RES_ReadAlloc(sprIdx);
+    if (!sprData) return 0;
+
+    SPRFile spr;
+    if (!parseSPR(sprData, sprSize, &spr)) {
+        free(sprData);
+        return 0;
+    }
+    free(sprData);
+
+    int startIdx = g_game.sprTileCount;
+    for (int i = 0; i < spr.tileCount && g_game.sprTileCount < MAX_SPR_TILES; i++) {
+        SPRTileDef* t = &g_game.sprTiles[g_game.sprTileCount];
+        snprintf(t->name, sizeof(t->name), "%s_%d", sprFileName, i);
+        for (int ci = 0; t->name[ci]; ci++) {
+            if (t->name[ci] >= 'A' && t->name[ci] <= 'Z')
+                t->name[ci] = (char)(t->name[ci] + 32);
+        }
+        strncpy(t->texture, spr.tiles[i].texture, sizeof(t->texture) - 1);
+        t->srcX = spr.tiles[i].srcX;
+        t->srcY = spr.tiles[i].srcY;
+        t->srcW = spr.tiles[i].srcW;
+        t->srcH = spr.tiles[i].srcH;
+        t->flipH = spr.tiles[i].flipH;
+        t->flipV = spr.tiles[i].flipV;
+        t->texId = -1;
+
+        char texName[64];
+        strncpy(texName, spr.tiles[i].texture, sizeof(texName) - 1);
+        for (int ci = 0; texName[ci]; ci++) {
+            if (texName[ci] >= 'A' && texName[ci] <= 'Z')
+                texName[ci] = (char)(texName[ci] + 32);
+        }
+        t->texId = loadTextureFromRES(texName);
+
+        if (t->texId >= 0 && g_game.textures[t->texId].inUse) {
+            float texW = (float)g_game.textures[t->texId].width;
+            float texH = (float)g_game.textures[t->texId].height;
+            if (texW <= 0) texW = 256.0f;
+            if (texH <= 0) texH = 256.0f;
+            // .sp2: u2/v2 são OFFSETS de u1/v1 (negativo = flip)
+            float uStart = (float)spr.tiles[i].u1;
+            float uEnd = uStart + (float)spr.tiles[i].u2;
+            float vStart = (float)spr.tiles[i].v1;
+            float vEnd = vStart + (float)spr.tiles[i].v2;
+            t->u1 = uStart / texW;
+            t->u2 = uEnd / texW;
+            if (spr.tiles[i].v2 < 0) {
+                t->v1 = 1.0f - vEnd / texH;
+                t->v2 = 1.0f - vStart / texH;
+            } else {
+                t->v1 = 1.0f - vStart / texH;
+                t->v2 = 1.0f - vEnd / texH;
+            }
+        } else {
+            t->u1 = 0.0f; t->v1 = 0.0f;
+            t->u2 = 1.0f; t->v2 = 1.0f;
+        }
+        g_game.sprTileCount++;
+    }
+
+    if (spr.patCols > 0 && spr.patRows > 0) {
+        if (outPatCols) *outPatCols = spr.patCols;
+        if (outPatRows) *outPatRows = spr.patRows;
+        if (outPatFlags) *outPatFlags = spr.patFlags;
+        return spr.tileCount;
+    }
+    return spr.isAni ? spr.tileCount : 0;
+}
+
+// g_fontTexId is defined in font.c
+int g_fontDec00Id = -1;
+int g_fontSpr01 = -1;
+int g_fontSpr02 = -1;
+int g_fontSpr03 = -1;
+int g_fontSpr04 = -1;
+int g_fontSpr05 = -1;
+int g_fontSprW01 = -1;
+int g_fontSprW02 = -1;
+int g_fontSprW03 = -1;
+int g_fontSprW04 = -1;
+int g_fontSprW05 = -1;
+int g_fontSprM01 = -1;
+int g_fontSprM02 = -1;
+int g_fontSprM03 = -1;
+int g_fontSprM04 = -1;
+int g_fontSprM05 = -1;
+int g_fontSprHD01 = -1;
+int g_fontSprHD02 = -1;
+int g_fontSprHD03 = -1;
+int g_fontSprHD05 = -1;
+int g_fontSprBT01 = -1;
+int g_fontSprBT02 = -1;
+int g_fontArrow541 = -1;
+int g_fontArrow542 = -1;
+int g_fontArrow543 = -1;
+int g_fontArrow544 = -1;
+int g_fontArrow545 = -1;
+int g_fontArrowETC = -1;
+int g_fontArrowF = -1;
+
 void Resource_LoadFontAndArrows(const char* datPath) {
     if (!RES_Open(datPath)) return;
-    loadSPRFromRES("01.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("02.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("w01.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("w02.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("03.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("04.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("w03.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("w04.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("05.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("w05.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("m01.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("m02.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("m03.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("m04.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("m05.spr", NULL, NULL, NULL);
-    //loadSPRFromRES("HD01.SPR", NULL, NULL, NULL);
-    //loadSPRFromRES("HD02.SPR", NULL, NULL, NULL);
-    //loadSPRFromRES("HD03.SPR", NULL, NULL, NULL);
-    //loadSPRFromRES("HD05.SPR", NULL, NULL, NULL);
-    //loadSPRFromRES("BT_MC01.SPR", NULL, NULL, NULL);
-    //loadSPRFromRES("BT_MC02.SPR", NULL, NULL, NULL);
-    //loadSPRFromRES("arrow541.sp2", NULL, NULL, NULL);
-    //loadSPRFromRES("arrow542.sp2", NULL, NULL, NULL);
-    //loadSPRFromRES("arrow543.sp2", NULL, NULL, NULL);
-    //loadSPRFromRES("arrow544.sp2", NULL, NULL, NULL);
-    //loadSPRFromRES("arrow545.sp2", NULL, NULL, NULL);
-    //loadSPRFromRES("arrowETC.sp2", NULL, NULL, NULL);
-    //loadSPRFromRES("arrowf.spr", NULL, NULL, NULL);
+
+    int startCount = g_game.sprTileCount;
+
+    g_fontTexId = loadTextureFromRES("font.tga");
+    g_fontDec00Id = loadTextureFromRES("dec00.tga");
+
+    g_fontArrow541 = g_game.sprTileCount;
+    SPR_LoadSP2("arrow541.sp2", NULL, NULL, NULL);
+    g_fontArrow542 = g_game.sprTileCount;
+    SPR_LoadSP2("arrow542.sp2", NULL, NULL, NULL);
+    g_fontArrow543 = g_game.sprTileCount;
+    SPR_LoadSP2("arrow543.sp2", NULL, NULL, NULL);
+    g_fontArrow544 = g_game.sprTileCount;
+    SPR_LoadSP2("arrow544.sp2", NULL, NULL, NULL);
+    g_fontArrow545 = g_game.sprTileCount;
+    SPR_LoadSP2("arrow545.sp2", NULL, NULL, NULL);
+    g_fontArrowETC = g_game.sprTileCount;
+    SPR_LoadSP2("arrowETC.sp2", NULL, NULL, NULL);
+    g_fontArrowF = g_game.sprTileCount;
+    SPR_LoadSP2("arrowf.spr", NULL, NULL, NULL);
+
+    g_fontSpr01 = g_game.sprTileCount;
+    SPR_LoadSPR("01.spr", NULL, NULL, NULL);
+    g_fontSpr02 = g_game.sprTileCount;
+    SPR_LoadSPR("02.spr", NULL, NULL, NULL);
+    g_fontSprW01 = g_game.sprTileCount;
+    SPR_LoadSPR("w01.spr", NULL, NULL, NULL);
+    g_fontSprW02 = g_game.sprTileCount;
+    SPR_LoadSPR("w02.spr", NULL, NULL, NULL);
+    g_fontSpr03 = g_game.sprTileCount;
+    SPR_LoadSPR("03.spr", NULL, NULL, NULL);
+    g_fontSpr04 = g_game.sprTileCount;
+    SPR_LoadSPR("04.spr", NULL, NULL, NULL);
+    g_fontSprW03 = g_game.sprTileCount;
+    SPR_LoadSPR("w03.spr", NULL, NULL, NULL);
+    g_fontSprW04 = g_game.sprTileCount;
+    SPR_LoadSPR("w04.spr", NULL, NULL, NULL);
+    g_fontSpr05 = g_game.sprTileCount;
+    SPR_LoadSPR("05.spr", NULL, NULL, NULL);
+    g_fontSprW05 = g_game.sprTileCount;
+    SPR_LoadSPR("w05.spr", NULL, NULL, NULL);
+    g_fontSprM01 = g_game.sprTileCount;
+    SPR_LoadSPR("m01.spr", NULL, NULL, NULL);
+    g_fontSprM02 = g_game.sprTileCount;
+    SPR_LoadSPR("m02.spr", NULL, NULL, NULL);
+    g_fontSprM03 = g_game.sprTileCount;
+    SPR_LoadSPR("m03.spr", NULL, NULL, NULL);
+    g_fontSprM04 = g_game.sprTileCount;
+    SPR_LoadSPR("m04.spr", NULL, NULL, NULL);
+    g_fontSprM05 = g_game.sprTileCount;
+    SPR_LoadSPR("m05.spr", NULL, NULL, NULL);
+    g_fontSprHD01 = g_game.sprTileCount;
+    SPR_LoadSPR("HD01.SPR", NULL, NULL, NULL);
+    g_fontSprHD02 = g_game.sprTileCount;
+    SPR_LoadSPR("HD02.SPR", NULL, NULL, NULL);
+    g_fontSprHD03 = g_game.sprTileCount;
+    SPR_LoadSPR("HD03.SPR", NULL, NULL, NULL);
+    g_fontSprHD05 = g_game.sprTileCount;
+    SPR_LoadSPR("HD05.SPR", NULL, NULL, NULL);
+    g_fontSprBT01 = g_game.sprTileCount;
+    SPR_LoadSPR("BT_MC01.SPR", NULL, NULL, NULL);
+    g_fontSprBT02 = g_game.sprTileCount;
+    SPR_LoadSPR("BT_MC02.SPR", NULL, NULL, NULL);
+
+    // 00.DAT usa convenção TGA (V=0 topo), inverte V pra render corretamente
+    // Tiles com flipV=true já tem a inversão no .sp2, não trocar
+    for (int i = startCount; i < g_game.sprTileCount; i++) {
+        if (g_game.sprTiles[i].flipV) continue;
+        float tmp = g_game.sprTiles[i].v1;
+        g_game.sprTiles[i].v1 = g_game.sprTiles[i].v2;
+        g_game.sprTiles[i].v2 = tmp;
+    }
+
     RES_Close();
 }
