@@ -1398,11 +1398,14 @@ void Resource_LoadFontAndArrows(const char* datPath) {
 
     g_fontTexId = loadTextureFromRES("font.tga");
     g_fontDec00Id = loadTextureFromRES("dec00.tga");
+    Log_Print("DEBUG: g_fontDec00Id after load: %d\n", g_fontDec00Id);
 
     g_fontArrow541 = g_game.sprTileCount;
     SPR_LoadSP2("arrow541.sp2", NULL, NULL, NULL);
+    Log_Print("DEBUG: Before ARROW542 load: sprTileCount=%d\n", g_game.sprTileCount);
     g_fontArrow542 = g_game.sprTileCount;
     SPR_LoadSP2("arrow542.sp2", NULL, NULL, NULL);
+    Log_Print("DEBUG: After ARROW542 load: sprTileCount=%d, g_fontArrow542=%d\n", g_game.sprTileCount, g_fontArrow542);
     g_fontArrow543 = g_game.sprTileCount;
     SPR_LoadSP2("arrow543.sp2", NULL, NULL, NULL);
     g_fontArrow544 = g_game.sprTileCount;

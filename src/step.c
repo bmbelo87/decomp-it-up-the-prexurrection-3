@@ -263,6 +263,101 @@ bool Step_LoadSong(const char* path, StepSong* song)
         song->chartCount++;
     }
 
+    // Preenche NT_HOLD_B entre HEAD e TAIL
+    for (int c = 0; c < song->chartCount; c++)
+    {
+        StepChart* ch = &song->charts[c];
+        for (int panel = 0; panel < 5; panel++)
+        {
+            for (uint32_t ri = 0; ri < ch->rowCount; ri++)
+            {
+                uint8_t* v = NULL;
+                switch (panel) {
+                    case 0: v = &ch->rows[ri].half1.dl; break;
+                    case 1: v = &ch->rows[ri].half1.ul; break;
+                    case 2: v = &ch->rows[ri].half1.cn; break;
+                    case 3: v = &ch->rows[ri].half1.ur; break;
+                    case 4: v = &ch->rows[ri].half1.dr; break;
+                }
+                if (!v || *v != NT_HOLD_H) continue;
+
+                uint32_t tailRi = ri + 1;
+                while (tailRi < ch->rowCount) {
+                    uint8_t* tv = NULL;
+                    switch (panel) {
+                        case 0: tv = &ch->rows[tailRi].half1.dl; break;
+                        case 1: tv = &ch->rows[tailRi].half1.ul; break;
+                        case 2: tv = &ch->rows[tailRi].half1.cn; break;
+                        case 3: tv = &ch->rows[tailRi].half1.ur; break;
+                        case 4: tv = &ch->rows[tailRi].half1.dr; break;
+                    }
+                    if (tv && *tv == NT_HOLD_T) break;
+                    tailRi++;
+                }
+                if (tailRi >= ch->rowCount) continue;
+
+                // Preenche body entre head+1 e tail-1
+                for (uint32_t bri = ri + 1; bri < tailRi; bri++)
+                {
+                    uint8_t* bv = NULL;
+                    switch (panel) {
+                        case 0: bv = &ch->rows[bri].half1.dl; break;
+                        case 1: bv = &ch->rows[bri].half1.ul; break;
+                        case 2: bv = &ch->rows[bri].half1.cn; break;
+                        case 3: bv = &ch->rows[bri].half1.ur; break;
+                        case 4: bv = &ch->rows[bri].half1.dr; break;
+                    }
+                    if (bv && *bv == 0) *bv = NT_HOLD_B;
+                }
+
+                ri = tailRi;
+            }
+            // P2 (half2)
+            for (uint32_t ri = 0; ri < ch->rowCount; ri++)
+            {
+                uint8_t* v = NULL;
+                switch (panel) {
+                    case 0: v = &ch->rows[ri].half2.dl; break;
+                    case 1: v = &ch->rows[ri].half2.ul; break;
+                    case 2: v = &ch->rows[ri].half2.cn; break;
+                    case 3: v = &ch->rows[ri].half2.ur; break;
+                    case 4: v = &ch->rows[ri].half2.dr; break;
+                }
+                if (!v || *v != NT_HOLD_H) continue;
+
+                uint32_t tailRi = ri + 1;
+                while (tailRi < ch->rowCount) {
+                    uint8_t* tv = NULL;
+                    switch (panel) {
+                        case 0: tv = &ch->rows[tailRi].half2.dl; break;
+                        case 1: tv = &ch->rows[tailRi].half2.ul; break;
+                        case 2: tv = &ch->rows[tailRi].half2.cn; break;
+                        case 3: tv = &ch->rows[tailRi].half2.ur; break;
+                        case 4: tv = &ch->rows[tailRi].half2.dr; break;
+                    }
+                    if (tv && *tv == NT_HOLD_T) break;
+                    tailRi++;
+                }
+                if (tailRi >= ch->rowCount) continue;
+
+                for (uint32_t bri = ri + 1; bri < tailRi; bri++)
+                {
+                    uint8_t* bv = NULL;
+                    switch (panel) {
+                        case 0: bv = &ch->rows[bri].half2.dl; break;
+                        case 1: bv = &ch->rows[bri].half2.ul; break;
+                        case 2: bv = &ch->rows[bri].half2.cn; break;
+                        case 3: bv = &ch->rows[bri].half2.ur; break;
+                        case 4: bv = &ch->rows[bri].half2.dr; break;
+                    }
+                    if (bv && *bv == 0) *bv = NT_HOLD_B;
+                }
+
+                ri = tailRi;
+            }
+        }
+    }
+
     fclose(f);
     return song->chartCount > 0;
 }

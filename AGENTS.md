@@ -517,4 +517,128 @@ SPR files armazenam **V com 0 no topo** (convenção TGA/Y-DOWN). O OpenGL esper
 - `Sprite_DrawTileUV()` (util.c:156-159): converte V TGA → V OpenGL antes de passar pro `Texture_DrawUV`
 - `loadSPRFromRES()` (resource.c:671-674): armazena UV normalizado **sem flip** (preserva convenção TGA)
 
+## Judge & Combo Positioning Corrections (22/06/2026)
+
+### Goal
+- Correct positions of combo numbers, combo sprite, and popup effect to match original executable
+
+### Problem Identified
+- **Y=80 in Ghidra is RELATIVE to container, not absolute screen position**
+- Original uses `glPushMatrix()`/`glPopMatrix()` to establish coordinate system
+- Our hardcoded Y=80 was treating it as absolute screen position
+
+### Solution
+- Calculate position based on screen proportion: Y = 350.0f (~70% of screen height)
+- Original layout (640x480): Lifebar → Receptor → Judge → Combo → ComboSprite
+- Combo should appear below judge, not near receptor
+
+### Corrections Made
+1. **Combo Numbers**: 
+   - Changed from `centerY + 20` to `receptorY + 42.0f`
+   - File: `src/gameplay.c:1382`
+
+2. **Combo Sprite ("combo_")**:
+   - Changed from `centerY + 55 + 50` to `receptorY + 42.0f`  
+   - File: `src/gameplay.c:1393`
+
+3. **Popup Effect**:
+   - Changed from `Y = 38.0f` to `receptorY + 42.0f`
+   - Updated all `popupCreate` calls: `src/gameplay.c:409, 562, 609`
+
+### Original Coordinates (from Ghidra)
+- Combo numbers: `Font_DrawNumberP1(..., 0x50, ...)` - Y = 0x50 = 80 (relative to container)
+- Judge sprites: BGA event layer positioning (maintained as `centerY + 55 - 50`)
+- Receptor position: Y = 38 (our system) vs unknown (Ghidra)
+- Combo position: Y = 80 (Ghidra) = receptorY + 42 (our calculation)
+
+### Files Modified
+- `src/gameplay.c`: Position corrections for combo rendering relative to receptor
+- `PUMPYTESTE_COMBO_POSITION.EXE`: Test executable with corrected positioning
+
+## Original Combo Rendering System Implementation (22/06/2026)
+
+### Goal
+Implement original combo rendering system from PUMPY.EXE using FUN_00411b40, FUN_00411a90, and FUN_004119d0 functions
+
+### Implementation Details
+
+#### 1. Added Combo Comparison Variables
+- Added `combo_0` and `combo_1` to `GameplayStats` structure for player comparison logic
+- File: `include/pumpy.h:167-168`
+
+#### 2. Implemented Original Combo Functions
+- **FUN_00411b40()**: Main combo rendering function with special cases for 1000, 2000, 3000
+- **FUN_00411a90()**: Special combo sprite rendering function ("COMBO", "MAX COMBO")
+- **FUN_004119d0()**: Individual digit rendering function using 6x4 grid texture coordinates
+- File: `src/gameplay.c:1519-1625`
+
+#### 3. Updated Combo Logic
+- Modified `Gameplay_UpdateCombo()` to update both `g_game.stats.combo[p]` and comparison variables
+- Added combo comparison logic using original special values (1000=P1 higher, 2000=equal, 3000=P2 higher)
+- File: `src/gameplay.c:1025-1035`
+
+#### 4. Texture Binding Fix
+- Changed from `Font_BindTexture()` to `Texture_Bind(g_fontTexId)` for proper OpenGL texture binding
+- Fixed compilation issues with modulo operation on double and void pointer division
+- File: `src/gameplay.c:1521,1569`
+
+#### 5. Original Rendering Features
+- Special cases for combo values 1000, 2000, 3000 showing comparison sprites
+- Dynamic Y positioning using original timing formula: `(DAT_00da2264 % 0x3c) / 10 + offset`
+- OpenGL glBegin(GL_QUADS) for direct sprite rendering as in original
+- Original texture coordinate calculations for digit sprites (6x4 grid)
+- File: `src/gameplay.c:1401,1550-1574`
+
+### Key Technical Details
+- **Texture System**: Uses `g_fontTexId` (font.tga) for digit rendering
+- **Sprite System**: Uses `g_fontArrow542` for combo sprite indices
+- **Comparison Logic**: 1000=P1 higher, 2000=equal, 3000=P2 higher
+- **Positioning**: Dynamic Y calculated from song timing, relative to receptor position
+- **Rendering**: Direct OpenGL quad rendering with original texture coordinates
+
+### Testing
+- **Build**: Successful compilation with fixed texture binding and modulo operations
+- **Executable**: `PUMPYTESTE_COMBO_POSITION.EXE` contains complete original combo rendering system
+- **Next Steps**: Test special cases (1000, 2000, 3000) and verify combo comparison logic
+
 **Sempre que carregar/desenhar SPRs, verificar se Y/V não está invertido.** Se um tile aparecer cortado ao contrário no eixo Y, a correção de V precisa ser aplicada (como em `Sprite_DrawTileUV`).
+
+---
+
+## 🚨 REGRA ABSOLUTA — NUNCA use `git checkout HEAD -- <arquivo>` 🚨
+
+Isso destrói mudanças não commitadas sem chance de recuperação. Prefira `git stash` ou edição manual.
+
+---
+
+## Stage System
+
+### Grade (calcGrade em result.c)
+- Fórmula: `(perfect×10 + great×7 + good×5 + bad×2) / (total×10)`
+- S ≥ 0.95, A ≥ 0.85, B ≥ 0.75, C ≥ 0.60, D ≥ 0.40, F < 0.40
+- S=0, A=1, B=2, C=3, D=4, F=5
+
+### Stage Flow (g_game.stageCount)
+- `Menu_ResetState()` define: stageCount=3, bonusStage=true, isBonusSong=false
+- Loading.Enter decrementa stageCount (3→2→1→0); se stageCount==0, seta isBonusSong=true
+- Stage 1: stageCount=2 durante gameplay → M01.SPR
+- Stage 2: stageCount=1 → M02.SPR
+- Stage 3/Final: stageCount=0 → M04.SPR
+- Bonus: isBonusSong=true → M05.SPR
+
+### Grade Result (Result_GetNextState)
+- grade == 5 (F) → GameOver direto
+- grade >= 2 (B, C, D) → `bonusStage = false`
+- `isBonusSong == true` → GameOver direto (bonus já foi)
+- `stageCount > 0` → Stage Transition (LT01)
+- `bonusStage == true && stageCount == 0` → Stage Transition (LT03) → Song Select (bonus)
+- Senão → GameOver
+
+### Mapeamento Menu → Stage
+1. Menu_ENTER → Menu_ResetState() seta stageCount=3
+2. Song Select → Loading.Enter decrementa
+3. Gameplay → mostra Mxx.SPR
+4. Grade → decisão
+5. Stage Transition (60 frames) → volta ao Song Select
+
+O cursor do Song Select **volta pra última música jogada** (`g_game.songSelectHighlighted = g_game.selectedSongIndex` em loading.c).

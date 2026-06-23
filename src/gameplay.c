@@ -25,6 +25,7 @@ typedef enum {
 } JudgeType;
 
 static const char* g_judgeNames[] = { "", "Perfect!", "Great", "Good", "Bad", "Miss" };
+static const int g_judgeSpriteIndices[] = { -1, 7, 8, 9, 10, 11 }; // n1, n2, n3, n4, perfec, great_
 static const float g_judgeColors[6][3] = {
     {0,0,0}, {0.6f,1.0f,1.0f}, {0.6f,1.0f,0.6f}, {1.0f,1.0f,0.2f}, {1.0f,0.4f,0.4f}, {1.0f,0.5f,1.0f}
 };
@@ -51,6 +52,7 @@ static uint32_t g_lastPosMs;
 static int g_lastNoteRow;
 static bool g_hasAudio;
 static bool g_autoplay;
+static bool g_autoPanel[5]; // per-panel autoplay: DL, UL, CN, UR, DR
 static float g_scrollSpeedX; // current (interpolated) speed
 static float g_scrollSpeedTarget; // target speed from keypress
 
@@ -188,6 +190,17 @@ static int g_judgeDisplayCombo[2];
 static int g_blindTimer[2];
 static int g_prevBlindRow;
 static int g_lastPerfectRow[2][5];
+
+// Pop-up de score (catch effect)
+#define MAX_POPUPS 32
+static struct {
+    int score;       // valor do score (+1000, +500)
+    int combo;       // combo atual
+    float y;         // posicao Y atual (sobe)
+    float alpha;     // fade out
+    bool active;
+    int player;
+} g_popups[MAX_POPUPS];
 
 // Linhas com multiplas setas aguardando julgamento (ate BAD window expirar)
 #define MAX_PENDING 32
@@ -329,6 +342,21 @@ static JudgeType evaluateTiming(double diff)
     return JT_MISS;
 }
 
+static void popupCreate(int player, int score, int combo, float y)
+{
+    for (int i = 0; i < MAX_POPUPS; i++) {
+        if (!g_popups[i].active) {
+            g_popups[i].player = player;
+            g_popups[i].score = score;
+            g_popups[i].combo = combo;
+            g_popups[i].y = y;
+            g_popups[i].alpha = 1.0f;
+            g_popups[i].active = true;
+            break;
+        }
+    }
+}
+
 static int getPanelForButton(PadButton btn)
 {
     switch (btn)
@@ -357,14 +385,24 @@ static uint8_t getPanelValue(StepRow* row, int panel, int player)
 
 // Processa o julgamento final de uma linha
 static void processRowJudgment(int player, int row, JudgeType jt) {
+    int receptorY = 38;
+    // So Perfect/Great consomem a nota (ela some). Good/Bad/Miss passam reto.
     if (jt == JT_PERFECT || jt == JT_GREAT) {
         memset(&g_chart->rows[row], 0, sizeof(StepRow));
         for (int pan = 0; pan < 5; pan++)
-            if (getPanelValue(&g_chart->rows[row], pan, player))
-                g_lastPerfectRow[player][pan] = row;
+            g_lastPerfectRow[player][pan] = row;
     }
     g_judgeDisplayType[player] = jt;
     g_judgeDisplayTimer[player] = 0.6f;
+    int sc = 0, cb = g_game.stats.combo[player];
+    switch (jt) {
+        case JT_PERFECT: sc = 1000; if (cb > 3) sc += 1000; cb++; break;
+        case JT_GREAT:   sc = 500;  if (cb > 3) sc += 1000; cb++; break;
+        case JT_GOOD:    sc = 0;    break;
+        case JT_BAD:     sc = 0;    cb = 0; break;
+        default: break;
+    }
+if (sc > 0) popupCreate(player, sc, cb, 178.0f); // Y=80 (Ghidra) + 98 offset = Y=178 (game reality)
     switch (jt) {
         case JT_PERFECT:
         case JT_GREAT:
@@ -384,10 +422,24 @@ static void processRowJudgment(int player, int row, JudgeType jt) {
         default: break;
     }
     switch (jt) {
-        case JT_PERFECT: g_game.stats.perfectCount[player]++; g_game.stats.score[player] += 1000; break;
-        case JT_GREAT:   g_game.stats.greatCount[player]++;   g_game.stats.score[player] += 500;  break;
-        case JT_GOOD:    g_game.stats.goodCount[player]++;    g_game.stats.score[player] += 200;  break;
-        case JT_BAD:     g_game.stats.badCount[player]++;     g_game.stats.score[player] += 0;    break;
+        case JT_PERFECT:
+            g_game.stats.perfectCount[player]++;
+            g_game.stats.score[player] += 1000;
+            if (g_game.stats.combo[player] > 3)
+                g_game.stats.score[player] += 1000;
+            break;
+        case JT_GREAT:
+            g_game.stats.greatCount[player]++;
+            g_game.stats.score[player] += 500;
+            if (g_game.stats.combo[player] > 3)
+                g_game.stats.score[player] += 1000;
+            break;
+        case JT_GOOD:
+            g_game.stats.goodCount[player]++;
+            break;
+        case JT_BAD:
+            g_game.stats.badCount[player]++;
+            break;
         default: break;
     }
     if (g_game.stats.combo[player] > g_game.stats.maxCombo[player])
@@ -407,7 +459,30 @@ static void processPendingRows(int player) {
             jt = evaluateTiming(g_pending[i].worstDiff);
         else
             jt = JT_MISS;
-        g_nextNoteRow[player][0] = g_pending[i].row + 1;
+        // Row com HH/HB/HT nao capturado
+        for (int pan = 0; pan < 5; pan++) {
+            uint8_t pv = getPanelValue(&g_chart->rows[g_pending[i].row], pan, player);
+            if (!pv) continue;
+            if ((pv == NT_HOLD_H || pv == NT_HOLD_B || pv == NT_HOLD_T) && g_holdRows[player][pan] < 0) {
+                static const PadButton btnMap[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
+                if (!Input_IsPadDown(player, btnMap[pan]))
+                    jt = JT_MISS;
+                else {
+                    g_holdRows[player][pan] = g_pending[i].row;
+                    StepHalf* hh = (player == 0) ? &g_chart->rows[g_pending[i].row].half1 : &g_chart->rows[g_pending[i].row].half2;
+                    switch (pan) { case 0: hh->dl = 0; break; case 1: hh->ul = 0; break; case 2: hh->cn = 0; break; case 3: hh->ur = 0; break; case 4: hh->dr = 0; break; }
+                }
+            }
+        }
+        // Setar hold rows para hold heads na linha (mesmo em MISS)
+        for (int pan = 0; pan < 5; pan++)
+            if (getPanelValue(&g_chart->rows[g_pending[i].row], pan, player) == NT_HOLD_H)
+                g_holdRows[player][pan] = g_pending[i].row;
+        for (int pan = 0; pan < 5; pan++) {
+            uint8_t pv = getPanelValue(&g_chart->rows[g_pending[i].row], pan, player);
+            if (pv && pv != NT_HOLD_B && pv != NT_HOLD_T)
+                g_nextNoteRow[player][pan] = g_pending[i].row + 1;
+        }
         processRowJudgment(player, g_pending[i].row, jt);
     }
 }
@@ -428,250 +503,201 @@ static void processInput(int player)
 {
     if (!g_songLoaded) return;
 
-    // Collect hits per row (key=row, value={bestDiff, jt, anyValid})
-    #define MAX_ROW_HITS 256
-    static int hitRows[MAX_ROW_HITS];
-    static double hitDiffs[MAX_ROW_HITS];
-    static int hitPanels[MAX_ROW_HITS];
-    static int hitCount = 0;
-    hitCount = 0;
-
+    // Depois: isNewHit para taps (hold heads sao capturados pelo processHolds)
+    static int logCtr = 0; logCtr++;
     for (int b = 0; b < PAD_BUTTONS_PER_PLAYER; b++)
     {
         int panel = getPanelForButton((PadButton)b);
         if (panel < 0) continue;
-
-        bool isNewHit = Input_IsPadHit(player, (PadButton)b);
-        bool isHeld = Input_IsPadDown(player, (PadButton)b);
-        if (!isNewHit && !isHeld) continue;
+        if (!Input_IsPadHit(player, (PadButton)b)) continue;
 
         double bestDiff = 999;
         int bestRow = -1;
 
-        if (isNewHit)
+        for (int ri = g_nextNoteRow[player][panel]; ri < (int)g_chart->rowCount; ri++)
         {
-            for (int ri = g_nextNoteRow[player][panel]; ri < (int)g_chart->rowCount; ri++)
-            {
-                uint8_t val = getPanelValue(&g_chart->rows[ri], panel, player);
-                if (!val) continue;
-                if (val == NT_HOLD_B || val == NT_HOLD_T) continue;
+            uint8_t val = getPanelValue(&g_chart->rows[ri], panel, player);
+            if (!val || val == NT_HOLD_B || val == NT_HOLD_T) continue;
 
-                double rowTime = getRowTime(ri);
-                double diff = g_songTime - rowTime;
-                if (diff < -JUDGE_BAD) break;
-                if (diff > JUDGE_BAD) { g_nextNoteRow[player][panel] = ri + 1; continue; }
+            double rowTime = getRowTime(ri);
+            double diff = g_songTime - rowTime;
+            if (diff < -JUDGE_BAD) break;
+            if (diff > JUDGE_BAD) { g_nextNoteRow[player][panel] = ri + 1; continue; }
 
-                double ad = diff < 0 ? -diff : diff;
-                if (ad < bestDiff) { bestDiff = ad; bestRow = ri; }
-            }
-        }
-        else if (isHeld)
-        {
-            for (int ri = g_nextNoteRow[player][panel]; ri < (int)g_chart->rowCount; ri++)
-            {
-                uint8_t val = getPanelValue(&g_chart->rows[ri], panel, player);
-                if (!val || val == NT_HOLD_B || val == NT_HOLD_T) continue;
-
-                double rowTime = getRowTime(ri);
-                double diff = g_songTime - rowTime;
-
-                if (val == NT_HOLD_H)
-                {
-                    if (diff > -JUDGE_BAD - 0.001f && diff <= JUDGE_BAD + 0.001f)
-                    {
-                        bestDiff = 0;
-                        bestRow = ri;
-                        break;
-                    }
-                    else if (diff > JUDGE_BAD)
-                    {
-                        g_nextNoteRow[player][panel] = ri + 1;
-                        continue;
-                    }
-                    else break;
-                }
-                else
-                {
-                    if (diff > JUDGE_BAD)
-                    {
-                        g_nextNoteRow[player][panel] = ri + 1;
-                        continue;
-                    }
-                    else break;
-                }
-            }
+            double ad = diff < 0 ? -diff : diff;
+            if (ad < bestDiff) { bestDiff = ad; bestRow = ri; }
         }
 
-        if (bestRow >= 0)
-        {
-            // Conta quantas setas tem nesta linha
-            int arrowCount = 0;
-            for (int pan = 0; pan < 5; pan++)
-                if (getPanelValue(&g_chart->rows[bestRow], pan, player)) arrowCount++;
+        if (bestRow < 0) continue;
 
-            if (arrowCount > 1) {
-                // Multi-seta: adiar julgamento
-                g_nextNoteRow[player][panel] = bestRow + 1;
-                // Procura entrada pendente existente ou cria nova
-                int slot = -1;
-                for (int i = 0; i < MAX_PENDING; i++) {
-                    if (g_pending[i].active && g_pending[i].row == bestRow) { slot = i; break; }
-                }
-                if (slot < 0) {
-                    for (int i = 0; i < MAX_PENDING; i++) {
-                        if (!g_pending[i].active) { slot = i; break; }
-                    }
-                }
-                if (slot >= 0) {
+        // DEBUG: tap hit
+        Log_Print("TAPHIT: p=%d pan=%d row=%d diff=%.3f\n", player, panel, bestRow, bestDiff);
+
+        // Conta quantas setas na linha
+        int arrowsInRow = 0;
+        for (int pan = 0; pan < 5; pan++)
+            if (getPanelValue(&g_chart->rows[bestRow], pan, player)) arrowsInRow++;
+
+        if (arrowsInRow > 1) {
+            // Pendente: aguardar todas as setas
+            g_nextNoteRow[player][panel] = bestRow + 1;
+            int slot = -1;
+            for (int i = 0; i < MAX_PENDING; i++)
+                if (g_pending[i].active && g_pending[i].row == bestRow) { slot = i; break; }
+            if (slot < 0)
+                for (int i = 0; i < MAX_PENDING; i++)
+                    if (!g_pending[i].active) { slot = i; break; }
+            if (slot >= 0) {
+                if (!g_pending[slot].active) {
+                    g_pending[slot].active = true;
                     g_pending[slot].row = bestRow;
                     g_pending[slot].deadline = g_songTime + JUDGE_BAD;
                     g_pending[slot].totalMask = 0;
-                    for (int pan = 0; pan < 5; pan++)
-                        if (getPanelValue(&g_chart->rows[bestRow], pan, player))
+                    g_pending[slot].hitMask = 0;
+                    for (int pan = 0; pan < 5; pan++) {
+                        uint8_t pv = getPanelValue(&g_chart->rows[bestRow], pan, player);
+                        // So contar taps (ignorar HH=10, HB=11, HT=12)
+                        if (pv && pv < NT_HOLD_H)
                             g_pending[slot].totalMask |= (1 << pan);
-                    g_pending[slot].hitMask |= (1 << panel);
-                    double adBest = bestDiff < 0 ? -bestDiff : bestDiff;
-                    if (adBest > g_pending[slot].worstDiff)
-                        g_pending[slot].worstDiff = adBest;
-                    if (!g_pending[slot].active) {
-                        g_pending[slot].active = true;
-                        g_pendingCount++;
                     }
+                    g_pendingCount++;
                 }
-                continue;  // Não processa agora, aguarda outras setas
+                g_pending[slot].hitMask |= (1 << panel);
+                g_pending[slot].worstDiff = bestDiff;
+
+                // Se todas apertadas, processa AGORA
+                if ((g_pending[slot].hitMask & g_pending[slot].totalMask) == g_pending[slot].totalMask) {
+                    g_pending[slot].active = false;
+                    g_pendingCount--;
+                    JudgeType pjt = evaluateTiming(g_pending[slot].worstDiff);
+                    // Se row tem HH/HB/HT nao capturado
+                    for (int pan = 0; pan < 5; pan++) {
+                        uint8_t pv = getPanelValue(&g_chart->rows[bestRow], pan, player);
+                        if (!pv) continue;
+                        if ((pv == NT_HOLD_H || pv == NT_HOLD_B || pv == NT_HOLD_T) && g_holdRows[player][pan] < 0) {
+                            static const PadButton btnMap[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
+                            if (!Input_IsPadDown(player, btnMap[pan]))
+                                pjt = JT_MISS;
+                            else {
+                                g_holdRows[player][pan] = bestRow;
+                                // Limpa SÓ este painel (catch visual)
+                                StepHalf* hh = (player == 0) ? &g_chart->rows[bestRow].half1 : &g_chart->rows[bestRow].half2;
+                                switch (pan) { case 0: hh->dl = 0; break; case 1: hh->ul = 0; break; case 2: hh->cn = 0; break; case 3: hh->ur = 0; break; case 4: hh->dr = 0; break; }
+                            }
+                        }
+                    }
+                    if (pjt == JT_PERFECT || pjt == JT_GREAT)
+                        memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
+                    g_judgeDisplayType[player] = pjt;
+                    g_judgeDisplayTimer[player] = 0.6f;
+                    { int sc = 0, cb = g_game.stats.combo[player];
+                      int receptorY = 38; // Receptor Y position for combo popup calculation
+                      switch (pjt) {
+                        case JT_PERFECT: sc = 1000; if (cb > 3) sc += 1000; cb++; break;
+                        case JT_GREAT:   sc = 500;  if (cb > 3) sc += 1000; cb++; break;
+                        default: break;
+} if (sc > 0) popupCreate(player, sc, cb, 178.0f); } // Y=80 (Ghidra) + 98 offset = Y=178 (game reality)
+                    switch (pjt) {
+                        case JT_PERFECT: case JT_GREAT:
+                            g_game.stats.combo[player]++;
+                            g_judgeDisplayCombo[player] = g_game.stats.combo[player];
+                            g_game.stats.missCombo[player] = 0;
+                            if (pjt == JT_PERFECT) {
+                                g_game.stats.perfectCount[player]++;
+                                g_game.stats.score[player] += 1000;
+                                if (g_game.stats.combo[player] > 3) g_game.stats.score[player] += 1000;
+                            } else {
+                                g_game.stats.greatCount[player]++;
+                                g_game.stats.score[player] += 500;
+                                if (g_game.stats.combo[player] > 3) g_game.stats.score[player] += 1000;
+                            }
+                            break;
+                        case JT_GOOD:
+                            g_judgeDisplayCombo[player] = g_game.stats.combo[player];
+                            g_game.stats.missCombo[player] = 0;
+                            g_game.stats.goodCount[player]++;
+                            break;
+                        case JT_BAD:
+                            g_game.stats.combo[player] = 0;
+                            g_judgeDisplayCombo[player] = 0;
+                            g_game.stats.missCombo[player] = 0;
+                            g_game.stats.badCount[player]++;
+                            break;
+                        default: break;
+                    }
+                    if (g_game.stats.combo[player] > g_game.stats.maxCombo[player])
+                        g_game.stats.maxCombo[player] = g_game.stats.combo[player];
+                }
             }
-
-            // 1 seta apenas: processa imediatamente (comportamento atual)
-            g_nextNoteRow[player][panel] = bestRow + 1;
-            JudgeType hitJt = evaluateTiming(bestDiff);
-            if (hitJt == JT_PERFECT || hitJt == JT_GREAT) {
-                memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
-                g_lastPerfectRow[player][panel] = bestRow;
-                Log_Print("SET PERFECT ROW: p=%d pan=%d row=%d\n", player, panel, bestRow);
-            }
-            hitRows[hitCount] = bestRow;
-            hitDiffs[hitCount] = bestDiff;
-            hitPanels[hitCount] = panel;
-            hitCount++;
-        }
-    }
-
-    // Deduplicate by row: keep WORST timing per row, count 1 combo per row
-    static int dedupRows[MAX_ROW_HITS];
-    static double dedupDiffs[MAX_ROW_HITS];
-    static int dedupCount = 0;
-    dedupCount = 0;
-
-    for (int i = 0; i < hitCount; i++)
-    {
-        // Check if this row was already hit by another panel
-        int existing = -1;
-        for (int d = 0; d < dedupCount; d++)
-            if (dedupRows[d] == hitRows[i]) { existing = d; break; }
-
-        if (existing >= 0)
-        {
-            // Keep the WORST diff (larger absolute = worse timing)
-            if (hitDiffs[i] > dedupDiffs[existing])
-                dedupDiffs[existing] = hitDiffs[i];
-        }
-        else
-        {
-            dedupRows[dedupCount] = hitRows[i];
-            dedupDiffs[dedupCount] = hitDiffs[i];
-            dedupCount++;
-        }
-    }
-
-    // Process each deduplicated row
-    for (int i = 0; i < dedupCount; i++)
-    {
-        JudgeType jt = evaluateTiming(dedupDiffs[i]);
-        int bestRow = dedupRows[i];
-
-        // Mark all panels in this row as judged
-        for (int pan = 0; pan < 5; pan++)
-        {
-            uint8_t val = getPanelValue(&g_chart->rows[bestRow], pan, player);
-            if (val)
-            {
-                NoteHit* nh = &g_noteHits[player][pan][g_noteHitCount[player][pan]++];
-                nh->rowIndex = bestRow;
-                nh->judged = true;
-                nh->judgment = jt;
-                nh->hitTime = g_songTime;
-            }
+            continue;
         }
 
-        // Perfect/Great: remover a nota do chart pra não renderizar mais
-        if (jt == JT_PERFECT || jt == JT_GREAT) {
+        // 1 seta: processa direto
+        g_nextNoteRow[player][panel] = bestRow + 1;
+        JudgeType jt = evaluateTiming(bestDiff);
+        if (jt == JT_PERFECT || jt == JT_GREAT)
             memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
-        }
-
         g_judgeDisplayType[player] = jt;
         g_judgeDisplayTimer[player] = 0.6f;
-
-        switch (jt)
-        {
-            case JT_PERFECT:
-            case JT_GREAT:
+        { int sc = 0, cb = g_game.stats.combo[player];
+          int receptorY = 38; // Receptor Y position for combo popup calculation
+          switch (jt) {
+            case JT_PERFECT: sc = 1000; if (cb > 3) sc += 1000; cb++; break;
+            case JT_GREAT:   sc = 500;  if (cb > 3) sc += 1000; cb++; break;
+            default: break;
+} if (sc > 0) popupCreate(player, sc, cb, 178.0f); } // Y=80 (Ghidra) + 98 offset = Y=178 (game reality)
+        switch (jt) {
+            case JT_PERFECT: case JT_GREAT:
                 g_game.stats.combo[player]++;
                 g_judgeDisplayCombo[player] = g_game.stats.combo[player];
                 g_game.stats.missCombo[player] = 0;
+                if (jt == JT_PERFECT) {
+                    g_game.stats.perfectCount[player]++;
+                    g_game.stats.score[player] += 1000;
+                    if (g_game.stats.combo[player] > 3) g_game.stats.score[player] += 1000;
+                } else {
+                    g_game.stats.greatCount[player]++;
+                    g_game.stats.score[player] += 500;
+                    if (g_game.stats.combo[player] > 3) g_game.stats.score[player] += 1000;
+                }
                 break;
             case JT_GOOD:
                 g_judgeDisplayCombo[player] = g_game.stats.combo[player];
                 g_game.stats.missCombo[player] = 0;
+                g_game.stats.goodCount[player]++;
                 break;
             case JT_BAD:
                 g_game.stats.combo[player] = 0;
                 g_judgeDisplayCombo[player] = 0;
                 g_game.stats.missCombo[player] = 0;
+                g_game.stats.badCount[player]++;
                 break;
-            default:
-                break;
-        }
-
-        switch (jt)
-        {
-            case JT_PERFECT: g_game.stats.perfectCount[player]++; g_game.stats.score[player] += 1000; break;
-            case JT_GREAT:   g_game.stats.greatCount[player]++;   g_game.stats.score[player] += 500;  break;
-            case JT_GOOD:    g_game.stats.goodCount[player]++;    g_game.stats.score[player] += 200;  break;
-            case JT_BAD:     g_game.stats.badCount[player]++;     g_game.stats.score[player] += 0;    break;
             default: break;
         }
-
         if (g_game.stats.combo[player] > g_game.stats.maxCombo[player])
             g_game.stats.maxCombo[player] = g_game.stats.combo[player];
     }
+}
 
-    // Process holds: check if any dedup'd row has a hold head
-    // (hold detection uses the row we just hit, not nextNoteRow)
-    for (int i = 0; i < dedupCount; i++)
-    {
-        int hitRow = dedupRows[i];
-        for (int panel = 0; panel < 5; panel++)
-        {
-            uint8_t val = getPanelValue(&g_chart->rows[hitRow], panel, player);
-            if (val == NT_HOLD_H)
-            {
-                g_holdRows[player][panel] = hitRow;
-                Log_Print("GP: hold started P%d Panel%d row %d\n", player, panel, hitRow);
-            }
-        }
-    }
+static bool anyAutoPanel(void)
+{
+    for (int a = 0; a < 5; a++)
+        if (g_autoPanel[a]) return true;
+    return false;
 }
 
 static void processAutoplay(void)
 {
-    if (!g_songLoaded || !g_autoplay) return;
+    if (!g_songLoaded || !anyAutoPanel()) return;
 
-    for (int p = 0; p < 2; p++)
+    for (int p = 0; p < 1; p++)
     {
         // Collect autoplay hits per row
         int hitRows[10], hitCount = 0;
         for (int panel = 0; panel < 5; panel++)
         {
+            if (!g_autoPanel[panel]) continue;
+
             for (int ri = g_nextNoteRow[p][panel]; ri < (int)g_chart->rowCount; ri++)
             {
                 uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
@@ -704,8 +730,16 @@ static void processAutoplay(void)
             g_judgeDisplayType[p] = JT_PERFECT;
             g_judgeDisplayTimer[p] = 0.6f;
             g_judgeDisplayCombo[p] = ++g_game.stats.combo[p];
+                // Update combo comparison variables (original logic)
+                if (p == 0) {
+                    g_game.stats.combo_0 = g_game.stats.combo[p];
+                } else {
+                    g_game.stats.combo_1 = g_game.stats.combo[p];
+                }
             g_game.stats.missCombo[p] = 0;
             g_game.stats.score[p] += 1000;
+            if (g_game.stats.combo[p] > 3)
+                g_game.stats.score[p] += 1000;
             if (g_game.stats.combo[p] > g_game.stats.maxCombo[p])
                 g_game.stats.maxCombo[p] = g_game.stats.combo[p];
 
@@ -721,56 +755,64 @@ static void processAutoplay(void)
                     g_lastPerfectRow[p][panel] = hitRows[i];
             }
 
-            // Autoplay sempre Perfect: limpa a nota do chart
-            memset(&g_chart->rows[hitRows[i]], 0, sizeof(StepRow));
+            // Autoplay: limpa SÓ os painéis com autoplay
+            for (int panel = 0; panel < 5; panel++) {
+                if (!g_autoPanel[panel]) continue;
+                uint8_t val = getPanelValue(&g_chart->rows[hitRows[i]], panel, p);
+                if (!val) continue;
+                StepHalf* h = (p == 0) ? &g_chart->rows[hitRows[i]].half1 : &g_chart->rows[hitRows[i]].half2;
+                switch (panel) {
+                    case 0: h->dl = 0; break;
+                    case 1: h->ul = 0; break;
+                    case 2: h->cn = 0; break;
+                    case 3: h->ur = 0; break;
+                    case 4: h->dr = 0; break;
+                }
+            }
         }
     }
 }
-
+                
 static void processHolds(void)
 {
     if (!g_songLoaded) return;
-    for (int p = 0; p < 2; p++)
+    for (int p = 0; p < 1; p++)
     {
         for (int panel = 0; panel < 5; panel++)
         {
-            // Reverse panel-to-button mapping: panel 0=DL=3, 1=UL=0, 2=C=2, 3=UR=1, 4=DR=4
             static const PadButton panelToBtn[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
-            bool held = g_autoplay ? true : Input_IsPadDown(p, panelToBtn[panel]);
+            bool held = g_autoPanel[panel] ? true : Input_IsPadDown(p, panelToBtn[panel]);
 
-            // Auto-capture: if no active hold but button held, check for hold head
+            // Auto-capture: botao segurado e HH ou HB/HT nao capturado (re-press)
             if (g_holdRows[p][panel] < 0 && held)
             {
-                int ri = g_nextNoteRow[p][panel];
-                if (ri < (int)g_chart->rowCount)
+                for (int ri = g_nextNoteRow[p][panel]; ri < (int)g_chart->rowCount; ri++)
                 {
                     uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
-                    if (val == NT_HOLD_H)
-                    {
-                        double rowTime = getRowTime(ri);
-                        double diff = g_songTime - rowTime;
-                        if (diff > -JUDGE_BAD - 0.001f && diff <= JUDGE_BAD + 0.001f)
-                        {
-                            g_holdRows[p][panel] = ri;
-                            g_nextNoteRow[p][panel] = ri + 1;
-                            NoteHit* nh = &g_noteHits[p][panel][g_noteHitCount[p][panel]++];
-                            nh->rowIndex = ri;
-                            nh->judged = true;
-                            nh->judgment = JT_PERFECT;
-                            nh->hitTime = g_songTime;
+                    if (!val) continue;
+                    double rt = getRowTime(ri);
+                    if (g_songTime < rt - JUDGE_BAD) break; // muito no futuro
+                    // So captura se for nota de hold (HH, HB, HT)
+                    if (val == NT_HOLD_H || val == NT_HOLD_B || val == NT_HOLD_T) {
+                        Log_Print("AUTOCAPTURE: p=%d pan=%d ri=%d val=%d held=%d\n", p, panel, ri, val, held);
+                        g_holdRows[p][panel] = ri;
+                        g_nextNoteRow[p][panel] = ri + 1;
+                        // Limpa SÓ este painel (catch visual), deixa outros paineis (taps) intactos
+                        StepHalf* hh = (p == 0) ? &g_chart->rows[ri].half1 : &g_chart->rows[ri].half2;
+                        switch (panel) { case 0: hh->dl = 0; break; case 1: hh->ul = 0; break; case 2: hh->cn = 0; break; case 3: hh->ur = 0; break; case 4: hh->dr = 0; break; }
+                        int hasTap = 0;
+                        for (int pan = 0; pan < 5; pan++)
+                            if (pan != panel && getPanelValue(&g_chart->rows[ri], pan, p)) { hasTap = 1; break; }
+                        if (!hasTap) {
                             g_game.stats.combo[p]++;
                             g_game.stats.missCombo[p] = 0;
                             g_game.stats.score[p] += 1000;
+                            if (g_game.stats.combo[p] > 3) g_game.stats.score[p] += 1000;
                             g_game.stats.perfectCount[p]++;
-                            if (g_game.stats.combo[p] > g_game.stats.maxCombo[p])
-                                g_game.stats.maxCombo[p] = g_game.stats.combo[p];
+                            if (g_game.stats.combo[p] > g_game.stats.maxCombo[p]) g_game.stats.maxCombo[p] = g_game.stats.combo[p];
                             g_judgeDisplayType[p] = JT_PERFECT;
                             g_judgeDisplayTimer[p] = 0.6f;
                             g_judgeDisplayCombo[p] = g_game.stats.combo[p];
-                        }
-                        else if (diff > JUDGE_BAD)
-                        {
-                            g_nextNoteRow[p][panel] = ri + 1;
                         }
                     }
                 }
@@ -778,40 +820,53 @@ static void processHolds(void)
 
             if (g_holdRows[p][panel] < 0) continue;
 
-            // Scan forward from head to find body/tail rows that need processing
+            // Scan forward from head to find body/tail rows
+            { int db=0, ub=0, cb=0, urb=0, drb=0;
+              if (Input_IsPadDown(p, PAD_DL)) db=1; if (Input_IsPadDown(p, PAD_UL)) ub=1;
+              if (Input_IsPadDown(p, PAD_C)) cb=1; if (Input_IsPadDown(p, PAD_UR)) urb=1;
+              if (Input_IsPadDown(p, PAD_DR)) drb=1;
+              Log_Print("BODYSCAN: p=%d pan=%d start=%d holdRows=%d isDown=%d%d%d%d%d\n", p, panel, g_holdRows[p][panel] + 1, g_holdRows[p][panel], db, ub, cb, urb, drb); }
             for (int ri = g_holdRows[p][panel] + 1; ri < (int)g_chart->rowCount; ri++)
             {
                 uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
-                if (val != NT_HOLD_B && val != NT_HOLD_T) break;
+                if (val != 0 && val != NT_HOLD_B && val != NT_HOLD_T) break;
+                if (val == 0) continue;
 
                 double rowTime = getRowTime(ri);
-                if (g_songTime < rowTime - 0.05) break; // too early
+                if (g_songTime < rowTime - 0.01) break;
 
-                // Check if this body/tail row was already judged
+                // Ja julgado? (por processMisses ou anterior)
                 bool alreadyJudged = false;
                 for (int h = 0; h < g_noteHitCount[p][panel]; h++)
                     if (g_noteHits[p][panel][h].rowIndex == ri) { alreadyJudged = true; break; }
                 if (alreadyJudged) continue;
 
-                // If button is still held, auto-perfect; otherwise miss
-                JudgeType jt = held ? JT_PERFECT : JT_MISS;
-                NoteHit* nh = &g_noteHits[p][panel][g_noteHitCount[p][panel]++];
-                nh->rowIndex = ri;
-                nh->judged = true;
-                nh->judgment = jt;
-                nh->hitTime = g_songTime;
-
                 if (!held)
                 {
+                    Log_Print("HOLD MISS: p=%d pan=%d ri=%d held=%d\n", p, panel, ri, held);
                     g_game.stats.combo[p] = 0;
                     g_game.stats.missCount[p]++;
                     g_game.stats.missCombo[p]++;
                 }
                 else
                 {
-                    g_game.stats.combo[p]++;
+                    // Verifica se tem tap na mesma row (se sim, nao da score - o tap dita)
+                    bool hasUnjudgedTap = false;
+                    for (int op = 0; op < 5; op++) {
+                        if (op == panel) continue;
+                        uint8_t ov = getPanelValue(&g_chart->rows[ri], op, p);
+                        if (ov && ov != NT_HOLD_B && ov != NT_HOLD_T) { hasUnjudgedTap = true; break; }
+                    }
+                    // Held body sempre limpa SÓ este painel (catch visual), mesmo com tap
+                    StepHalf* hh = (p == 0) ? &g_chart->rows[ri].half1 : &g_chart->rows[ri].half2;
+                    switch (panel) { case 0: hh->dl = 0; break; case 1: hh->ul = 0; break; case 2: hh->cn = 0; break; case 3: hh->ur = 0; break; case 4: hh->dr = 0; break; }
+                    if (!hasUnjudgedTap) {
+                        Log_Print("HOLD PERF: p=%d pan=%d ri=%d held=%d\n", p, panel, ri, held);
+                        g_game.stats.combo[p]++;
                     g_game.stats.missCombo[p] = 0;
                     g_game.stats.score[p] += 1000;
+                    if (g_game.stats.combo[p] > 3)
+                        g_game.stats.score[p] += 1000;
                     g_game.stats.perfectCount[p]++;
                     if (g_game.stats.combo[p] > g_game.stats.maxCombo[p])
                         g_game.stats.maxCombo[p] = g_game.stats.combo[p];
@@ -819,14 +874,15 @@ static void processHolds(void)
                     g_judgeDisplayTimer[p] = 0.6f;
                     g_judgeDisplayCombo[p] = g_game.stats.combo[p];
                 }
+                }
 
                 if (val == NT_HOLD_T || !held)
                 {
-                    g_holdRows[p][panel] = -1; // hold complete
+                    g_holdRows[p][panel] = -1;
                     g_nextNoteRow[p][panel] = ri + 1;
                 }
             }
-        }
+            }
     }
 }
 
@@ -844,9 +900,12 @@ static void processMisses(void)
             {
                 uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
                 if (!val) continue;
-                if (val == NT_HOLD_B || val == NT_HOLD_T)
+                if (val == NT_HOLD_H || val == NT_HOLD_B || val == NT_HOLD_T)
                 {
                     if (g_holdRows[p][panel] >= 0) continue;
+                    // Se botao segurado, pula tambem (auto-capture ou pending vai processar)
+                    static const PadButton btnMap[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
+                    if (Input_IsPadDown(p, btnMap[panel])) continue;
                 }
 
                 double rowTime = getRowTime(ri);
@@ -940,9 +999,18 @@ void Gameplay_Update(float dt)
     if (!g_songLoaded) return;
     if (dt > 0.05f) dt = 0.05f;
 
-    if (Input_IsKeyHit(VK_F1)) {
-        g_autoplay = !g_autoplay;
-        Log_Print("GP: autoplay %s\n", g_autoplay ? "ON" : "OFF");
+    {
+        int autoKeys[5] = { VK_F1, VK_F2, VK_F3, VK_F4, VK_F5 };
+        static const char* autoNames[5] = { "DL", "UL", "CN", "UR", "DR" };
+        for (int a = 0; a < 5; a++)
+        {
+            if (Input_IsKeyHit(autoKeys[a]))
+            {
+                g_autoPanel[a] = !g_autoPanel[a];
+                Log_Print("GP: autoplay %s %s\n", autoNames[a], g_autoPanel[a] ? "ON" : "OFF");
+            }
+        }
+        g_autoplay = g_autoPanel[0] && g_autoPanel[1] && g_autoPanel[2] && g_autoPanel[3] && g_autoPanel[4];
     }
 
     // Scroll speed adjustment (number keys 1-8, smooth animation)
@@ -986,9 +1054,9 @@ void Gameplay_Update(float dt)
     }
 
     processInput(0);
-    processInput(1);
+    //processInput(1);  // P2 desativado
     processPendingRows(0);
-    processPendingRows(1);
+    //processPendingRows(1);
     processAutoplay();
     processHolds();
     processMisses();
@@ -997,6 +1065,13 @@ void Gameplay_Update(float dt)
     {
         if (g_judgeDisplayTimer[p] > 0)
             g_judgeDisplayTimer[p] -= dt;
+    }
+    // Popup update (sobe e fade out)
+    for (int i = 0; i < MAX_POPUPS; i++) {
+        if (!g_popups[i].active) continue;
+        g_popups[i].y += 60.0f * dt;  // sobe
+        g_popups[i].alpha -= 1.2f * dt;  // fade
+        if (g_popups[i].alpha <= 0) g_popups[i].active = false;
     }
 
     // Blind por beat (ativa 02.SPR em cada batida)
@@ -1101,7 +1176,7 @@ void Gameplay_Render(void)
     for (int j = 0; j < 4; j++)
         jZoneHalf[j] = jWindows[j] * currentPixelsPerSec;
 
-    for (int p = 0; p < 2; p++)
+    for (int p = 0; p < 1; p++)
     {
         int centerX = (p == 0) ? P1_CENTER_X : P2_CENTER_X;
         int baseX = centerX - 80;
@@ -1212,63 +1287,72 @@ void Gameplay_Render(void)
 
         int rh = 57;
         // Notas (scroll do fundo para o topo)
-        static const int kPanelOrder[5] = {1, 3, 0, 2, 4};  // UL/UR atras, DL/CN/DR frente
-        for (int ri = startRow; ri <= endRow; ri++)
-        {
-            StepRow* row = &g_chart->rows[ri];
-            float y = (float)(receptorY + rh / 2 + (ri - scrollRow) * pixelsPerRow);
-            if (y < receptorY - rh / 2 - 50 || y > scrollBottom + PANEL_SIZE) continue;
+        int rh2 = 57;
+        static const int kPanelOrder[5] = {1, 3, 0, 2, 4};
+        static const int kBodyTile[5] = {12, 16, 20, 18, 14};
+        static const int kTailTile[5] = {13, 17, 21, 19, 15};
+        static const float kBodyOffX[5] = {-4.0f, -3.0f, 0.0f, 3.0f, 4.0f};
 
-            double timeToHit = getRowTime(ri) - g_songTime;
-
-            float alpha = 1.0f;
-            if (y > scrollBottom - PANEL_SIZE)
-                alpha = (scrollBottom + PANEL_SIZE - y) / (float)(PANEL_SIZE * 1.5f);
-            if (alpha > 1) alpha = 1;
-            if (alpha < 0) alpha = 0;
-
-            bool anyNote = false;
+        // Pass 0: Hold bodies (esticados entre runs de NT_HOLD_B)
+        if (g_fontArrowETC >= 0) {
             for (int panel = 0; panel < 5; panel++)
             {
-                if (getPanelValue(row, panel, p)) { anyNote = true; break; }
-            }
-            // Perfect/Great consumiu esta row? Não mostrar NADA desta row
-            // Ordem: UL/UR atras, DL/CN/DR na frente
-            for (int rio = 0; rio < 5; rio++)
-            {
-                int panel = kPanelOrder[rio];
-                if (ri == g_lastPerfectRow[p][panel]) { 
-                    if (p == 0) Log_Print("BLOCKED ROW: ri=%d panel=%d g_lastPerfectRow=%d\n", ri, panel, g_lastPerfectRow[p][panel]);
-                    anyNote = false; break; 
-                }
-            }
-            if (!anyNote) continue;
-
-            static const int kPanelOrder[5] = {1, 3, 0, 2, 4};
-            for (int rio = 0; rio < 5; rio++)
-            {
-                int panel = kPanelOrder[rio];
-                uint8_t val = getPanelValue(row, panel, p);
-                if (!val) continue;
-
-                float a = alpha * 0.85f;
-                float nw = (float)pW[panel];
-                float nh = (float)rh;
-                uint8_t aa = (uint8_t)(a * 255);
-                uint8_t nr, ng, nb;
-                int nt = (int)val;
-                
-                if (panel == 0 || panel == 4)      { nr = 52;  ng = 120; nb = 200; }
-                else if (panel == 1 || panel == 3) { nr = 200; ng = 60;  nb = 60; }
-                else                                { nr = 220; ng = 200; nb = 40; }
-
-                if (nt == NT_HOLD_B)
+                for (int ri = startRow; ri <= endRow; ri++)
                 {
-                    float bodyH = rh * 2.5f;
-                    uint8_t ba = (uint8_t)(a * 128);
-                    Render_Rect(posX[panel], y - bodyH / 2, nw, bodyH, nr, ng, nb, ba);
+                    uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
+                    if (val != NT_HOLD_B) continue;
+                    if (ri == g_lastPerfectRow[p][panel]) continue;
+
+                    int endRi = ri + 1;
+                    while (endRi < (int)g_chart->rowCount) {
+                        uint8_t nv = getPanelValue(&g_chart->rows[endRi], panel, p);
+                        if (nv != NT_HOLD_B) break;
+                        endRi++;
+                    }
+
+                    float y1 = (float)(receptorY + rh2 / 2 + (ri - scrollRow) * pixelsPerRow);
+                    float y2 = (float)(receptorY + rh2 / 2 + (endRi - scrollRow) * pixelsPerRow);
+                    if (y2 < y1) { float t = y1; y1 = y2; y2 = t; } // garantir Y1 < Y2 (Y-UP)
+                    float totalH = y2 - y1;
+                    if (totalH <= 0) { ri = endRi - 1; continue; }
+
+                    int idx = g_fontArrowETC + kBodyTile[panel];
+                    float sw = (float)g_game.sprTiles[idx].srcW;
+                    Sprite_DrawTileUV(idx, posX[panel] + sw / 2.0f + kBodyOffX[panel], y1 + totalH / 2.0f, sw, totalH, 1.0f);
+                    ri = endRi - 1;
                 }
-                else if (panel == 0 && g_fontArrow542 >= 0) {
+            }
+        }
+
+        // Pass 1: Hold tails
+        for (int ri = startRow; ri <= endRow; ri++)
+        {
+            if (g_fontArrowETC < 0) break;
+            float y = (float)(receptorY + rh2 / 2 + (ri - scrollRow) * pixelsPerRow);
+            if (y < receptorY - rh2 / 2 - 50 || y > scrollBottom + PANEL_SIZE) continue;
+            for (int rio = 0; rio < 5; rio++)
+            {
+                int panel = kPanelOrder[rio];
+                uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
+                if (val != NT_HOLD_T) continue;
+                int idx = g_fontArrowETC + kTailTile[panel];
+                float sw = (float)g_game.sprTiles[idx].srcW;
+                float sh = (float)g_game.sprTiles[idx].srcH;
+                Sprite_DrawTileUV(idx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+            }
+        }
+        // Pass 2: Taps/HoldHeads
+        for (int ri = startRow; ri <= endRow; ri++)
+        {
+            float y = (float)(receptorY + rh2 / 2 + (ri - scrollRow) * pixelsPerRow);
+            if (y < receptorY - rh2 / 2 - 50 || y > scrollBottom + PANEL_SIZE) continue;
+            for (int rio = 0; rio < 5; rio++)
+            {
+                int panel = kPanelOrder[rio];
+                uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
+                if (!val || val == NT_HOLD_B || val == NT_HOLD_T) continue;
+
+                if (panel == 0 && g_fontArrow542 >= 0) {
                     float sw = (float)g_game.sprTiles[g_fontArrow542].srcW;
                     float sh = (float)g_game.sprTiles[g_fontArrow542].srcH;
                     Sprite_DrawTileUV(g_fontArrow542, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
@@ -1293,33 +1377,35 @@ void Gameplay_Render(void)
                     float sh = (float)g_game.sprTiles[g_fontArrow544].srcH;
                     Sprite_DrawTileUV(g_fontArrow544, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
                 }
-                else if (nt == NT_HOLD_H || nt == NT_HOLD_T)
-                {
-                    float hh = rh * 1.0f;
-                    Render_Rect(posX[panel] - 1, y - hh / 2 - 1, nw + 2, hh + 2, 0, 0, 0, aa);
-                    Render_Rect(posX[panel], y - hh / 2, nw, hh, nr, ng, nb, aa);
-                }
-                else
-                {
-                    Render_Rect(posX[panel] - 1, y - nh / 2 - 1, nw + 2, nh + 2, 0, 0, 0, aa);
-                    Render_Rect(posX[panel], y - nh / 2, nw, nh, nr, ng, nb, aa);
-                }
+                // SPRs cobrem todos os tipos de nota
             }
         }
 
         int centerY = g_game.screenHeight / 2;
+    int receptorY = 38; // Same as in rendering loop
 
-        // Score (small, top corner)
+        // Score (large, center top for P1)
         char scoreBuf[64];
         if (p == 0)
         {
-            snprintf(scoreBuf, sizeof(scoreBuf), "P1: %u", g_game.stats.score[p]);
-            Font_DrawString(10, 10, scoreBuf, 1, 1, 0, 1);
+            snprintf(scoreBuf, sizeof(scoreBuf), "%u", g_game.stats.score[p]);
+            Font_DrawStringCenteredScaled(g_game.screenWidth/2, 460, scoreBuf, 1, 1, 0, 1, 1.8f);
         }
-        else
-        {
-            snprintf(scoreBuf, sizeof(scoreBuf), "P2: %u", g_game.stats.score[p]);
-            Font_DrawString(g_game.screenWidth - 120, 10, scoreBuf, 1, 1, 0, 1);
+
+        // Stage indicator sprite (M01-M05)
+        // loading.c decrementa stageCount ANTES do gameplay:
+        // Stage 1: stageCount=2, Stage 2: stageCount=1, Final: stageCount=0, Bonus: isBonusSong
+        int stageSpr = -1;
+        if (g_game.isBonusSong) stageSpr = g_fontSprM05;
+        else if (g_game.stageCount == 2) stageSpr = g_fontSprM01;
+        else if (g_game.stageCount == 1) stageSpr = g_fontSprM02;
+        else if (g_game.stageCount == 0) stageSpr = g_fontSprM04;
+        if (stageSpr >= 0 && g_game.sprTileCount > stageSpr) {
+            float sx = (float)g_game.sprTiles[stageSpr].srcX;
+            float sy = (float)g_game.sprTiles[stageSpr].srcY;
+            float sw = (float)g_game.sprTiles[stageSpr].srcW;
+            float sh = (float)g_game.sprTiles[stageSpr].srcH;
+            Sprite_DrawTileUV(stageSpr, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 1.0f);
         }
 
         // Judge + combo display (3-line, timed)
@@ -1329,9 +1415,15 @@ void Gameplay_Render(void)
             float a = g_judgeDisplayTimer[p] / 0.6f;
             float fc = g_judgeColors[jt][0], gc = g_judgeColors[jt][1], bc = g_judgeColors[jt][2];
 
-            // Line 1: Judge text (larger scale, top)
+            // Line 1: Judge sprite (with scale effect)
             float brightA = a * 0.9f + 0.1f;
-            Font_DrawStringCenteredScaled(centerX, centerY + 55, g_judgeNames[jt], fc, gc, bc, brightA, 2.5f);
+            float scale = 1.3f - (a * 0.3f); // Scale from 1.3x to 1.0x
+            int judgeSpriteIdx = g_fontArrow542 + g_judgeSpriteIndices[jt];
+            if (g_fontArrow542 >= 0 && judgeSpriteIdx >= 0 && judgeSpriteIdx < g_game.sprTileCount) {
+                float sw = (float)g_game.sprTiles[judgeSpriteIdx].srcW * scale;
+                float sh = (float)g_game.sprTiles[judgeSpriteIdx].srcH * scale;
+                Sprite_DrawTileUV(judgeSpriteIdx, centerX, centerY + 55 - 50, sw, sh, brightA);
+            }
 
             // Line 2 & 3: combo number + "COMBO"
             int comboVal = 0;
@@ -1346,28 +1438,49 @@ void Gameplay_Render(void)
 
             if (showCombo)
             {
-                float decW = 48.4f;
-                float decSpacing = -8.0f;
-                float step = decW + decSpacing;  // 32
-                // Ghidra: unidades primeiro (direita), centenas por ultimo (esquerda)
-                int d3 = comboVal % 10;          // unidades
-                int d2 = (comboVal / 10) % 10;   // dezenas
-                int d1 = comboVal / 100;         // centenas
-                float totalW = decW * 3 + decSpacing * 2;
-                float dx = (float)centerX - totalW / 2.0f;
-                float dy = (float)(centerY + 20);
-                float da = brightA;
-                // Renderiza da direita pra esquerda: unidades → dezenas → centenas
-                Font_DrawDecDigit(g_fontDec00Id, dx + step * 2, dy, d3, da);
-                Font_DrawDecDigit(g_fontDec00Id, dx + step, dy, d2, da);
-                Font_DrawDecDigit(g_fontDec00Id, dx, dy, d1, da);
-                Font_DrawStringCenteredScaled(centerX, centerY - 12, "COMBO", 1.0f, 1.0f, 1.0f, brightA, 1.6f);
+                // Original combo rendering logic using FUN_00411b40
+                glPushMatrix();
+                
+                // Calculate dynamic Y position based on original logic
+                // Original: glTranslatef(0x43800000,(float)((DAT_00da2264 % 0x3c) / 10) + _DAT_00434a20,0);
+                float dynamicY = (float)((int)(g_songTime * 10) % 60) / 10.0f + 42.0f; // Approximation of original timing logic
+                glTranslatef(centerX, dynamicY, 0.0f);
+                
+                // Determine combo value for comparison logic
+                int comparisonValue = 0;
+                if (g_game.stats.combo_0 > g_game.stats.combo_1) {
+                    comparisonValue = 1000; // Player 1 has higher combo
+                } else if (g_game.stats.combo_0 == g_game.stats.combo_1) {
+                    comparisonValue = 2000; // Both players equal
+                } else if (g_game.stats.combo_1 > g_game.stats.combo_0) {
+                    comparisonValue = 3000; // Player 2 has higher combo
+                } else {
+                    comparisonValue = comboVal; // Regular combo value
+                }
+                
+                // Call original combo rendering function
+                FUN_00411b40(comparisonValue);
+                
+                glPopMatrix();
             }
         }  // end judge/combo
+
+        // Pop-up de score (catch effect)
+        for (int i = 0; i < MAX_POPUPS; i++) {
+            if (!g_popups[i].active || g_popups[i].player != p) continue;
+            char buf[32];
+            int centerX = (p == 0) ? 160 : 480;
+            snprintf(buf, sizeof(buf), "+%d", g_popups[i].score);
+            Font_DrawStringCenteredScaled(centerX, (int)g_popups[i].y, buf, 1,1,0, g_popups[i].alpha, 1.2f);
+            if (g_popups[i].combo > 1) {
+                snprintf(buf, sizeof(buf), "%d", g_popups[i].combo);
+                Font_DrawStringCenteredScaled(centerX, (int)g_popups[i].y - 16, buf, 1,1,1, g_popups[i].alpha * 0.7f, 0.8f);
+            }
+        }
     }  // end for p
 
     // Life bars (03/04/05) — renderizadas DEPOIS de todos os players, por cima de tudo
-    for (int p = 0; p < 2; p++) {
+    for (int p = 0; p < 1; p++) {
         // 03.SPR life bar border (g_fontSpr03)
         if (g_fontSpr03 >= 0) {
             float px = (p == 0) ? 0.0f : 320.0f;
@@ -1425,9 +1538,125 @@ void Gameplay_Render(void)
         Font_DrawStringCentered(g_game.screenWidth/2, 10, timeBuf, 0.7f, 0.7f, 0.7f, 1.0f);
     }
 
-    if (g_autoplay)
-        Font_DrawStringCentered(g_game.screenWidth/2, 28, "AUTOPLAY", 0, 1, 0, 0.7f);
+    if (anyAutoPanel()) {
+        static const char* pn[5] = {"DL","UL","CN","UR","DR"};
+        char buf[64] = {0}; int pos = 0;
+        for (int a = 0; a < 5; a++)
+            if (g_autoPanel[a]) pos += snprintf(buf+pos, sizeof(buf)-pos, "%s ", pn[a]);
+        Font_DrawStringCentered(g_game.screenWidth/2, 28, buf, 0, 1, 0, 0.7f);
+    }
 }
 
+
+// Original combo rendering functions from PUMPY.EXE
+
+// FUN_00411b40: Main combo rendering function
+void FUN_00411b40(int comboValue)
+{
+    // Bind the font texture (original uses DAT_0079e70c)
+    Texture_Bind(g_fontTexId);
+    
+    // Special cases for combo comparison sprites (1000, 2000, 3000)
+    if (comboValue == 1000) {
+        // Player 1 has higher combo - show "COMBO" sprite
+        glTranslatef(0x43800000, 0, 0);  // X position from original
+        FUN_00411a90(0);  // Special sprite type 0
+        return;
+    }
+    
+    if (comboValue == 2000) {
+        // Both players have same combo - show "MAX COMBO" sprite  
+        glTranslatef(0x43800000, 0, 0);  // X position from original
+        FUN_00411a90(1);  // Special sprite type 1
+        return;
+    }
+    
+    if (comboValue == 3000) {
+        // Player 2 has higher combo - show "COMBO" sprite
+        glTranslatef(0x43800000, 0, 0);  // X position from original
+        FUN_00411a90(2);  // Special sprite type 2
+        return;
+    }
+    
+    // Regular combo numbers - break down into digits
+    int digitPos = 3;  // Start with 3 digits (hundreds place)
+    do {
+        int digit = comboValue % 10;  // Get the rightmost digit
+        FUN_004119d0(digit);         // Render the digit
+        glTranslatef(0xc2080000, 0, 0);  // Move left for next digit (from original)
+        digitPos--;
+        comboValue = comboValue / 10;  // Remove the rightmost digit
+    } while (digitPos > 0);
+}
+
+// FUN_00411a90: Special combo sprite rendering function
+void FUN_00411a90(int spriteType)
+{
+    float u1, u2;
+    
+    if (spriteType == 0) {
+        // COMBO sprite (Player 1 higher)
+        u1 = 0x3f200000;  // 0.125f
+        u2 = 0x3f480000;  // 0.28125f
+    } 
+    else if (spriteType == 1) {
+        // MAX COMBO sprite (Both players equal)
+        u1 = 0x3f480000;  // 0.28125f
+        u2 = 0x3f700000;  // 0.4375f
+    } 
+    else if (spriteType == 2) {
+        // COMBO sprite (Player 2 higher)
+        u1 = 0x3f480000;  // 0.28125f
+        u2 = 0x3f480000;  // 0.28125f + dynamic width
+        u2 = 0.78125f - g_game.sprTiles[g_fontArrow542 + 12].srcW / 256.0f;
+    }
+    else {
+        u2 = g_game.sprTiles[g_fontArrow542 + 12].srcW / 256.0f;
+        if (spriteType == 2) {
+            u1 = 0x3f480000;  // 0.28125f
+            u2 = 0.78125f - g_game.sprTiles[g_fontArrow542 + 12].srcW / 256.0f;
+        }
+    }
+    
+    glBegin(GL_QUADS);
+    glTexCoord2f(u1, 0x3f530000);  // V = 0.328125f (top)
+    glVertex2i(0, 0x30);           // Y = 48 (bottom)
+    glTexCoord2f(u1, 0x3f818000);  // V = 0.5078125f (bottom)
+    glVertex2i(0, 0);              // Y = 0 (top)
+    glTexCoord2f(u2, 0x3f818000);  // V = 0.5078125f (bottom)
+    glVertex2i(0x28, 0);          // Y = 0 (top)
+    glTexCoord2f(u2, 0x3f530000);  // V = 0.328125f (top)
+    glVertex2i(0x28, 0x30);       // Y = 48 (bottom)
+    glEnd();
+}
+
+// FUN_004119d0: Individual digit rendering function
+void FUN_004119d0(int digit)
+{
+    // Bind the dec00 texture (same as original)
+    Texture_Bind(g_fontDec00Id);
+    
+    // Original texture coordinates from Ghidra analysis
+    // Numbers are arranged in 5x2 grid (not 6x4)
+    float tileWidth = 0.1875f;    // 0x0000303e = 48/256
+    float tileHeight = 0.203125f; // 0x0000343e = 52/256  
+    float vOffset = 0.15625f;     // 0x0000283f = 40/256
+    
+    float u1 = (float)(digit % 5) * tileWidth;
+    float v1 = (float)(digit / 5) * tileHeight + vOffset;
+    float u2 = u1 + tileWidth;
+    float v2 = v1 + tileHeight;
+    
+    glBegin(GL_QUADS);
+    glTexCoord2f(u1, v1);
+    glVertex2i(0, 0x2d);           // Y = 45 (bottom)
+    glTexCoord2f(u1, v2);
+    glVertex2i(0, 0);              // Y = 0 (top)
+    glTexCoord2f(u2, v2);
+    glVertex2i(0x2c, 0);          // Y = 0 (top)
+    glTexCoord2f(u2, v1);
+    glVertex2i(0x2c, 0x2d);       // Y = 45 (bottom)
+    glEnd();
+}
 
 //force

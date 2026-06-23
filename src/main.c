@@ -50,7 +50,7 @@ static void LoadBGAForState(GameState state) {
             bgaName = "00";
         }
         break;
-    case STATE_GAMEOVER:     bgaName = "084"; break;
+    case STATE_GAMEOVER:         bgaName = "84"; break;
     case STATE_SONG_SELECT:
     case STATE_SONG_SELECT_B:
     case STATE_LOADING_PNZ:
@@ -58,6 +58,13 @@ static void LoadBGAForState(GameState state) {
     case STATE_STAFF_ENTER:
     case STATE_STAFF:
     case STATE_STAFF_END:        bgaName = ""; break;
+    case STATE_STAGE_TRANSITION:
+        if (g_game.bonusStage && g_game.stageCount == 0 && !g_game.isBonusSong)
+            bgaName = "lt03";
+        else
+            bgaName = "lt01";
+        break;
+    case STATE_GAMEOVER_ENTER:   bgaName = "84"; break;
     case STATE_DANCE_GRADE_ENTER:
     case STATE_DANCE_GRADE_DISPLAY: bgaName = "83"; break;
     default: break;
@@ -283,6 +290,40 @@ void Game_Update(float dt) {
     case STATE_DANCE_GRADE_DISPLAY:
         Result_Update(dt);
         break;
+    case STATE_STAGE_TRANSITION:
+        if (g_game.stateFrame == 1) {
+            Log_Print("STAGE: transition count=%d bonus=%d\n", g_game.stageCount, g_game.bonusStage);
+        }
+        if (g_game.stateFrame >= 60) {
+            if (g_game.bonusStage && g_game.stageCount == 0 && !g_game.isBonusSong) {
+                // Vai pro bonus stage
+                Game_ChangeState(STATE_SONG_SELECT);
+            } else if (g_game.isBonusSong) {
+                // Bonus terminou, game over
+                Game_ChangeState(STATE_GAMEOVER_ENTER);
+            } else if (g_game.stageCount == 0 && !g_game.bonusStage) {
+                // Sem bonus, game over
+                Game_ChangeState(STATE_GAMEOVER_ENTER);
+            } else {
+                // Proximo stage
+                Game_ChangeState(STATE_SONG_SELECT);
+            }
+        }
+        break;
+    case STATE_GAMEOVER_ENTER:
+        if (g_game.stateFrame == 1) {
+            BGM_Stop();
+            Render_SetGlobalColor(0, 0, 0, 0);
+        }
+        if (g_game.stateFrame >= 120) {
+            Render_SetGlobalColor(0, 0, 0, 1);
+        }
+        if (g_game.stateFrame >= 150) {
+            Resource_ClearBGA();
+            Menu_ResetState();
+            Game_ChangeState(STATE_MENU_ENTER);
+        }
+        break;
     case STATE_STAFF_ENTER:
         Staff_Enter();
         break;
@@ -440,6 +481,18 @@ void Game_Render(void) {
         break;
     case STATE_DANCE_GRADE_DISPLAY:
         Result_Render();
+        break;
+    case STATE_STAGE_TRANSITION:
+        if (g_game.stageCount > 0 && g_game.bonusStage) {
+            Font_DrawStringCentered(320, 240, "NEXT STAGE", 1, 1, 1, 1);
+        } else if (g_game.bonusStage && g_game.stageCount == 0) {
+            Font_DrawStringCentered(320, 240, "BONUS STAGE", 1, 1, 0, 1);
+        } else {
+            Font_DrawStringCentered(320, 240, "FINAL STAGE", 1, 0, 0, 1);
+        }
+        break;
+    case STATE_GAMEOVER_ENTER:
+        Font_DrawStringCentered(320, 240, "GAME OVER", 1, 0, 0, 1);
         break;
     case STATE_GAMEOPTION_ENTER:
     case STATE_GAMEOPTION_ANIM:

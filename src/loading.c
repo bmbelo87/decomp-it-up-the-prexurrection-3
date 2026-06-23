@@ -12,6 +12,12 @@ void Loading_Enter(int songId) {
     g_loadingTimer = LOADING_DURATION_MS;
     g_pnzTexId = -1;
 
+    // Decrementa stage count (exceto no bonus que nao altera)
+    if (g_game.stageCount > 0)
+        g_game.stageCount--;
+    else
+        g_game.isBonusSong = true;
+
     char path[MAX_PATH];
     snprintf(path, sizeof(path), "%s\\TITLE\\T%d.pnz", g_game.currentDirectory, songId);
     Log_Print("Loading: loading PNZ '%s'\n", path);

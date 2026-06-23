@@ -63,16 +63,53 @@ static void drawNumP2(int rx, int y, int v, int nd, int elap, int offX) {
     }
 }
 
-static int calcGrade(int perfect, int great, int good, int bad, int miss) {
+static int calcGrade(int perfect, int great, int good, int bad, int miss, int maxCombo) {
     int total = perfect + great + good + bad + miss;
     if (total == 0) return 5;
     float w = (float)(perfect*10 + great*7 + good*5 + bad*2) / (float)(total*10);
-    if (w >= 0.95f) return 0;
-    if (w >= 0.85f) return 1;
-    if (w >= 0.75f) return 2;
-    if (w >= 0.60f) return 3;
-    if (w >= 0.40f) return 4;
-    return 5;
+    if (w >= 0.95f) return 0;  // S
+    if (w >= 0.85f) return 1;  // A
+    if (w >= 0.75f) return 2;  // B
+    if (w >= 0.60f) return 3;  // C
+    if (w >= 0.40f) return 4;  // D
+    return 5;                   // F
+}
+
+// Decide proximo estado baseado nas grades e contagem de stages
+GameState Result_GetNextState(void) {
+    int g1 = calcGrade(g_game.stats.perfectCount[0], g_game.stats.greatCount[0],
+                       g_game.stats.goodCount[0], g_game.stats.badCount[0],
+                       g_game.stats.missCount[0], (int)g_game.stats.maxCombo[0]);
+    int g2 = calcGrade(g_game.stats.perfectCount[1], g_game.stats.greatCount[1],
+                       g_game.stats.goodCount[1], g_game.stats.badCount[1],
+                       g_game.stats.missCount[1], (int)g_game.stats.maxCombo[1]);
+
+    // Só P1 (P2 desativado)
+    int grade = g1;
+
+    Log_Print("RESULT NEXT: grade=%d g1=%d g2=%d stageCount=%d bonusStage=%d isBonus=%d\n", grade, g1, g2, g_game.stageCount, g_game.bonusStage, g_game.isBonusSong);
+
+    // F = game over
+    if (grade == 5) {
+        Log_Print("RESULT DECISION: grade=F -> GAMEOVER\n");
+        return STATE_GAMEOVER_ENTER;
+    }
+
+    // Stage bonus: se S ou A mantem, caso contrario perde o bonus
+    if (grade >= 2) // B, C, D
+        g_game.bonusStage = false;
+
+    // Bonus stage ja foi: game over direto
+    if (g_game.isBonusSong)
+        return STATE_GAMEOVER_ENTER;
+
+    if (g_game.stageCount > 0)
+        return STATE_STAGE_TRANSITION;
+
+    if (g_game.bonusStage)
+        return STATE_STAGE_TRANSITION;  // vai pro bonus
+
+    return STATE_GAMEOVER_ENTER;
 }
 
 void Result_Enter(void) {
@@ -89,10 +126,10 @@ void Result_Enter(void) {
 
     g_gradeP1 = calcGrade(g_game.stats.perfectCount[0], g_game.stats.greatCount[0],
                           g_game.stats.goodCount[0], g_game.stats.badCount[0],
-                          g_game.stats.missCount[0]);
+                          g_game.stats.missCount[0], (int)g_game.stats.maxCombo[0]);
     g_gradeP2 = calcGrade(g_game.stats.perfectCount[1], g_game.stats.greatCount[1],
                           g_game.stats.goodCount[1], g_game.stats.badCount[1],
-                          g_game.stats.missCount[1]);
+                          g_game.stats.missCount[1], (int)g_game.stats.maxCombo[1]);
     Log_Print("Result: grades P1=%d P2=%d\n", g_gradeP1, g_gradeP2);
 }
 
@@ -110,11 +147,11 @@ void Result_Update(float dt) {
 
     g_resultFrame++;
     if (g_resultFrame >= 0x24E) {
-        Log_Print("RESULT: auto-transition at f=%d bgaCount=%d\n", g_resultFrame, g_game.bgaPicCount);
+        GameState ns = Result_GetNextState();
+        Log_Print("RESULT: auto-transition at f=%d, next=%d=%s\n", g_resultFrame, ns, ns==STATE_GAMEOVER_ENTER?"GAMEOVER":ns==STATE_STAGE_TRANSITION?"STAGE_TRANS":"SONG_SEL");
         BGM_Stop();
         Resource_ClearBGA();
-        Log_Print("RESULT: after ClearBGA bgaCount=%d\n", g_game.bgaPicCount);
-        Game_ChangeState(STATE_MENU_ENTER);
+        Game_ChangeState(ns);
         return;
     }
     if (Input_IsKeyHit(VK_ESCAPE) || Input_IsKeyHit(VK_RETURN) ||
@@ -122,20 +159,19 @@ void Result_Update(float dt) {
         Log_Print("RESULT: manual exit at f=%d bgaCount=%d\n", g_resultFrame, g_game.bgaPicCount);
         BGM_Stop();
         Resource_ClearBGA();
-        Log_Print("RESULT: after ClearBGA bgaCount=%d\n", g_game.bgaPicCount);
-        Game_ChangeState(STATE_MENU_ENTER);
+        Log_Print("RESULT: manual exit, next=%d\n", Result_GetNextState());
+        Game_ChangeState(Result_GetNextState());
         return;
     }
     if (Input_IsKeyHit(VK_ESCAPE) || Input_IsKeyHit(VK_RETURN) ||
         Input_IsKeyHit(VK_SPACE) || Input_IsKeyHit(VK_F1)) {
-        Log_Print("RESULT: manual exit at f=%d bgaCount=%d\n", g_resultFrame, g_game.bgaPicCount);
+        Log_Print("RESULT: manual exit (2nd), next=%d\n", Result_GetNextState());
         BGM_Stop();
         glClear(GL_COLOR_BUFFER_BIT);
         Texture_Shutdown();
         Resource_ClearBGA();
-        Log_Print("RESULT: after ClearBGA bgaCount=%d\n", g_game.bgaPicCount);
         Render_SetGlobalColor(0, 0, 0, 1.0f);
-        Game_ChangeState(STATE_MENU_ENTER);
+        Game_ChangeState(Result_GetNextState());
         return;
     }
     // Keep BGA playing/looping so background tiles cycle
@@ -173,7 +209,7 @@ void Result_Render(void) {
     }
 
     if (drawNums) {
-        for (int p = 0; p < 2; p++) {
+        for (int p = 0; p < 1; p++) {
             int stats[7] = {
                 g_game.stats.perfectCount[p],
                 g_game.stats.greatCount[p],
@@ -197,12 +233,12 @@ void Result_Render(void) {
     // Grade letter via BGA event layer: frames 211-416
     if (f > 0xd2 && f < 0x1a0) {
         BGA_SetEventLayer(0, f + 0x348, 44 + g_gradeP1);
-        BGA_SetEventLayer(0, f + 0x438, 44 + g_gradeP2);
+        //BGA_SetEventLayer(0, f + 0x438, 44 + g_gradeP2);  // P2 desativado
     }
 
-    // CLEAR/FAIL via BGA event layer: after frame 419
+    // CLEAR/FAIL
     if (f > 0x1a3) {
-        int clearFail = (g_gradeP1 < 5 || g_gradeP2 < 5) ? 0x1d : 0x1b;
+        int clearFail = (g_gradeP1 < 5) ? 0x1d : 0x1b;
         int cfOff = clearFail == 0x1d ? 0xc1 : 0x175;
         BGA_SetEventLayer(0, f + cfOff, clearFail);
     }

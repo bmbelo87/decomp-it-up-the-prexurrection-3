@@ -7,6 +7,9 @@ int g_menuSelection = 0; // 0=none, 1=UL(Start), 2=UR(Options), 3=DL(Credits), 4
 void Menu_ResetState(void) {
     g_menuOption = 0;
     g_menuSelection = 0;
+    g_game.stageCount = 3;
+    g_game.bonusStage = true;
+    g_game.isBonusSong = false;
 }
 
 static bool padHit(int player, PadButton btn) {
@@ -22,6 +25,7 @@ void Gamestate_UpdateMenu(float dt) {
     (void)dt;
     switch (g_game.state) {
     case STATE_MENU_ENTER:
+        Menu_ResetState();
         g_game.state = STATE_MENU_INPUT;
         break;
     case STATE_MENU_INPUT:

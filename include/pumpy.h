@@ -17,7 +17,7 @@
 #include "song.h"
 #include "step.h"
 
-#define GAME_VERSION "0.3"
+#define GAME_VERSION "0.4"
 #define GAME_BUILD_DATE "Jun 12 2026"
 #define GAME_BUILD_TIME "15:13:38"
 #define TARGET_FPS 60
@@ -217,6 +217,8 @@ typedef struct {
 typedef struct {
     uint32_t score[2];
     uint32_t combo[2];
+    uint32_t combo_0;  // Combo for player 0 (used in comparison logic)
+    uint32_t combo_1;  // Combo for player 1 (used in comparison logic)
     int32_t life[2];
     uint32_t maxCombo[2];
     int perfectCount[2];
@@ -301,6 +303,9 @@ typedef struct {
     bool isVSL;           // true when current song uses 3D VSL instead of BGA
     
     bool showDebug;
+    int stageCount;      // 3 = Stage 1, 2 = Stage 2, 1 = Stage 3, 0 = bonus/gameover
+    bool bonusStage;     // true se S/A em todos os stages anteriores
+    bool isBonusSong;    // true quando estiver jogando o bonus stage
     uint32_t timerId;
     uint32_t lastTime;
     float deltaTime;
@@ -442,6 +447,7 @@ void Staff_Update(float dt);
 void Result_Enter(void);
 void Result_Update(float dt);
 void Result_Render(void);
+GameState Result_GetNextState(void);
 
 void Loading_Enter(int songId);
 void Loading_Update(float dt);
@@ -461,6 +467,11 @@ void Gameplay_Enter(void);
 void Gameplay_Exit(void);
 void Gameplay_Update(float dt);
 void Gameplay_Render(void);
+
+// Original combo rendering functions from PUMPY.EXE
+void FUN_00411b40(int comboValue);      // Main combo rendering function
+void FUN_00411a90(int spriteType);      // Special combo sprite rendering
+void FUN_004119d0(int digit);           // Individual digit rendering
 
 void Gamestate_UpdateGameOption(float dt);
 void Gamestate_RenderGameOption(void);
