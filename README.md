@@ -28,6 +28,9 @@ This project reverse-engineers the original x86 binary and reproduces its gamepl
 | P2 input handling | 🚧 Disabled |
 | Modifiers (random/mirror/vanish) | ❌ |
 | Fade in/out transitions | ❌ |
+| FreeStyle/Nightmare | ❌ |
+| HalfDouble | ❌ |
+| Division | ❌ |
 
 ## Project Structure
 
