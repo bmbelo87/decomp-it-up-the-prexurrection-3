@@ -189,7 +189,11 @@ static JudgeType g_judgeDisplayType[2];
 static int g_judgeDisplayCombo[2];
 static int g_judgeFrame[2]; // frame counter 25->0 for judge animation
 static int g_hitTimer[2][5]; // hit flash animation timer (p1)
-static float g_exploding[2][5]; // alpha da explosao (0 = inativo)
+
+// Maquina de estados da nota
+static int g_noteState[2][5]; // 0=normal, 1=exploding, 2=dead
+static int g_noteExplodeRow[2][5]; // row index for clearing when dead
+static int g_noteExplodeFrame[2][5]; // explosion frame counter 0..15
 static int g_blindTimer[2];
 static int g_prevBlindRow;
 static int g_lastPerfectRow[2][5];
@@ -393,11 +397,14 @@ static void processRowJudgment(int player, int row, JudgeType jt) {
     if (jt == JT_PERFECT || jt == JT_GREAT) {
         StepRow* r = &g_chart->rows[row];
         for (int pan = 0; pan < 5; pan++) {
-            if (getPanelValue(r, pan, player))
-                g_exploding[player][pan] = 1.0f;
+            if (getPanelValue(r, pan, player)) {
+                g_noteState[player][pan] = 1; // EXPLODING
+                g_noteExplodeRow[player][pan] = row;
+                g_noteExplodeFrame[player][pan] = 0;
+            }
             g_lastPerfectRow[player][pan] = row;
         }
-        memset(r, 0, sizeof(StepRow));
+        memset(r, 0, sizeof(StepRow)); // Limpa a linha pra nao conflitar com processamento
     }
     g_judgeDisplayType[player] = jt;
     g_judgeDisplayTimer[player] = 0.6f;
@@ -597,8 +604,11 @@ static void processInput(int player)
                     }
                     if (pjt == JT_PERFECT || pjt == JT_GREAT) {
                         for (int pan = 0; pan < 5; pan++)
-                            if (getPanelValue(&g_chart->rows[bestRow], pan, player))
-                                g_exploding[player][pan] = 1.0f;
+                            if (getPanelValue(&g_chart->rows[bestRow], pan, player)) {
+                                g_noteState[player][pan] = 1; // EXPLODING
+                                g_noteExplodeRow[player][pan] = bestRow;
+                                g_noteExplodeFrame[player][pan] = 0;
+                            }
                         memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
                     }
                     g_judgeDisplayType[player] = pjt;
@@ -651,8 +661,11 @@ static void processInput(int player)
         JudgeType jt = evaluateTiming(bestDiff);
         if (jt == JT_PERFECT || jt == JT_GREAT) {
             for (int pan = 0; pan < 5; pan++)
-                if (getPanelValue(&g_chart->rows[bestRow], pan, player))
-                    g_exploding[player][pan] = 1.0f;
+                if (getPanelValue(&g_chart->rows[bestRow], pan, player)) {
+                    g_noteState[player][pan] = 1; // EXPLODING
+                    g_noteExplodeRow[player][pan] = bestRow;
+                    g_noteExplodeFrame[player][pan] = 0;
+                }
             memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
         }
         g_judgeDisplayType[player] = jt;
@@ -821,6 +834,9 @@ static void processHolds(void)
                         // Limpa SÓ este painel (catch visual), deixa outros paineis (taps) intactos
                         StepHalf* hh = (p == 0) ? &g_chart->rows[ri].half1 : &g_chart->rows[ri].half2;
                         switch (panel) { case 0: hh->dl = 0; break; case 1: hh->ul = 0; break; case 2: hh->cn = 0; break; case 3: hh->ur = 0; break; case 4: hh->dr = 0; break; }
+                        g_noteState[p][panel] = 1; // EXPLODING
+                        g_noteExplodeRow[p][panel] = ri;
+                        g_noteExplodeFrame[p][panel] = 0;
                         int hasTap = 0;
                         for (int pan = 0; pan < 5; pan++)
                             if (pan != panel && getPanelValue(&g_chart->rows[ri], pan, p)) { hasTap = 1; break; }
@@ -882,6 +898,9 @@ static void processHolds(void)
                     // Held body sempre limpa SÓ este painel (catch visual), mesmo com tap
                     StepHalf* hh = (p == 0) ? &g_chart->rows[ri].half1 : &g_chart->rows[ri].half2;
                     switch (panel) { case 0: hh->dl = 0; break; case 1: hh->ul = 0; break; case 2: hh->cn = 0; break; case 3: hh->ur = 0; break; case 4: hh->dr = 0; break; }
+                    g_noteState[p][panel] = 1; // EXPLODING
+                    g_noteExplodeRow[p][panel] = ri;
+                    g_noteExplodeFrame[p][panel] = 0;
                     if (!hasUnjudgedTap) {
                         Log_Print("HOLD PERF: p=%d pan=%d ri=%d held=%d\n", p, panel, ri, held);
                         g_game.stats.combo[p]++;
@@ -979,7 +998,8 @@ void Gameplay_Start(int songId)
     g_game.stats.missCombo[1] = 0;
     memset(g_judgeDisplayTimer, 0, sizeof(g_judgeDisplayTimer));
     memset(g_hitTimer, 0, sizeof(g_hitTimer));
-    memset(g_exploding, 0, sizeof(g_exploding));
+    memset(g_noteState, 0, sizeof(g_noteState));
+    memset(g_noteExplodeFrame, 0, sizeof(g_noteExplodeFrame));
     for (int p = 0; p < 2; p++)
         for (int pan = 0; pan < 5; pan++)
             g_holdRows[p][pan] = -1;
@@ -1099,9 +1119,10 @@ void Gameplay_Update(float dt)
         for (int pan = 0; pan < 5; pan++) {
             if (g_hitTimer[p][pan] > 0)
                 g_hitTimer[p][pan]--;
-            if (g_exploding[p][pan] > 0.0f) {
-                g_exploding[p][pan] -= 1.5f * dt;
-                if (g_exploding[p][pan] < 0.0f) g_exploding[p][pan] = 0.0f;
+            if (g_noteState[p][pan] == 1) { // EXPLODING
+                g_noteExplodeFrame[p][pan]++;
+                if (g_noteExplodeFrame[p][pan] >= 15)
+                    g_noteState[p][pan] = 0; // reseta estado
             }
         }
     }
@@ -1359,24 +1380,6 @@ void Gameplay_Render(void)
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         }
 
-        // Explosao (ARROWF.SPR) nas notas acertadas — cada painel usa um tile fixo
-        if (g_fontArrowF >= 0) {
-            int fCnt = sprTileCount(g_fontArrowF);
-            if (fCnt > 0) {
-                for (int pan = 0; pan < 5; pan++) {
-                    float ea = g_exploding[p][pan];
-                    if (ea <= 0.0f) continue;
-                    int fIdx = pan < fCnt ? pan : 0;
-                    int sprIdx = g_fontArrowF + fIdx;
-                    float sw = (float)g_game.sprTiles[sprIdx].srcW;
-                    float sh = (float)g_game.sprTiles[sprIdx].srcH;
-                    static const float expOffX[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                    Sprite_DrawTileUV(sprIdx, posX[pan] + expOffX[pan] + sw / 2.0f, (float)(receptorY + 28), sw, sh, ea);
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                }
-            }
-        }
         int rh = 57;
         // Notas (scroll do fundo para o topo)
         int rh2 = 57;
@@ -1743,7 +1746,53 @@ void Gameplay_Render(void)
                 }
             }
         }
-    }  // end for p (life bars)
+        }  // end for p (life bars)
+
+    // Explosao: seta congelada + ARROWF (depois de tudo, sobrepoe tudo)
+    for (int pe = 0; pe < 1; pe++) {
+        float expPosX[5];
+        expPosX[0] = 38.0f;
+        expPosX[1] = expPosX[0] + 48.0f;
+        expPosX[2] = expPosX[1] + 48.0f;
+        expPosX[3] = expPosX[2] + 48.0f;
+        expPosX[4] = expPosX[3] + 48.0f;
+        float erY = 38.0f + 28.0f;
+        static const float expOffX[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
+        static int kExpBaseInit = 0;
+        static int kExpBase[5];
+        if (!kExpBaseInit) {
+            kExpBase[0] = g_fontArrow542;
+            kExpBase[1] = g_fontArrow541;
+            kExpBase[2] = g_fontArrow545;
+            kExpBase[3] = g_fontArrow543;
+            kExpBase[4] = g_fontArrow544;
+            kExpBaseInit = 1;
+        }
+        for (int pan = 0; pan < 5; pan++) {
+            if (g_noteState[pe][pan] != 1) continue;
+            int base = kExpBase[pan];
+            if (base < 0) continue;
+            int af = (g_game.frameCounter / 3) % 6;
+            int aSpr = base + af;
+            float sw = (float)g_game.sprTiles[aSpr].srcW;
+            float sh = (float)g_game.sprTiles[aSpr].srcH;
+            Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, 1.0f);
+            if (g_fontArrowF >= 0) {
+                int fCnt = sprTileCount(g_fontArrowF);
+                if (fCnt > 0) {
+                    int fIdx = pan < fCnt ? pan : 0;
+                    int fSpr = g_fontArrowF + fIdx;
+                    float fw = (float)g_game.sprTiles[fSpr].srcW;
+                    float fh = (float)g_game.sprTiles[fSpr].srcH;
+                    float ef = (float)g_noteExplodeFrame[pe][pan];
+                    float esc = 0.8f + ef * 0.02f;
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                    Sprite_DrawTileUV(fSpr, expPosX[pan] + expOffX[pan] + fw / 2.0f, erY, fw * esc, fh * esc, 1.0f);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                }
+            }
+        }
+    }
 
     /* Timer regressivo - desativado
     {

@@ -3,6 +3,7 @@
 !/include
 !/CMakeLists.txt
 !/README.md
+!/IA_LOGO.png
 
 /build
 src/*_REV01.c
