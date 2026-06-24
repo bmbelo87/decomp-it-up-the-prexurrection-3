@@ -2,6 +2,7 @@
 !/src
 !/include
 !/CMakeLists.txt
+!/README.md
 
 /build
 src/*_REV01.c
