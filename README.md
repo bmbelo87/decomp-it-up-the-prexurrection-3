@@ -70,7 +70,7 @@ cmake ..
 cmake --build . --config Release
 ```
 
-Place the resulting `.exe` in the game's root directory alongside `AUDIO/`, `BGA/`, and `BGA_extracted/` folders from the original game. Assets are **not** included — you must provide your own copy of PUMP IT UP Premiere 3 data files.
+Place the resulting `.exe` in the game's root directory alongside `AUDIO/`, `BGA/`, and `BGA_extracted/` folders from the original game. Assets are **not** included — you must provide your own copy of PUMP IT UP Prex 3 data files.
 
 ## Technical Notes
 
