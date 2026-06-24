@@ -1,5 +1,7 @@
+/*
+!/src
+!/include
+!/CMakeLists.txt
+
 /build
-src/menu_REV01.c
-src/result_REV01.c
-src/input_REV01.c
-src/gameplay_REV01.c
+src/*_REV01.c
