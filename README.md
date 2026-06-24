@@ -1,3 +1,5 @@
+![Logo](IA_LOGO.png)
+
 # PumpyReconstructed
 
 A faithful C reconstruction of **PUMPY.EXE**, the arcade executable for **Pump It Up: Premiere 3** (1999).
