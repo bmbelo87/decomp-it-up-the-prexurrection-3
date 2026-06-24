@@ -17,9 +17,9 @@
 #include "song.h"
 #include "step.h"
 
-#define GAME_VERSION "0.4"
-#define GAME_BUILD_DATE "Jun 12 2026"
-#define GAME_BUILD_TIME "15:13:38"
+#define GAME_VERSION "0.5"
+#define GAME_BUILD_DATE "Jun 24 2026"
+#define GAME_BUILD_TIME "12:39:11"
 #define TARGET_FPS 60
 #define FRAME_TIME_MS (1000 / TARGET_FPS)
 
@@ -383,7 +383,7 @@ void Font_DrawStringCenteredScaled(int x, int y, const char* str, float r, float
 int Font_LoadTexture(void);
 void Font_DrawDigit(int texId, int digit, int x, int y, float scale);
 void Font_DrawNumber(int texId, int x, int y, int number, int digits, float scale);
-void Font_DrawDecDigit(int texId, float x, float y, int digit, float alpha);
+void Font_DrawDecDigit(int texId, float x, float y, int digit, float alpha, float scaleX, float scaleY, float r, float g, float b);
 void Font_DrawNumber(int texId, int x, int y, int number, int digits, float scale);
 void Font_Shutdown(void);
 

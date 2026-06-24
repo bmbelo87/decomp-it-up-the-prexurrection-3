@@ -187,6 +187,9 @@ static int g_holdRows[2][5]; // row index of active hold (-1 = none)
 static float g_judgeDisplayTimer[2];
 static JudgeType g_judgeDisplayType[2];
 static int g_judgeDisplayCombo[2];
+static int g_judgeFrame[2]; // frame counter 25->0 for judge animation
+static int g_hitTimer[2][5]; // hit flash animation timer (p1)
+static float g_exploding[2][5]; // alpha da explosao (0 = inativo)
 static int g_blindTimer[2];
 static int g_prevBlindRow;
 static int g_lastPerfectRow[2][5];
@@ -388,12 +391,17 @@ static void processRowJudgment(int player, int row, JudgeType jt) {
     int receptorY = 38;
     // So Perfect/Great consomem a nota (ela some). Good/Bad/Miss passam reto.
     if (jt == JT_PERFECT || jt == JT_GREAT) {
-        memset(&g_chart->rows[row], 0, sizeof(StepRow));
-        for (int pan = 0; pan < 5; pan++)
+        StepRow* r = &g_chart->rows[row];
+        for (int pan = 0; pan < 5; pan++) {
+            if (getPanelValue(r, pan, player))
+                g_exploding[player][pan] = 1.0f;
             g_lastPerfectRow[player][pan] = row;
+        }
+        memset(r, 0, sizeof(StepRow));
     }
     g_judgeDisplayType[player] = jt;
     g_judgeDisplayTimer[player] = 0.6f;
+    g_judgeFrame[player] = (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25;
     int sc = 0, cb = g_game.stats.combo[player];
     switch (jt) {
         case JT_PERFECT: sc = 1000; if (cb > 3) sc += 1000; cb++; break;
@@ -510,6 +518,7 @@ static void processInput(int player)
         int panel = getPanelForButton((PadButton)b);
         if (panel < 0) continue;
         if (!Input_IsPadHit(player, (PadButton)b)) continue;
+        g_hitTimer[player][panel] = 17; // p1 borda no receptor
 
         double bestDiff = 999;
         int bestRow = -1;
@@ -586,10 +595,15 @@ static void processInput(int player)
                             }
                         }
                     }
-                    if (pjt == JT_PERFECT || pjt == JT_GREAT)
+                    if (pjt == JT_PERFECT || pjt == JT_GREAT) {
+                        for (int pan = 0; pan < 5; pan++)
+                            if (getPanelValue(&g_chart->rows[bestRow], pan, player))
+                                g_exploding[player][pan] = 1.0f;
                         memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
+                    }
                     g_judgeDisplayType[player] = pjt;
                     g_judgeDisplayTimer[player] = 0.6f;
+                    g_judgeFrame[player] = (pjt == JT_GREAT || pjt == JT_PERFECT) ? 40 : 25;
                     { int sc = 0, cb = g_game.stats.combo[player];
                       int receptorY = 38; // Receptor Y position for combo popup calculation
                       switch (pjt) {
@@ -635,10 +649,15 @@ static void processInput(int player)
         // 1 seta: processa direto
         g_nextNoteRow[player][panel] = bestRow + 1;
         JudgeType jt = evaluateTiming(bestDiff);
-        if (jt == JT_PERFECT || jt == JT_GREAT)
+        if (jt == JT_PERFECT || jt == JT_GREAT) {
+            for (int pan = 0; pan < 5; pan++)
+                if (getPanelValue(&g_chart->rows[bestRow], pan, player))
+                    g_exploding[player][pan] = 1.0f;
             memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
+        }
         g_judgeDisplayType[player] = jt;
         g_judgeDisplayTimer[player] = 0.6f;
+        g_judgeFrame[player] = (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25;
         { int sc = 0, cb = g_game.stats.combo[player];
           int receptorY = 38; // Receptor Y position for combo popup calculation
           switch (jt) {
@@ -710,6 +729,7 @@ static void processAutoplay(void)
                 if (diff > JUDGE_PERFECT) { g_nextNoteRow[p][panel] = ri + 1; continue; }
 
                 g_nextNoteRow[p][panel] = ri + 1;
+                g_hitTimer[p][panel] = 17;
                 hitRows[hitCount++] = ri;
                 break;
             }
@@ -729,6 +749,7 @@ static void processAutoplay(void)
         {
             g_judgeDisplayType[p] = JT_PERFECT;
             g_judgeDisplayTimer[p] = 0.6f;
+            g_judgeFrame[p] = 40;
             g_judgeDisplayCombo[p] = ++g_game.stats.combo[p];
                 // Update combo comparison variables (original logic)
                 if (p == 0) {
@@ -812,6 +833,7 @@ static void processHolds(void)
                             if (g_game.stats.combo[p] > g_game.stats.maxCombo[p]) g_game.stats.maxCombo[p] = g_game.stats.combo[p];
                             g_judgeDisplayType[p] = JT_PERFECT;
                             g_judgeDisplayTimer[p] = 0.6f;
+                            g_judgeFrame[p] = 40;
                             g_judgeDisplayCombo[p] = g_game.stats.combo[p];
                         }
                     }
@@ -872,6 +894,7 @@ static void processHolds(void)
                         g_game.stats.maxCombo[p] = g_game.stats.combo[p];
                     g_judgeDisplayType[p] = JT_PERFECT;
                     g_judgeDisplayTimer[p] = 0.6f;
+                    g_judgeFrame[p] = 40;
                     g_judgeDisplayCombo[p] = g_game.stats.combo[p];
                 }
                 }
@@ -926,6 +949,7 @@ static void processMisses(void)
             g_game.stats.missCombo[p] += missCount;
             g_judgeDisplayType[p] = JT_MISS;
             g_judgeDisplayTimer[p] = 0.6f;
+            g_judgeFrame[p] = 25;
             g_judgeDisplayCombo[p] = g_game.stats.missCombo[p];
             for (int m = 0; m < missCount; m++)
             {
@@ -954,6 +978,8 @@ void Gameplay_Start(int songId)
     g_game.stats.missCombo[0] = 0;
     g_game.stats.missCombo[1] = 0;
     memset(g_judgeDisplayTimer, 0, sizeof(g_judgeDisplayTimer));
+    memset(g_hitTimer, 0, sizeof(g_hitTimer));
+    memset(g_exploding, 0, sizeof(g_exploding));
     for (int p = 0; p < 2; p++)
         for (int pan = 0; pan < 5; pan++)
             g_holdRows[p][pan] = -1;
@@ -965,6 +991,9 @@ void Gameplay_Start(int songId)
     memset(g_lastPerfectRow, -1, sizeof(g_lastPerfectRow));
     g_pendingCount = 0;
     memset(g_pending, 0, sizeof(g_pending));
+    // Limpa estados de input (nada de input preso do menu)
+    memset(g_game.input.padState, 0, sizeof(g_game.input.padState));
+    memset(g_game.input.padPrevState, 0, sizeof(g_game.input.padPrevState));
     Log_Print("GP: initialized\n");
 
     // Igual Font_LoadFontAndArrows no Ghidra — carrega font.tga, dec00.tga e todos os SPRs da 00.DAT
@@ -1065,6 +1094,16 @@ void Gameplay_Update(float dt)
     {
         if (g_judgeDisplayTimer[p] > 0)
             g_judgeDisplayTimer[p] -= dt;
+        if (g_judgeFrame[p] > 0)
+            g_judgeFrame[p]--;
+        for (int pan = 0; pan < 5; pan++) {
+            if (g_hitTimer[p][pan] > 0)
+                g_hitTimer[p][pan]--;
+            if (g_exploding[p][pan] > 0.0f) {
+                g_exploding[p][pan] -= 1.5f * dt;
+                if (g_exploding[p][pan] < 0.0f) g_exploding[p][pan] = 0.0f;
+            }
+        }
     }
     // Popup update (sobe e fade out)
     for (int i = 0; i < MAX_POPUPS; i++) {
@@ -1209,7 +1248,7 @@ void Gameplay_Render(void)
         }
         */
 
-        // Grid de fundo (compasso/batida/sub-batida)
+        /* Grid de fundo (compasso/batida/sub-batida) - desativado
         if (g_chart->beatPerMeasure > 0 && g_chart->beatSplit > 0)
         {
             int gx0 = baseX - 22;
@@ -1241,6 +1280,7 @@ void Gameplay_Render(void)
                 }
             }
         }
+        */
 
         /* // Receptor no topo - desativado, 01.SPR substitui
         int rh = 57;
@@ -1285,6 +1325,58 @@ void Gameplay_Render(void)
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         }
 
+        // Hit flash (p1 tile) nos receptores acertados
+        static int kHitBaseInit = 0;
+        static int kHitBase[5];
+        if (!kHitBaseInit) {
+            kHitBase[0] = g_fontArrow542;
+            kHitBase[1] = g_fontArrow541;
+            kHitBase[2] = g_fontArrow545;
+            kHitBase[3] = g_fontArrow543;
+            kHitBase[4] = g_fontArrow544;
+            kHitBaseInit = 1;
+        }
+        for (int pan = 0; pan < 5; pan++) {
+            int ht = g_hitTimer[p][pan];
+            if (ht <= 0 || kHitBase[pan] < 0) continue;
+            int p1Idx = kHitBase[pan] + 6;
+            if (p1Idx >= g_game.sprTileCount) continue;
+            float sw = (float)g_game.sprTiles[p1Idx].srcW;
+            float sh = (float)g_game.sprTiles[p1Idx].srcH;
+            static const float p1OffX[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
+            float startScale = 54.0f / sw;
+            float sc, alpha;
+            if (ht > 2) {
+                float t = 1.0f - (float)(ht - 2) / 15.0f;
+                sc = startScale + (1.0f - startScale) * t;
+                alpha = 1.0f;
+            } else {
+                sc = 1.0f;
+                alpha = (float)ht / 2.0f;
+            }
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+            Sprite_DrawTileUV(p1Idx, posX[pan] + p1OffX[pan] + sw / 2.0f, (float)(receptorY + 28), sw * sc, sh * sc, alpha);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        }
+
+        // Explosao (ARROWF.SPR) nas notas acertadas — cada painel usa um tile fixo
+        if (g_fontArrowF >= 0) {
+            int fCnt = sprTileCount(g_fontArrowF);
+            if (fCnt > 0) {
+                for (int pan = 0; pan < 5; pan++) {
+                    float ea = g_exploding[p][pan];
+                    if (ea <= 0.0f) continue;
+                    int fIdx = pan < fCnt ? pan : 0;
+                    int sprIdx = g_fontArrowF + fIdx;
+                    float sw = (float)g_game.sprTiles[sprIdx].srcW;
+                    float sh = (float)g_game.sprTiles[sprIdx].srcH;
+                    static const float expOffX[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                    Sprite_DrawTileUV(sprIdx, posX[pan] + expOffX[pan] + sw / 2.0f, (float)(receptorY + 28), sw, sh, ea);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                }
+            }
+        }
         int rh = 57;
         // Notas (scroll do fundo para o topo)
         int rh2 = 57;
@@ -1353,29 +1445,39 @@ void Gameplay_Render(void)
                 if (!val || val == NT_HOLD_B || val == NT_HOLD_T) continue;
 
                 if (panel == 0 && g_fontArrow542 >= 0) {
-                    float sw = (float)g_game.sprTiles[g_fontArrow542].srcW;
-                    float sh = (float)g_game.sprTiles[g_fontArrow542].srcH;
-                    Sprite_DrawTileUV(g_fontArrow542, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                    int af = (g_game.frameCounter / 3) % 6;
+                    int aidx = g_fontArrow542 + af;
+                    float sw = (float)g_game.sprTiles[aidx].srcW;
+                    float sh = (float)g_game.sprTiles[aidx].srcH;
+                    Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
                 }
                 else if (panel == 1 && g_fontArrow541 >= 0) {
-                    float sw = (float)g_game.sprTiles[g_fontArrow541].srcW;
-                    float sh = (float)g_game.sprTiles[g_fontArrow541].srcH;
-                    Sprite_DrawTileUV(g_fontArrow541, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                    int af = (g_game.frameCounter / 3) % 6;
+                    int aidx = g_fontArrow541 + af;
+                    float sw = (float)g_game.sprTiles[aidx].srcW;
+                    float sh = (float)g_game.sprTiles[aidx].srcH;
+                    Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
                 }
                 else if (panel == 2 && g_fontArrow545 >= 0) {
-                    float sw = (float)g_game.sprTiles[g_fontArrow545].srcW;
-                    float sh = (float)g_game.sprTiles[g_fontArrow545].srcH;
-                    Sprite_DrawTileUV(g_fontArrow545, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                    int af = (g_game.frameCounter / 3) % 6;
+                    int aidx = g_fontArrow545 + af;
+                    float sw = (float)g_game.sprTiles[aidx].srcW;
+                    float sh = (float)g_game.sprTiles[aidx].srcH;
+                    Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
                 }
                 else if (panel == 3 && g_fontArrow543 >= 0) {
-                    float sw = (float)g_game.sprTiles[g_fontArrow543].srcW;
-                    float sh = (float)g_game.sprTiles[g_fontArrow543].srcH;
-                    Sprite_DrawTileUV(g_fontArrow543, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                    int af = (g_game.frameCounter / 3) % 6;
+                    int aidx = g_fontArrow543 + af;
+                    float sw = (float)g_game.sprTiles[aidx].srcW;
+                    float sh = (float)g_game.sprTiles[aidx].srcH;
+                    Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
                 }
                 else if (panel == 4 && g_fontArrow544 >= 0) {
-                    float sw = (float)g_game.sprTiles[g_fontArrow544].srcW;
-                    float sh = (float)g_game.sprTiles[g_fontArrow544].srcH;
-                    Sprite_DrawTileUV(g_fontArrow544, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                    int af = (g_game.frameCounter / 3) % 6;
+                    int aidx = g_fontArrow544 + af;
+                    float sw = (float)g_game.sprTiles[aidx].srcW;
+                    float sh = (float)g_game.sprTiles[aidx].srcH;
+                    Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
                 }
                 // SPRs cobrem todos os tipos de nota
             }
@@ -1384,12 +1486,39 @@ void Gameplay_Render(void)
         int centerY = g_game.screenHeight / 2;
     int receptorY = 38; // Same as in rendering loop
 
-        // Score (large, center top for P1)
-        char scoreBuf[64];
-        if (p == 0)
-        {
-            snprintf(scoreBuf, sizeof(scoreBuf), "%u", g_game.stats.score[p]);
-            Font_DrawStringCenteredScaled(g_game.screenWidth/2, 460, scoreBuf, 1, 1, 0, 1, 1.8f);
+
+        // Mode/Modifier sprites do ARROW541.SP2
+        if (g_fontArrow541 >= 0) {
+            const char* modeName = (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount) ? g_game.songDB.modes[g_game.selectedModeIndex].name : "EASY";
+            int modeOff = 31; // modeez (default)
+            if (strcmp(modeName, "HARD") == 0) modeOff = 32;
+            else if (strcmp(modeName, "CRAZY") == 0) modeOff = 33;
+            int modeIdx = g_fontArrow541 + modeOff;
+            if (modeIdx < g_game.sprTileCount) {
+                float sw = (float)g_game.sprTiles[modeIdx].srcW;
+                float sh = (float)g_game.sprTiles[modeIdx].srcH;
+                Sprite_DrawTileUV(modeIdx, 18 + sw/2, 152 + sh/2, sw, sh, 1.0f);
+            }
+            int speedOff = 36; // accel1
+            if (g_scrollSpeedTarget >= 4.0f) speedOff = 9; // accel4
+            else if (g_scrollSpeedTarget >= 3.0f) speedOff = 8; // accel3
+            else if (g_scrollSpeedTarget >= 2.0f) speedOff = 7; // accel2
+            int speedIdx = g_fontArrow541 + speedOff;
+            if (speedIdx < g_game.sprTileCount) {
+                float sw = (float)g_game.sprTiles[speedIdx].srcW;
+                float sh = (float)g_game.sprTiles[speedIdx].srcH;
+                Sprite_DrawTileUV(speedIdx, 18 + sw/2, 184 + sh/2, sw, sh, 1.0f);
+            }
+            int disOffsets[4] = { 34, 35, 37, 38 };
+            float disY[4] = { 216, 248, 280, 312 };
+            for (int di = 0; di < 4; di++) {
+                int didx = g_fontArrow541 + disOffsets[di];
+                if (didx < g_game.sprTileCount) {
+                    float sw = (float)g_game.sprTiles[didx].srcW;
+                    float sh = (float)g_game.sprTiles[didx].srcH;
+                    Sprite_DrawTileUV(didx, 18 + sw/2, (float)(disY[di] + sh/2), sw, sh, 1.0f);
+                }
+            }
         }
 
         // Stage indicator sprite (M01-M05)
@@ -1408,24 +1537,85 @@ void Gameplay_Render(void)
             Sprite_DrawTileUV(stageSpr, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 1.0f);
         }
 
-        // Judge + combo display (3-line, timed)
+        // Judge + combo display (animacao 3 fases — original FUN_0040dd70)
         if (g_judgeDisplayTimer[p] > 0)
         {
             JudgeType jt = g_judgeDisplayType[p];
-            float a = g_judgeDisplayTimer[p] / 0.6f;
-            float fc = g_judgeColors[jt][0], gc = g_judgeColors[jt][1], bc = g_judgeColors[jt][2];
+            int decTimer = g_judgeFrame[p]; // decremented timer (0..24 normal, 0..39 P/G)
+            if (decTimer > 39) decTimer = 39;
+            int isPG = (jt == JT_GREAT || jt == JT_PERFECT);
 
-            // Line 1: Judge sprite (with scale effect)
-            float brightA = a * 0.9f + 0.1f;
-            float scale = 1.3f - (a * 0.3f); // Scale from 1.3x to 1.0x
-            int judgeSpriteIdx = g_fontArrow542 + g_judgeSpriteIndices[jt];
-            if (g_fontArrow542 >= 0 && judgeSpriteIdx >= 0 && judgeSpriteIdx < g_game.sprTileCount) {
-                float sw = (float)g_game.sprTiles[judgeSpriteIdx].srcW * scale;
-                float sh = (float)g_game.sprTiles[judgeSpriteIdx].srcH * scale;
-                Sprite_DrawTileUV(judgeSpriteIdx, centerX, centerY + 55 - 50, sw, sh, brightA);
+            // Tabelas do original (Ghidra DAT_004428d4 / 00442850 / 00442910)
+            // normalScaleTable[decTimer] para decTimer 11..24 (pop-in uniform)
+            static float normalScale[25] = {
+                0.0f,0.0f,0.0f,0.0f,0.0f, 0.0f,0.0f,0.0f,0.0f,0.0f,
+                0.0f, // [10]=1.0 (<=10)
+                0.99f, 0.98f, 0.97f, 0.98f,  // [11..14]
+                0.99f, 1.01f, 1.03f, 1.06f,  // [15..18]
+                1.10f, 1.15f, 1.21f, 1.28f,  // [19..22]
+                1.35f, 1.43f                   // [23..24]
+            };
+            // squeezeXTable[decTimer] para decTimer 0..8 (esmagamento X)
+            static float squeezeXTable[9] = {
+                1.35f, 1.30f, 1.25f, 1.20f, 1.15f,
+                1.10f, 1.05f, 1.00f, 1.52f
+            };
+
+            float uniformScale;
+            float squeezeX = 1.0f;
+            float spriteAlpha;
+
+            if (decTimer <= 10) {
+                // FASE 2 (timer 0..10): scale uniforme = 1.0
+                uniformScale = 1.0f;
+            } else if (isPG) {
+                if (decTimer > 25) {
+                    // P/G EXTENDED (timer 26..39): tabela DAT_00442910
+                    // Mapeia 26→11, 39→24 (mesmos valores da normalScale)
+                    int idx = decTimer - 15;
+                    if (idx < 11) idx = 11;
+                    if (idx > 24) idx = 24;
+                    uniformScale = normalScale[idx];
+                } else {
+                    // P/G timer 11..25: constante 0.99 (DAT_004428a8)
+                    uniformScale = 0.99f;
+                }
+            } else {
+                // FASE 1 (timer 11..24): tabela normal DAT_004428d4
+                int idx = decTimer;
+                if (idx > 24) idx = 24;
+                if (idx < 11) idx = 11;
+                uniformScale = normalScale[idx];
+            }
+            spriteAlpha = 1.0f;
+
+            if (decTimer < 9) {
+                // FASE 3 - Esmagamento (timer 0..8): X squeeze + alpha fade
+                squeezeX = squeezeXTable[decTimer];
+                spriteAlpha = (float)decTimer * 0.125f;
             }
 
-            // Line 2 & 3: combo number + "COMBO"
+            // Scale implicito de 0.8x (do glPushMatrix/glScalef interno do original)
+            float finalScaleX = uniformScale * squeezeX * 0.8f;
+            float finalScaleY = uniformScale * 1.0f * 0.8f;
+
+            // Desenha o sprite do julgamento
+            int judgeSpriteIdx = g_fontArrow542 + g_judgeSpriteIndices[jt];
+            if (g_fontArrow542 >= 0 && judgeSpriteIdx >= 0 && judgeSpriteIdx < g_game.sprTileCount) {
+                float ow = (float)g_game.sprTiles[judgeSpriteIdx].srcW;
+                float oh = (float)g_game.sprTiles[judgeSpriteIdx].srcH;
+
+                if (decTimer < 9) {
+                    // Additive blend no esmagamento
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                }
+                Sprite_DrawTileUV(judgeSpriteIdx, centerX, centerY, ow * finalScaleX, oh * finalScaleY, spriteAlpha);
+                if (decTimer < 9) {
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                }
+            }
+
+            // Combo digits usando DEC00 (com a mesma animacao do julgamento)
             int comboVal = 0;
             bool showCombo = false;
             if (jt == JT_MISS) {
@@ -1438,30 +1628,41 @@ void Gameplay_Render(void)
 
             if (showCombo)
             {
-                // Original combo rendering logic using FUN_00411b40
-                glPushMatrix();
-                
-                // Calculate dynamic Y position based on original logic
-                // Original: glTranslatef(0x43800000,(float)((DAT_00da2264 % 0x3c) / 10) + _DAT_00434a20,0);
-                float dynamicY = (float)((int)(g_songTime * 10) % 60) / 10.0f + 42.0f; // Approximation of original timing logic
-                glTranslatef(centerX, dynamicY, 0.0f);
-                
-                // Determine combo value for comparison logic
-                int comparisonValue = 0;
-                if (g_game.stats.combo_0 > g_game.stats.combo_1) {
-                    comparisonValue = 1000; // Player 1 has higher combo
-                } else if (g_game.stats.combo_0 == g_game.stats.combo_1) {
-                    comparisonValue = 2000; // Both players equal
-                } else if (g_game.stats.combo_1 > g_game.stats.combo_0) {
-                    comparisonValue = 3000; // Player 2 has higher combo
-                } else {
-                    comparisonValue = comboVal; // Regular combo value
+                // O combo herda o uniformScale + squeezeX (mas SEM o 0.8x do sprite interno)
+                float comboScaleX = uniformScale * squeezeX;
+                float comboScaleY = uniformScale;
+                // O Y do combo tambem anima: original faz glTranslatef(0,-70,0) dentro do scaled space
+                float comboAnimY = (float)centerY + 70.0f * uniformScale;
+
+                float glyphW = 48.0f * comboScaleY;
+                float spacing = 44.0f * comboScaleX; // glTranslatef(-40) * scale(1.1) = 44px entre bordas esquerdas
+                int d3 = comboVal % 10;
+                int d2 = (comboVal / 10) % 10;
+                int d1 = comboVal / 100;
+                // Tens centralizado, units/combo seguem o espacamento do original (edge-to-edge com 4px overlap)
+                float dy = (float)(centerY + 42) + 70.0f * (uniformScale - 1.0f);
+                dy -= 22.5f * 1.1f * comboScaleY; // correcao meia altura do glifo (45/2 * 1.1x)
+                float tensLeft = (float)centerX - glyphW / 2.0f;
+                float ux = tensLeft + spacing;
+                float hx = tensLeft - spacing;
+                float cr = (jt == JT_MISS) ? 1.0f : 1.0f;
+                float cg = (jt == JT_MISS) ? 0.3f : 1.0f;
+                float cb = (jt == JT_MISS) ? 0.3f : 1.0f;
+                Font_DrawDecDigit(g_fontDec00Id, ux, dy, d3, spriteAlpha, comboScaleX, comboScaleY, cr, cg, cb);
+                Font_DrawDecDigit(g_fontDec00Id, tensLeft, dy, d2, spriteAlpha, comboScaleX, comboScaleY, cr, cg, cb);
+                Font_DrawDecDigit(g_fontDec00Id, hx, dy, d1, spriteAlpha, comboScaleX, comboScaleY, cr, cg, cb);
+                // "COMBO" sprite (tambem animado)
+                if (g_fontArrow542 >= 0) {
+                    int comboIdx = g_fontArrow542 + g_judgeSpriteIndices[5] + 1;
+                    if (comboIdx < g_game.sprTileCount) {
+                        float sw = (float)g_game.sprTiles[comboIdx].srcW * comboScaleX * 0.8f;
+                        float sh = (float)g_game.sprTiles[comboIdx].srcH * comboScaleY * 0.8f;
+                        // Centro do TENS = centerX. 35px abaixo do centro do TENS em Y-DOWN
+                        float tensCenterY = dy + (49.5f * comboScaleY) * 0.5f;
+                        float comboY = tensCenterY + 35.0f;
+                        Sprite_DrawTileUV(comboIdx, (float)centerX, comboY, sw, sh, spriteAlpha * 0.7f);
+                    }
                 }
-                
-                // Call original combo rendering function
-                FUN_00411b40(comparisonValue);
-                
-                glPopMatrix();
             }
         }  // end judge/combo
 
@@ -1501,11 +1702,29 @@ void Gameplay_Render(void)
             int cnt = sprTileCount(g_fontSpr04);
             for (int t = cnt - 1; t >= 0; t--) {
                 int idx = g_fontSpr04 + t;
-                float sx = px + (float)g_game.sprTiles[idx].srcX;
-                float sy = (float)g_game.sprTiles[idx].srcY;
-                float sw = (float)g_game.sprTiles[idx].srcW;
-                float sh = (float)g_game.sprTiles[idx].srcH;
-                Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw * lifePct, sh, 1.0f);
+                SPRTileDef* tile = &g_game.sprTiles[idx];
+                float sx = px + (float)tile->srcX - (p == 0 ? 2.0f : 0.0f);
+                float sy = (float)tile->srcY;
+                float sw = (float)tile->srcW;
+                float sh = (float)tile->srcH;
+                if (tile->texId < 0) continue;
+                int tw = Texture_GetWidth(tile->texId);
+                int th = Texture_GetHeight(tile->texId);
+                if (tw <= 0) tw = 256;
+                if (th <= 0) th = 256;
+                float u1 = (float)tile->u1 * (float)tw;
+                float v1 = (float)tile->v1 * (float)th;
+                float u2 = (float)tile->u2 * (float)tw;
+                float v2 = (float)tile->v2 * (float)th;
+                if (p == 0) {
+                    // Inverte horizontalmente no P1
+                    float tmp = u1; u1 = u2; u2 = tmp;
+                }
+                // Mantem centro fixo como Sprite_DrawTileUV faz
+                float cx = sx + sw / 2.0f;
+                float cw = sw * lifePct;
+                Texture_DrawUV(tile->texId, cx - cw / 2.0f, sy, cw, sh,
+                              u1, v1, u2, v2, 1.0f, 1.0f, 1.0f, 1.0f);
             }
         }
         // 05.SPR life bar glow (g_fontSpr05) — Ghidra: pisca em vida critica a cada 3 frames
@@ -1526,7 +1745,7 @@ void Gameplay_Render(void)
         }
     }  // end for p (life bars)
 
-    // Timer regressivo
+    /* Timer regressivo - desativado
     {
         double totalSec = g_totalSongSeconds;
         if (totalSec <= 0) totalSec = g_songTime + 30.0;
@@ -1537,6 +1756,7 @@ void Gameplay_Render(void)
         Font_DrawStringCentered(g_game.screenWidth/2, g_game.screenHeight/2 - 40, timeBuf, 1, 1, 1, 0.7f);
         Font_DrawStringCentered(g_game.screenWidth/2, 10, timeBuf, 0.7f, 0.7f, 0.7f, 1.0f);
     }
+    */
 
     if (anyAutoPanel()) {
         static const char* pn[5] = {"DL","UL","CN","UR","DR"};
@@ -1636,11 +1856,10 @@ void FUN_004119d0(int digit)
     // Bind the dec00 texture (same as original)
     Texture_Bind(g_fontDec00Id);
     
-    // Original texture coordinates from Ghidra analysis
-    // Numbers are arranged in 5x2 grid (not 6x4)
-    float tileWidth = 0.1875f;    // 0x0000303e = 48/256
-    float tileHeight = 0.203125f; // 0x0000343e = 52/256  
-    float vOffset = 0.15625f;     // 0x0000283f = 40/256
+    // Original texture coordinates (5 colunas)
+    float tileWidth = 0.1875f;    // 48/256
+    float tileHeight = 0.203125f; // 52/256  
+    float vOffset = 0.15625f;     // 40/256
     
     float u1 = (float)(digit % 5) * tileWidth;
     float v1 = (float)(digit / 5) * tileHeight + vOffset;
@@ -1649,13 +1868,13 @@ void FUN_004119d0(int digit)
     
     glBegin(GL_QUADS);
     glTexCoord2f(u1, v1);
-    glVertex2i(0, 0x2d);           // Y = 45 (bottom)
+    glVertex2i(0, 0x2d);           // Y = 45
     glTexCoord2f(u1, v2);
-    glVertex2i(0, 0);              // Y = 0 (top)
+    glVertex2i(0, 0);              // Y = 0
     glTexCoord2f(u2, v2);
-    glVertex2i(0x2c, 0);          // Y = 0 (top)
+    glVertex2i(0x2c, 0);          // Y = 0
     glTexCoord2f(u2, v1);
-    glVertex2i(0x2c, 0x2d);       // Y = 45 (bottom)
+    glVertex2i(0x2c, 0x2d);       // Y = 45
     glEnd();
 }
 

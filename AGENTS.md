@@ -642,3 +642,15 @@ Isso destrói mudanças não commitadas sem chance de recuperação. Prefira `gi
 5. Stage Transition (60 frames) → volta ao Song Select
 
 O cursor do Song Select **volta pra última música jogada** (`g_game.songSelectHighlighted = g_game.selectedSongIndex` em loading.c).
+
+---
+
+## 🚨 REGRA ABSOLUTA — SPR vs SP2
+
+**SP2 = `SPR_LoadSP2()`** — u2/v2 são **offsets** (largura/altura) a partir de u1/v1. Negativo = flip.
+
+**SPR = `SPR_LoadSPR()`** — u2/v2 são **absolutos** (Left/Top → Right/Bottom no formato TGA).
+
+NUNCA confunda os dois. Verifique a extensão do arquivo antes de chamar a função:
+- `.sp2` → `SPR_LoadSP2`
+- `.spr` → `SPR_LoadSPR`

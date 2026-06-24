@@ -1253,13 +1253,14 @@ int SPR_LoadSPR(const char* sprName, int* outPatCols, int* outPatRows, int* outP
             float texH = (float)g_game.textures[t->texId].height;
             if (texW <= 0) texW = 256.0f;
             if (texH <= 0) texH = 256.0f;
-            // .spr: u2/v2 são absolutos
+            // .spr: u2/v2 são absolutos. flipH vem naturalmente (u1 > u2 = espelhado).
+            // flipV precisa trocar v1/v2 pra imagem nao ficar de cabeca pra baixo.
             t->u1 = (float)spr.tiles[i].u1 / texW;
             t->u2 = (float)spr.tiles[i].u2 / texW;
-            float v1r = (float)spr.tiles[i].v1 / texH;
-            float v2r = (float)spr.tiles[i].v2 / texH;
-            t->v1 = 1.0f - v1r;
-            t->v2 = 1.0f - v2r;
+            float v1n = 1.0f - (float)spr.tiles[i].v1 / texH;
+            float v2n = 1.0f - (float)spr.tiles[i].v2 / texH;
+            if (spr.tiles[i].flipV) { t->v1 = v2n; t->v2 = v1n; }
+            else { t->v1 = v1n; t->v2 = v2n; }
         } else {
             t->u1 = 0.0f; t->v1 = 0.0f;
             t->u2 = 1.0f; t->v2 = 1.0f;
@@ -1415,7 +1416,7 @@ void Resource_LoadFontAndArrows(const char* datPath) {
     g_fontArrowETC = g_game.sprTileCount;
     SPR_LoadSP2("arrowETC.sp2", NULL, NULL, NULL);
     g_fontArrowF = g_game.sprTileCount;
-    SPR_LoadSP2("arrowf.spr", NULL, NULL, NULL);
+    SPR_LoadSPR("arrowf.spr", NULL, NULL, NULL);
 
     g_fontSpr01 = g_game.sprTileCount;
     SPR_LoadSPR("01.spr", NULL, NULL, NULL);

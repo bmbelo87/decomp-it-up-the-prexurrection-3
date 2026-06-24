@@ -364,7 +364,7 @@ static void Render_StateInfo(void) {
     static int fpsCount = 0;
     static float currentFps = 0;
     char buf[256];
-    int y = 8;
+    int y = -4;
 
     fpsCount++;
     uint32_t now = timeGetTime();
@@ -377,15 +377,14 @@ static void Render_StateInfo(void) {
     // FPS no canto inferior direito
     snprintf(buf, sizeof(buf), "FPS: %.1f", currentFps);
     int fw = (int)strlen(buf) * 8;
-    Font_DrawString(g_game.screenWidth - fw - 8, g_game.screenHeight - 24,
+    Font_DrawString(g_game.screenWidth - fw - 8, 20,
                     buf, 1.0f, 1.0f, 0.0f, 1.0f);
 
     snprintf(buf, sizeof(buf), "State: %s  Frame: %u/%u",
              State_ToString(g_game.state), g_game.stateFrame, g_game.frameCounter);
     Font_DrawString(8, y, buf, 1.0f, 1.0f, 0.0f, 1.0f);
     y += 16;
-    
-    
+
     if (g_game.isVSL && g_vsl.active) {
         int songId = 0;
         if (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&

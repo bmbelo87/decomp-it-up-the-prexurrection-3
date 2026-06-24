@@ -60,11 +60,15 @@ void Input_Update(void) {
         }
     }
 
-    for (p = 0; p < 2; p++) {
-        int b;
-        for (b = 0; b < PAD_BUTTONS_PER_PLAYER; b++) {
-            if (GetAsyncKeyState(KEY_PAD_MAP[p][b]) & 0x8000) {
-                g_game.input.padState[p] |= (1 << b);
+    // So le inputs se a janela tiver foco
+    HWND fg = GetForegroundWindow();
+    if (fg == g_game.hWnd) {
+        for (p = 0; p < 2; p++) {
+            int b;
+            for (b = 0; b < PAD_BUTTONS_PER_PLAYER; b++) {
+                if (GetAsyncKeyState(KEY_PAD_MAP[p][b]) & 0x8000) {
+                    g_game.input.padState[p] |= (1 << b);
+                }
             }
         }
     }
