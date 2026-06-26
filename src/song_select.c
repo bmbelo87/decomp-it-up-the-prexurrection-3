@@ -14,6 +14,8 @@ static int g_carrosselDir = 0;
 static int g_carrosselTarget = 588;
 static bool g_carrosselIntro = true;
 static int g_introFrame = 0;
+static int g_pendingMove = 0; // -1 left, +1 right, applied when animation completes
+static float g_previewDelay = 0.0f;
 
 static const int g_slotFrameOffset[7] = { -48, -32, -16, 0, +16, +32, +48 };
 
@@ -100,6 +102,7 @@ void SongSelect_Reset(void) {
     g_carrosselTarget = 588;
     g_carrosselIntro = true;
     g_introFrame = 0;
+    g_previewDelay = 0.0f;
     loadCdTextures();
 }
 
@@ -189,26 +192,25 @@ void Gamestate_UpdateSongSelect(float dt) {
     if (Input_IsPadHit(0, PAD_DR)) {
         selectedState = 0;
         stopPreview();
-        g_game.selectedSongIndex++;
-        if (g_game.selectedSongIndex >= songCount)
-            g_game.selectedSongIndex = 0;
         prevSongId = -1;
+        // Se já animando, ignore input para evitar acúmulo
         if (g_carrosselDir == 0) {
+            g_pendingMove = +1;
             g_carrosselTarget = g_carrosselFrame - 16;
             g_carrosselDir = -1;
+            g_previewDelay = 1.0f;
         }
     }
 
     if (Input_IsPadHit(0, PAD_DL)) {
         selectedState = 0;
         stopPreview();
-        g_game.selectedSongIndex--;
-        if (g_game.selectedSongIndex < 0)
-            g_game.selectedSongIndex = songCount - 1;
         prevSongId = -1;
         if (g_carrosselDir == 0) {
+            g_pendingMove = -1;
             g_carrosselTarget = g_carrosselFrame + 16;
             g_carrosselDir = +1;
+            g_previewDelay = 1.0f;
         }
     }
 
@@ -216,11 +218,16 @@ void Gamestate_UpdateSongSelect(float dt) {
     if (g_carrosselDir != 0) {
         g_carrosselFrame += g_carrosselDir * 1;
 
-        if (g_carrosselDir == +1 && g_carrosselFrame >= g_carrosselTarget) {
-            g_carrosselFrame = 588;
-            g_carrosselTarget = 588;
-            g_carrosselDir = 0;
-        } else if (g_carrosselDir == -1 && g_carrosselFrame <= g_carrosselTarget) {
+        if ((g_carrosselDir == +1 && g_carrosselFrame >= g_carrosselTarget) ||
+            (g_carrosselDir == -1 && g_carrosselFrame <= g_carrosselTarget)) {
+            // Aplicar movimento pendente ao índice só quando a animação terminar
+            if (g_pendingMove != 0) {
+                g_game.selectedSongIndex += g_pendingMove;
+                if (g_game.selectedSongIndex >= songCount) g_game.selectedSongIndex = 0;
+                if (g_game.selectedSongIndex < 0) g_game.selectedSongIndex = songCount - 1;
+                g_pendingMove = 0;
+            }
+            // Reset base frame para centro
             g_carrosselFrame = 588;
             g_carrosselTarget = 588;
             g_carrosselDir = 0;
@@ -228,8 +235,17 @@ void Gamestate_UpdateSongSelect(float dt) {
     }
 
     int songId = mode->songIds[g_game.selectedSongIndex];
-    if (songId != prevSongId)
-        playPreview(songId);
+    if (g_previewDelay > 0.0f) {
+        g_previewDelay -= dt;
+        if (g_previewDelay <= 0.0f) {
+            if (songId != prevSongId) {
+                playPreview(songId);
+            }
+        }
+    } else {
+        if (songId != prevSongId)
+            playPreview(songId);
+    }
 
     if (Input_IsPadHit(0, PAD_C)) {
         if (selectedState) {
@@ -255,13 +271,8 @@ void Gamestate_RenderSongSelect(void) {
         BGA_SetEventLayer(0, 0, 0x1a);
         BGA_SetEventLayer(0, 0, 0x24);
 
-        // Boxes animando via Entry 11 — todos os 7 slots com frame offset proprio
-        for (int si = 0; si < 7; si++) {
-            int slotFrame = g_carrosselFrame + g_slotFrameOffset[si];
-            if (slotFrame < 540) slotFrame = 540;
-            if (slotFrame > 636) slotFrame = 636;
-            BGA_SetEventLayer(0, slotFrame, 0x0b);
-        }
+        // Mantém camadas de fundo/overlay; os boxes serão desenhados
+        // intercalados com os CDs abaixo para garantir a ordem desejada.
     }
 
     SongDB* db = &g_game.songDB;
@@ -269,25 +280,32 @@ void Gamestate_RenderSongSelect(void) {
     int songCount = mode->songCount;
     if (songCount == 0) return;
 
-    // CDs: 7 slots usando os mesmos offsets dos boxes
-    // Ordem de render: slot 0(esq-fora), 6(dir-fora), 1(esq2), 5(dir2), 2(esq1), 4(dir1), 3(centro)
-    int renderOrder[7] = { 0, 6, 1, 5, 2, 4, 3 };
+    // Renderiza os 7 slots do carrossel em ordem de distância do centro,
+    // garantindo que os discos mais distantes fiquem atrás e os mais próximos fiquem por cima.
+    typedef struct {
+        int slotIndex;
+        float screenX;
+        float bsc;
+        float balpha;
+        int texId;
+        int cdHalf;
+        float tw;
+        float th;
+        int bgaSlotFrame;
+    } SlotRender;
 
-    for (int ri = 0; ri < 7; ri++) {
-        int si = renderOrder[ri];
+    SlotRender slots[7];
+    int slotCount = 0;
 
+    for (int si = 0; si < 7; si++) {
         float slotFrame = (float)(g_carrosselFrame + g_slotFrameOffset[si]);
         float bx, bsc, balpha;
         EvalBoxFrame(slotFrame, &bx, &bsc, &balpha);
-
         if (balpha < 0.01f) continue;
 
         float screenX = 320.0f + bx;
-
-        // slot 3 = centro = selectedSongIndex, offsets negativos = anteriores
         int slotOffset = si - 3;
         int idx = (g_game.selectedSongIndex + slotOffset + songCount) % songCount;
-
         int sid = mode->songIds[idx];
         int si2 = Song_FindByID(db, sid);
         if (si2 < 0) continue;
@@ -296,19 +314,52 @@ void Gamestate_RenderSongSelect(void) {
         int cdIdx = findCdForSong(sid, &cdHalf);
         int texId = (cdIdx >= 0) ? g_cdTexIds[cdIdx] : -1;
 
-        float tw = 256.0f * bsc;
-        float th = 128.0f * bsc;
-
-        if (texId >= 0) {
-            float u1 = 0.0f, v1 = (1.0f - (float)cdHalf) * 128.0f;
-            float u2 = 256.0f, v2 = v1 + 128.0f;
-            Texture_DrawUV(texId,
-                screenX - tw * 0.5f,
-                240.0f  - th * 0.5f,
-                tw, th,
-                u1, v1, u2, v2,
-                1.0f, 1.0f, 1.0f, balpha);
+        if (slotCount < 7) {
+            int bgaSlotFrame = (int)slotFrame;
+            if (bgaSlotFrame < 540) bgaSlotFrame = 540;
+            if (bgaSlotFrame > 636) bgaSlotFrame = 636;
+            slots[slotCount].slotIndex = si;
+            slots[slotCount].screenX = screenX;
+            slots[slotCount].bsc = bsc;
+            slots[slotCount].balpha = balpha;
+            slots[slotCount].texId = texId;
+            slots[slotCount].cdHalf = cdHalf;
+            slots[slotCount].tw = 256.0f * bsc;
+            slots[slotCount].th = 128.0f * bsc;
+            slots[slotCount].bgaSlotFrame = bgaSlotFrame;
+            slotCount++;
         }
+    }
+
+    // Ordena do mais distante ao mais próximo do centro para manter a sobreposição correta.
+    for (int i = 0; i < slotCount - 1; i++) {
+        for (int j = i + 1; j < slotCount; j++) {
+            float distI = fabsf(slots[i].screenX - 320.0f);
+            float distJ = fabsf(slots[j].screenX - 320.0f);
+            if (distI < distJ) {
+                SlotRender tmp = slots[i];
+                slots[i] = slots[j];
+                slots[j] = tmp;
+            }
+        }
+    }
+
+    for (int i = 0; i < slotCount; i++) {
+        SlotRender* slot = &slots[i];
+        if (slot->texId >= 0) {
+            float u1 = 0.0f;
+            float v1 = (1.0f - (float)slot->cdHalf) * 128.0f;
+            float u2 = 256.0f;
+            float v2 = v1 + 128.0f;
+            Texture_DrawUV(slot->texId,
+                slot->screenX - slot->tw * 0.5f,
+                240.0f - slot->th * 0.5f - 10.0f,
+                slot->tw,
+                slot->th * 1.6f,
+                u1, v1, u2, v2,
+                1.0f, 1.0f, 1.0f, slot->balpha);
+        }
+        BGA_SetEventLayer(0, slot->bgaSlotFrame, 0x0b);
     }
 
     if (previewState) {
