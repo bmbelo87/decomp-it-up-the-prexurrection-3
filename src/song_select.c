@@ -14,7 +14,7 @@ static int g_carrosselDir = 0;
 static int g_carrosselTarget = 588;
 static bool g_carrosselIntro = true;
 static int g_introFrame = 0;
-static int g_pendingMove = 0; // -1 left, +1 right, applied when animation completes
+static int g_pendingMove = 0;
 static float g_previewDelay = 0.0f;
 
 static const int g_slotFrameOffset[7] = { -48, -32, -16, 0, +16, +32, +48 };
@@ -189,6 +189,19 @@ void Gamestate_UpdateSongSelect(float dt) {
     int songCount = mode->songCount;
     if (songCount == 0) return;
 
+    if (g_carrosselIntro) {
+        g_introFrame++;
+
+        if (Input_IsPadHit(0, PAD_DR) || Input_IsPadHit(0, PAD_DL)) {
+            g_carrosselIntro = false;
+        }
+
+        if (g_introFrame >= 50) {
+            g_carrosselIntro = false;
+        }
+        return;
+    }
+
     if (Input_IsPadHit(0, PAD_DR)) {
         selectedState = 0;
         stopPreview();
@@ -292,13 +305,32 @@ void Gamestate_RenderSongSelect(void) {
         float tw;
         float th;
         int bgaSlotFrame;
+        float introXOff;
     } SlotRender;
 
     SlotRender slots[7];
     int slotCount = 0;
 
     for (int si = 0; si < 7; si++) {
-        float slotFrame = (float)(g_carrosselFrame + g_slotFrameOffset[si]);
+        float slotFrame;
+        float introXOff = 0.0f;
+
+        if (g_carrosselIntro) {
+            int slotPhase = si - 1;
+            int phaseStart = slotPhase * 5;
+            int local = g_introFrame - phaseStart;
+            if (local <= 0) {
+                introXOff = 500.0f;
+            } else if (local < 5) {
+                float t = local / 5.0f;
+                introXOff = 500.0f * (1.0f - t);
+            } else {
+                introXOff = 0.0f;
+            }
+            slotFrame = (float)(588 + g_slotFrameOffset[si]);
+        } else {
+            slotFrame = (float)(g_carrosselFrame + g_slotFrameOffset[si]);
+        }
         float bx, bsc, balpha;
         EvalBoxFrame(slotFrame, &bx, &bsc, &balpha);
         if (balpha < 0.01f) continue;
@@ -308,10 +340,9 @@ void Gamestate_RenderSongSelect(void) {
         int idx = (g_game.selectedSongIndex + slotOffset + songCount) % songCount;
         int sid = mode->songIds[idx];
         int si2 = Song_FindByID(db, sid);
-        if (si2 < 0) continue;
 
         int cdHalf = 0;
-        int cdIdx = findCdForSong(sid, &cdHalf);
+        int cdIdx = (si2 >= 0) ? findCdForSong(sid, &cdHalf) : -1;
         int texId = (cdIdx >= 0) ? g_cdTexIds[cdIdx] : -1;
 
         if (slotCount < 7) {
@@ -319,7 +350,7 @@ void Gamestate_RenderSongSelect(void) {
             if (bgaSlotFrame < 540) bgaSlotFrame = 540;
             if (bgaSlotFrame > 636) bgaSlotFrame = 636;
             slots[slotCount].slotIndex = si;
-            slots[slotCount].screenX = screenX;
+            slots[slotCount].screenX = screenX + introXOff;
             slots[slotCount].bsc = bsc;
             slots[slotCount].balpha = balpha;
             slots[slotCount].texId = texId;
@@ -327,6 +358,7 @@ void Gamestate_RenderSongSelect(void) {
             slots[slotCount].tw = 256.0f * bsc;
             slots[slotCount].th = 128.0f * bsc;
             slots[slotCount].bgaSlotFrame = bgaSlotFrame;
+            slots[slotCount].introXOff = introXOff;
             slotCount++;
         }
     }
@@ -346,20 +378,56 @@ void Gamestate_RenderSongSelect(void) {
 
     for (int i = 0; i < slotCount; i++) {
         SlotRender* slot = &slots[i];
+        float selScale = (selectedState && slot->slotIndex == 3) ? 1.1f : 1.0f;
         if (slot->texId >= 0) {
+            float cdScaleX, cdScaleY, cdOffX, cdOffY;
+            if (selectedState && slot->slotIndex == 3) {
+                cdScaleX = 1.1f; cdScaleY = 1.1f; cdOffX = 2.0f; cdOffY = -10.0f;
+            } else {
+                cdScaleX = 1.00f; cdScaleY = 0.95f; cdOffX = 0.0f; cdOffY = -1.0f;
+            }
+            float sw = slot->tw * cdScaleX;
+            float sh = slot->th * cdScaleY;
             float u1 = 0.0f;
             float v1 = (1.0f - (float)slot->cdHalf) * 128.0f;
             float u2 = 256.0f;
             float v2 = v1 + 128.0f;
             Texture_DrawUV(slot->texId,
-                slot->screenX - slot->tw * 0.5f,
-                240.0f - slot->th * 0.5f - 10.0f,
-                slot->tw,
-                slot->th * 1.6f,
+                slot->screenX - sw * 0.5f + cdOffX,
+                240.0f - sh * 0.5f - 10.0f + cdOffY,
+                sw,
+                sh * 1.6f,
                 u1, v1, u2, v2,
                 1.0f, 1.0f, 1.0f, slot->balpha);
         }
-        BGA_SetEventLayer(0, slot->bgaSlotFrame, 0x0b);
+        if (selScale != 1.0f || (g_carrosselIntro && slot->introXOff != 0.0f)) {
+            glPushMatrix();
+            if (selScale != 1.0f) {
+                glTranslatef(290.0f, 216.5f, 0.0f);
+                glScalef(selScale, selScale, 1.0f);
+                glTranslatef(-290.0f, -216.5f, 0.0f);
+            }
+            if (g_carrosselIntro && slot->introXOff != 0.0f)
+                glTranslatef(slot->introXOff, 0.0f, 0.0f);
+            BGA_SetEventLayer(0, slot->bgaSlotFrame, 0x0b);
+            glPopMatrix();
+        } else {
+            BGA_SetEventLayer(0, slot->bgaSlotFrame, 0x0b);
+        }
+    }
+
+    // box2.spr glow pulsante, começa junto com o preview
+    if (g_game.bgaPicCount > 0 && previewState) {
+        if (selectedState) {
+            glPushMatrix();
+            glTranslatef(320.0f, 240.0f, 0.0f);
+            glScalef(1.1f, 1.1f, 1.0f);
+            glTranslatef(-320.0f, -240.0f, 0.0f);
+            BGA_SetEventLayer(0, g_game.bgaFrame % 55, 0x18);
+            glPopMatrix();
+        } else {
+            BGA_SetEventLayer(0, g_game.bgaFrame % 55, 0x18);
+        }
     }
 
     if (previewState) {
