@@ -53,19 +53,4 @@ add_executable(dump_df tools/dump_df.c src/df_resource.c)
 target_include_directories(dump_df PRIVATE include)
 target_link_libraries(dump_df kernel32)
 
-add_custom_command(TARGET Pumpy POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:Pumpy>/assets"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/../BGA"
-        "$<TARGET_FILE_DIR:Pumpy>/assets/BGA"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/assets/AUDIO"
-        "$<TARGET_FILE_DIR:Pumpy>/assets/AUDIO"
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-        "${CMAKE_SOURCE_DIR}/../STEP"
-        "$<TARGET_FILE_DIR:Pumpy>/STEP"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        "${CMAKE_SOURCE_DIR}/../Stage.cfg"
-        "$<TARGET_FILE_DIR:Pumpy>/Stage.cfg"
-    COMMENT "Copying game assets"
-)
+# Assets (BGA, AUDIO, STEP, Stage.cfg) são fornecidos pelo usuário com os arquivos originais do jogo.

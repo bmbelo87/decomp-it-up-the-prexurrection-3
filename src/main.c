@@ -52,14 +52,14 @@ static void LoadBGAForState(GameState state) {
         break;
     case STATE_GAMEOVER:         bgaName = "84"; break;
     case STATE_SONG_SELECT:
-    case STATE_SONG_SELECT_B:
+    case STATE_SONG_SELECT_B: bgaName = "099"; break;
     case STATE_LOADING_PNZ:
     case STATE_LOADING_PNZ_B: bgaName = ""; break;
     case STATE_STAFF_ENTER:
     case STATE_STAFF:
     case STATE_STAFF_END:        bgaName = ""; break;
     case STATE_STAGE_TRANSITION:
-        if (g_game.bonusStage && g_game.stageCount == 0 && !g_game.isBonusSong)
+        if (g_game.isBonusSong)
             bgaName = "lt03";
         else
             bgaName = "lt01";
@@ -93,7 +93,9 @@ static void LoadBGAForState(GameState state) {
         if (BGM_LoadAUDDirect(path)) BGM_Play(true);
     } else if (state == STATE_SONG_SELECT || state == STATE_SONG_SELECT_B) {
         BGM_Stop();
-        SongSelect_Reset();
+        // So reseta cursor se veio do menu (stageCount == 3 indica novo jogo)
+        if (g_game.stageCount == 3)
+            SongSelect_Reset();
     }
     
     g_game.bgaLoop = (state == STATE_MENU_ENTER || state == STATE_MENU_INPUT ||
@@ -102,12 +104,19 @@ static void LoadBGAForState(GameState state) {
         g_game.bgaLoopStart = findBGALoopStart();
         g_game.bgaLoopEnd = findBGALoopEnd();
         g_game.bgaFrame = g_game.bgaLoopStart;
-        Log_Print("BGA: loop range %d -> %d (maxFrame=%d, layers=%d)\n",
+        Log_Print("BGA: loop range %d -> %d (maxFrame=%d)\n",
                   g_game.bgaLoopStart, g_game.bgaLoopEnd,
-                  g_game.bgaMaxFrame,
-                  g_game.bgaPicCount > 0 ? g_game.bgaPics[0].layerCount : 0);
+                  g_game.bgaMaxFrame);
     } else {
         g_game.bgaLoop = false;
+        if (state == STATE_SONG_SELECT || state == STATE_SONG_SELECT_B) {
+            g_game.bgaFrame = 0;
+            if (g_game.bgaMaxFrame > 0) {
+                g_game.bgaLoopStart = 0;
+                g_game.bgaLoopEnd = 600;
+                g_game.bgaLoop = true;
+            }
+        }
     }
 }
 
@@ -457,7 +466,9 @@ void Game_Render(void) {
         g_game.state != STATE_GAMEOPTION_ENTER &&
         g_game.state != STATE_GAMEOPTION_ANIM &&
         g_game.state != STATE_GAMEOPTION &&
-        g_game.state != STATE_GAMEOPTION_EXIT) {
+        g_game.state != STATE_GAMEOPTION_EXIT &&
+        g_game.state != STATE_SONG_SELECT &&
+        g_game.state != STATE_SONG_SELECT_B) {
         BGA_Render(0, g_game.bgaFrame);
     }
 
@@ -482,10 +493,10 @@ void Game_Render(void) {
         Result_Render();
         break;
     case STATE_STAGE_TRANSITION:
-        if (g_game.stageCount > 0 && g_game.bonusStage) {
-            Font_DrawStringCentered(320, 240, "NEXT STAGE", 1, 1, 1, 1);
-        } else if (g_game.bonusStage && g_game.stageCount == 0) {
+        if (g_game.isBonusSong) {
             Font_DrawStringCentered(320, 240, "BONUS STAGE", 1, 1, 0, 1);
+        } else if (g_game.stageCount > 0) {
+            Font_DrawStringCentered(320, 240, "NEXT STAGE", 1, 1, 1, 1);
         } else {
             Font_DrawStringCentered(320, 240, "FINAL STAGE", 1, 0, 0, 1);
         }

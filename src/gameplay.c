@@ -1121,7 +1121,7 @@ void Gameplay_Update(float dt)
                 g_hitTimer[p][pan]--;
             if (g_noteState[p][pan] == 1) { // EXPLODING
                 g_noteExplodeFrame[p][pan]++;
-                if (g_noteExplodeFrame[p][pan] >= 15)
+                if (g_noteExplodeFrame[p][pan] >= 25)
                     g_noteState[p][pan] = 0; // reseta estado
             }
         }
@@ -1772,11 +1772,13 @@ void Gameplay_Render(void)
             if (g_noteState[pe][pan] != 1) continue;
             int base = kExpBase[pan];
             if (base < 0) continue;
+            float ef = (float)g_noteExplodeFrame[pe][pan];
+            float eAlpha = ef < 20.0f ? 1.0f : 1.0f - (ef - 19.0f) / 5.0f;
             int af = (g_game.frameCounter / 3) % 6;
             int aSpr = base + af;
             float sw = (float)g_game.sprTiles[aSpr].srcW;
             float sh = (float)g_game.sprTiles[aSpr].srcH;
-            Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, 1.0f);
+            Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, eAlpha);
             if (g_fontArrowF >= 0) {
                 int fCnt = sprTileCount(g_fontArrowF);
                 if (fCnt > 0) {
@@ -1784,10 +1786,9 @@ void Gameplay_Render(void)
                     int fSpr = g_fontArrowF + fIdx;
                     float fw = (float)g_game.sprTiles[fSpr].srcW;
                     float fh = (float)g_game.sprTiles[fSpr].srcH;
-                    float ef = (float)g_noteExplodeFrame[pe][pan];
                     float esc = 0.8f + ef * 0.02f;
                     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                    Sprite_DrawTileUV(fSpr, expPosX[pan] + expOffX[pan] + fw / 2.0f, erY, fw * esc, fh * esc, 1.0f);
+                    Sprite_DrawTileUV(fSpr, expPosX[pan] + expOffX[pan] + fw / 2.0f, erY, fw * esc, fh * esc, eAlpha);
                     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 }
             }
