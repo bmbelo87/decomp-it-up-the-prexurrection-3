@@ -72,8 +72,8 @@ typedef enum {
     STATE_LOGO_SKIP       = 0x80,
     STATE_SONG_SELECT     = 0x81,
     STATE_SONG_SELECT_B   = 0x82,
-    STATE_LOADING_PNZ     = 0x83,
-    STATE_LOADING_PNZ_B   = 0x84,
+    STATE_SONG_TITLE      = 0x83,
+    STATE_SONG_TITLE_OUT  = 0x84,
     STATE_GAMEPLAY_BEGIN  = 0x85,
     STATE_EXIT            = 0xFF,
 } GameState;
@@ -381,6 +381,9 @@ void Font_DrawStringCentered(int x, int y, const char* str, float r, float g, fl
 void Font_DrawStringScaled(int x, int y, const char* str, float r, float g, float b, float a, float scale);
 void Font_DrawStringCenteredScaled(int x, int y, const char* str, float r, float g, float b, float a, float scale);
 int Font_LoadTexture(void);
+void Font_LoadFontOnly(void);
+const char* GetVersionString(void);
+void Font_DrawText(float x, float y, const char* text);
 void Font_DrawDigit(int texId, int digit, int x, int y, float scale);
 void Font_DrawNumber(int texId, int x, int y, int number, int digits, float scale);
 void Font_DrawDecDigit(int texId, float x, float y, int digit, float alpha, float scaleX, float scaleY, float r, float g, float b);
@@ -399,9 +402,26 @@ void Texture_Draw(int id, float x, float y, float scaleX, float scaleY, float al
 void Texture_DrawUV(int id, float x, float y, float w, float h, float u1, float v1, float u2, float v2, float r, float g, float b, float alpha);
 void Texture_Shutdown(void);
 
+typedef enum {
+    SND_3_2 = 0,
+    SND_2_1,
+    SND_4_2,
+    SND_8_1,
+    SND_5_1,
+    SND_RANK_A,
+    SND_RANK_B,
+    SND_RANK_C,
+    SND_RANK_D,
+    SND_RANK_F,
+    SND_COUNT
+} SoundID;
+
 bool Audio_Init(void);
 int Audio_LoadWAV(const char* name, const uint8_t* data, DWORD size);
 int Audio_LoadFromResource(const char* name, int resId);
+int Audio_LoadWaveFile(const char* filename);
+void Audio_LoadAllWaves(void);
+extern int g_waveSoundIds[SND_COUNT];
 void Audio_Play(int id, bool loop);
 void Audio_Stop(int id);
 void Audio_StopAll(void);
@@ -457,10 +477,12 @@ bool Loading_IsActive(void);
 void Gamestate_UpdateWarning(float dt);
 void Gamestate_UpdateLogo(float dt);
 void Gamestate_UpdateMenu(float dt);
+extern bool g_cdLoaded;
 void Gamestate_UpdateSongSelect(float dt);
 void Gamestate_RenderMenu(int bgaIndex, int frame);
 void Gamestate_RenderSongSelect(void);
 void SongSelect_Reset(void);
+void SongSelect_ResetIntro(void);
 
 void Gameplay_Start(int songId);
 void Gameplay_Enter(void);

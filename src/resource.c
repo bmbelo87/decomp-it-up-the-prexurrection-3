@@ -1166,6 +1166,9 @@ void Resource_ClearBGA(void)
         VSL_Shutdown();
         g_game.isVSL = false;
     }
+    Texture_Shutdown();
+    Font_Shutdown();
+    g_cdLoaded = false;
 }
 
 int Resource_SwitchBGA(const char* datName)

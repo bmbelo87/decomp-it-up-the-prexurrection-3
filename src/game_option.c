@@ -112,6 +112,7 @@ void Gamestate_UpdateGameOption(float dt)
                 g_game.optionToggle2 = 0;
                 break;
             case 4:
+                Audio_Play(g_waveSoundIds[SND_2_1], false);
                 go_counter = 0;
                 Menu_ResetState();
                 Game_ChangeState(STATE_MENU_ENTER);

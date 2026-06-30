@@ -53,8 +53,8 @@ static void LoadBGAForState(GameState state) {
     case STATE_GAMEOVER:         bgaName = "84"; break;
     case STATE_SONG_SELECT:
     case STATE_SONG_SELECT_B: bgaName = "099"; break;
-    case STATE_LOADING_PNZ:
-    case STATE_LOADING_PNZ_B: bgaName = ""; break;
+    case STATE_SONG_TITLE:
+    case STATE_SONG_TITLE_OUT: bgaName = ""; break;
     case STATE_STAFF_ENTER:
     case STATE_STAFF:
     case STATE_STAFF_END:        bgaName = ""; break;
@@ -93,9 +93,10 @@ static void LoadBGAForState(GameState state) {
         if (BGM_LoadAUDDirect(path)) BGM_Play(true);
     } else if (state == STATE_SONG_SELECT || state == STATE_SONG_SELECT_B) {
         BGM_Stop();
-        // So reseta cursor se veio do menu (stageCount == 3 indica novo jogo)
         if (g_game.stageCount == 3)
             SongSelect_Reset();
+        else
+            SongSelect_ResetIntro();
     }
     
     g_game.bgaLoop = (state == STATE_MENU_ENTER || state == STATE_MENU_INPUT ||
@@ -148,8 +149,10 @@ void Game_Init(HINSTANCE hInstance) {
     Render_SetGlobalColor(0, 0, 0, 0);
     GetCurrentDirectoryA(MAX_PATH, g_game.currentDirectory);
     InitSystems();
+    Audio_Init();
     Font_Init();
     Texture_Init();
+    Audio_LoadAllWaves();
 
     Log_Print("Loading song database...\n");
     char cfgPath[MAX_PATH];
@@ -187,6 +190,7 @@ void Game_Init(HINSTANCE hInstance) {
 }
 
 void Game_Shutdown(void) {
+    Audio_Shutdown();
     BGM_Shutdown();
     Font_Shutdown();
     ShutdownSystems();
@@ -284,8 +288,8 @@ void Game_Update(float dt) {
     case STATE_SONG_SELECT_B:
         Gamestate_UpdateSongSelect(dt);
         break;
-    case STATE_LOADING_PNZ:
-    case STATE_LOADING_PNZ_B:
+    case STATE_SONG_TITLE:
+    case STATE_SONG_TITLE_OUT:
         Loading_Update(dt);
         break;
     case STATE_GAMEPLAY:
@@ -482,8 +486,8 @@ void Game_Render(void) {
     case STATE_SONG_SELECT_B:
         Gamestate_RenderSongSelect();
         break;
-    case STATE_LOADING_PNZ:
-    case STATE_LOADING_PNZ_B:
+    case STATE_SONG_TITLE:
+    case STATE_SONG_TITLE_OUT:
         Loading_Render();
         break;
     case STATE_GAMEPLAY:

@@ -18,6 +18,9 @@ void Loading_Enter(int songId) {
     else
         g_game.isBonusSong = true;
 
+    // Destroi BGA do Song Select (099.DAT) antes de entrar no Title
+    Resource_ClearBGA();
+
     char path[MAX_PATH];
     snprintf(path, sizeof(path), "%s\\TITLE\\T%d.pnz", g_game.currentDirectory, songId);
     Log_Print("Loading: loading PNZ '%s'\n", path);
@@ -27,26 +30,26 @@ void Loading_Enter(int songId) {
         Log_Print("Loading: PNZ not found for song %d\n", songId);
     }
 
-    g_game.state = STATE_LOADING_PNZ;
+    g_game.state = STATE_SONG_TITLE;
     g_game.stateFrame = 0;
     Render_SetGlobalColor(0, 0, 0, 0);
 }
 
 void Loading_Update(float dt) {
-    if (g_game.state == STATE_LOADING_PNZ) {
+    if (g_game.state == STATE_SONG_TITLE) {
         int ms = (int)(dt * 1000.0f);
         if (ms < 1) ms = 1;
         g_loadingTimer -= ms;
 
         if (g_loadingTimer <= 0) {
             g_loadingTimer = LOADING_FADE_MS;
-            g_game.state = STATE_LOADING_PNZ_B;
+            g_game.state = STATE_SONG_TITLE_OUT;
             g_game.stateFrame = 0;
         }
         return;
     }
 
-    if (g_game.state == STATE_LOADING_PNZ_B) {
+    if (g_game.state == STATE_SONG_TITLE_OUT) {
         int ms = (int)(dt * 1000.0f);
         if (ms < 1) ms = 1;
         g_loadingTimer -= ms;
@@ -85,7 +88,7 @@ void Loading_Update(float dt) {
 }
 
 void Loading_Render(void) {
-    if (g_game.state != STATE_LOADING_PNZ && g_game.state != STATE_LOADING_PNZ_B)
+    if (g_game.state != STATE_SONG_TITLE && g_game.state != STATE_SONG_TITLE_OUT)
         return;
 
     if (g_pnzTexId >= 0) {
@@ -109,5 +112,5 @@ void Loading_Render(void) {
 }
 
 bool Loading_IsActive(void) {
-    return g_game.state == STATE_LOADING_PNZ || g_game.state == STATE_LOADING_PNZ_B;
+    return g_game.state == STATE_SONG_TITLE || g_game.state == STATE_SONG_TITLE_OUT;
 }

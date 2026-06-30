@@ -172,9 +172,82 @@ void Font_DrawNumber(int texId, int x, int y, int number, int digits, float scal
 }
 
 void Font_Shutdown(void) {
+    g_fontTexId = -1;
+    g_fontDec00Id = -1;
     if (g_fontInit) {
         glDeleteLists(FONT_LIST_BASE, 256);
         g_fontInit = false;
+    }
+}
+
+void Font_LoadFontOnly(void) {
+    if (g_fontTexId >= 0) return;
+
+    char datPath[MAX_PATH];
+    snprintf(datPath, sizeof(datPath), "%s/BGA/00.DAT", g_game.currentDirectory);
+    Log_Print("Font_LoadFontOnly: opening '%s'\n", datPath);
+
+    if (!RES_Open(datPath)) {
+        Log_Print("Font_LoadFontOnly: RES_Open failed\n");
+        return;
+    }
+
+    g_fontTexId = loadTextureFromRES("font.tga");
+    RES_Close();
+    Log_Print("Font_LoadFontOnly: texId=%d\n", g_fontTexId);
+}
+
+const char* GetVersionString(void) {
+    return "X3.1.PC";
+}
+
+void Font_DrawText(float x, float y, const char* text) {
+    if (g_fontTexId < 0 || !text) return;
+
+    Texture_Bind(g_fontTexId);
+    glEnable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // font.tga 256x256: primeiras 3 faixas horizontais contêm os glifos ASCII
+    //   Bloco 0 (ASCII 32-63): linhas 0-13, glifo em pixels 3-11 (9px altura)
+    //   Bloco 1 (ASCII 64-95): linhas 18-26, glifo em pixels 18-26 (9px altura)
+    //   Bloco 2 (ASCII 96-127): linhas 31-44, glifo em pixels 35-41 (7px altura)
+    static const int blkY[] = { 0, 18, 31 };
+    static const int glyY[] = { 3, 0, 4 };
+    static const int glyH[] = { 9, 9, 7 };
+
+    while (*text) {
+        unsigned char ch = (unsigned char)*text;
+        if (ch >= 32 && ch < 128) {
+            int idx = ch - 32;
+            int row = idx / 32;
+            int col = idx % 32;
+
+            float u = (float)(col * 8) / 256.0f;
+            float uw = 8.0f / 256.0f;
+            int py = blkY[row] + glyY[row];
+            int ph = glyH[row];
+
+            // Texture_LoadTGA flip: V=0 = topo da TGA = início da font area
+            float v0 = 1.0f - ((float)(py + ph) / 256.0f);
+            float v1 = 1.0f - ((float)py / 256.0f);
+
+            // Renderiza 8px largura × 12px altura
+            float x0 = x;
+            float x1 = x + 8.0f;
+            float y0 = y;
+            float y1 = y + 12.0f;
+
+            glBegin(GL_QUADS);
+            glTexCoord2f(u, v0); glVertex2f(x0, y0);
+            glTexCoord2f(u + uw, v0); glVertex2f(x1, y0);
+            glTexCoord2f(u + uw, v1); glVertex2f(x1, y1);
+            glTexCoord2f(u, v1); glVertex2f(x0, y1);
+            glEnd();
+        }
+        x += 8;
+        text++;
     }
 }
 

@@ -5,7 +5,7 @@ static int prevSongId = -1;
 static int previewState = 0;
 static int selectedState = 0;
 static int g_cdTexIds[45];
-static bool g_cdLoaded = false;
+bool g_cdLoaded = false;
 static float g_songAnimPos = 0.0f;
 static int g_songAnimCounter = 0;
 
@@ -19,8 +19,22 @@ static float g_previewDelay = 0.0f;
 
 static const int g_slotFrameOffset[7] = { -48, -32, -16, 0, +16, +32, +48 };
 
-static const int g_modeOrder[7] = {0, 1, 5, 3, 4, 2, 6};
-static const char* g_modeNames[7] = {"NORMAL","HARD","CRAZY","HALFDOUBLE","DIVISION","DOUBLE","NIGHTMARE"};
+// Modos 1 jogador: NORMAL(0), HARD(1), CRAZY(2), HALFDOUBLE(3), DOUBLE(4), NIGHTMARE(5)
+// TODO: quando P2 estiver ativo, substituir HALFDOUBLE/DOUBLE/NIGHTMARE por BATTLE
+static const char* g_modeNames1P[6] = {"NORMAL","HARD","CRAZY","HALFDOUBLE","DOUBLE","NIGHTMARE"};
+static const int g_modeLayers1P[6] = {31, 32, 30, 27, 28, 8};
+static int g_modeDBIdx[6];   // indices correspondentes no SongDB
+static int g_modeTileIdx[6]; // indices dos primeiros tiles SPR de cada modo
+
+static int g_selDispIdx = 0;          // indice de exibicao atual (0-5)
+static bool g_modeAnimActive = false;
+static int g_modeAnimFrame = 0;
+static int g_modeAnimDir = 0;         // +1=UR, -1=UL
+#define MODE_ANIM_DURATION 15
+#define MODE_LEFT_X   107.0f
+#define MODE_CENTER_X 315.0f
+#define MODE_RIGHT_X  537.0f
+#define MODE_Y         90.0f
 
 typedef struct {
     int frame;
@@ -29,11 +43,11 @@ typedef struct {
 
 static const BoxKeyframe g_boxKF[7] = {
     {540, -235.0f, 0.50f, 0.0f},
-    {556, -175.0f, 0.65f, 0.5f},
+    {556, -175.0f, 0.65f, 0.6f},
     {572, -110.0f, 0.80f, 1.0f},
     {588,    0.0f, 1.00f, 1.0f},
     {604,  110.0f, 0.80f, 1.0f},
-    {620,  175.0f, 0.65f, 0.5f},
+    {620,  175.0f, 0.65f, 0.6f},
     {636,  235.0f, 0.50f, 0.0f},
 };
 
@@ -71,6 +85,19 @@ static int findCdForSong(int songId, int* outHalf) {
     return -1;
 }
 
+static void cacheModeTileIndices(void) {
+    if (g_game.bgaPicCount <= 0) return;
+    BGAPicture* pic = &g_game.bgaPics[0];
+    for (int m = 0; m < 6; m++) {
+        int layer = g_modeLayers1P[m];
+        if (layer >= 0 && layer < pic->layerCount) {
+            g_modeTileIdx[m] = pic->layers[layer].sprTileStart;
+        } else {
+            g_modeTileIdx[m] = -1;
+        }
+    }
+}
+
 static void loadCdTextures(void) {
     if (g_cdLoaded) return;
     char datPath[MAX_PATH];
@@ -92,9 +119,18 @@ void SongSelect_Reset(void) {
     g_game.selectedSongIndex = 0;
     g_game.songSelectHighlighted = 0;
     g_game.previewSongId = -1;
-    g_game.selectedModeIndex = Song_FindMode(&g_game.songDB, "EASY");
-    if (g_game.selectedModeIndex < 0 && g_game.songDB.modeCount > 0)
-        g_game.selectedModeIndex = 0;
+
+    // Inicializa indices dos modos no DB
+    for (int m = 0; m < 6; m++) {
+        g_modeDBIdx[m] = Song_FindMode(&g_game.songDB, g_modeNames1P[m]);
+        if (g_modeDBIdx[m] < 0) g_modeDBIdx[m] = 0;
+    }
+    g_selDispIdx = 0;
+    g_game.selectedModeIndex = g_modeDBIdx[0];
+    g_modeAnimActive = false;
+    g_modeAnimFrame = 0;
+    g_modeAnimDir = 0;
+
     g_songAnimCounter = 0;
     g_songAnimPos = 0.0f;
     g_carrosselFrame = 588;
@@ -104,6 +140,23 @@ void SongSelect_Reset(void) {
     g_introFrame = 0;
     g_previewDelay = 0.0f;
     loadCdTextures();
+    cacheModeTileIndices();
+}
+
+void SongSelect_ResetIntro(void) {
+    prevSongId = -1;
+    previewState = 0;
+    selectedState = 0;
+    g_songAnimCounter = 0;
+    g_songAnimPos = 0.0f;
+    g_carrosselFrame = 588;
+    g_carrosselDir = 0;
+    g_carrosselTarget = 588;
+    g_carrosselIntro = true;
+    g_introFrame = 0;
+    g_previewDelay = 0.0f;
+    loadCdTextures();
+    cacheModeTileIndices();
 }
 
 static void stopPreview(void) {
@@ -145,16 +198,15 @@ void Gamestate_UpdateSongSelect(float dt) {
 
     SongDB* db = &g_game.songDB;
 
-    if (Input_IsPadHit(0, PAD_UR)) {
+    if (Input_IsPadHit(0, PAD_UR) && !g_modeAnimActive) {
+        loadCdTextures();
+        cacheModeTileIndices();
+        Audio_Play(g_waveSoundIds[SND_3_2], false);
         selectedState = 0;
         stopPreview();
-        int curDisp = -1;
-        for (int i = 0; i < 7; i++)
-            if (g_modeOrder[i] == g_game.selectedModeIndex) { curDisp = i; break; }
-        if (curDisp >= 0) {
-            curDisp = (curDisp + 1) % 7;
-            g_game.selectedModeIndex = g_modeOrder[curDisp];
-        }
+        g_modeAnimActive = true;
+        g_modeAnimFrame = 0;
+        g_modeAnimDir = 1;
         g_game.selectedSongIndex = 0;
         prevSongId = -1;
         g_songAnimCounter = 0;
@@ -165,16 +217,15 @@ void Gamestate_UpdateSongSelect(float dt) {
         g_carrosselTarget = 588;
     }
 
-    if (Input_IsPadHit(0, PAD_UL)) {
+    if (Input_IsPadHit(0, PAD_UL) && !g_modeAnimActive) {
+        loadCdTextures();
+        cacheModeTileIndices();
+        Audio_Play(g_waveSoundIds[SND_3_2], false);
         selectedState = 0;
         stopPreview();
-        int curDisp = -1;
-        for (int i = 0; i < 7; i++)
-            if (g_modeOrder[i] == g_game.selectedModeIndex) { curDisp = i; break; }
-        if (curDisp >= 0) {
-            curDisp = (curDisp + 5) % 7;
-            g_game.selectedModeIndex = g_modeOrder[curDisp];
-        }
+        g_modeAnimActive = true;
+        g_modeAnimFrame = 0;
+        g_modeAnimDir = -1;
         g_game.selectedSongIndex = 0;
         prevSongId = -1;
         g_songAnimCounter = 0;
@@ -183,6 +234,16 @@ void Gamestate_UpdateSongSelect(float dt) {
         g_carrosselFrame = 588;
         g_carrosselDir = 0;
         g_carrosselTarget = 588;
+    }
+
+    // Atualiza animacao dos modos
+    if (g_modeAnimActive) {
+        g_modeAnimFrame++;
+        if (g_modeAnimFrame >= MODE_ANIM_DURATION) {
+            g_modeAnimActive = false;
+            g_selDispIdx = (g_selDispIdx + g_modeAnimDir + 6) % 6;
+            g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
+        }
     }
 
     SongMode* mode = &db->modes[g_game.selectedModeIndex];
@@ -193,6 +254,7 @@ void Gamestate_UpdateSongSelect(float dt) {
         g_introFrame++;
 
         if (Input_IsPadHit(0, PAD_DR) || Input_IsPadHit(0, PAD_DL)) {
+            Audio_Play(g_waveSoundIds[SND_3_2], false);
             g_carrosselIntro = false;
         }
 
@@ -203,6 +265,7 @@ void Gamestate_UpdateSongSelect(float dt) {
     }
 
     if (Input_IsPadHit(0, PAD_DR)) {
+        Audio_Play(g_waveSoundIds[SND_3_2], false);
         selectedState = 0;
         stopPreview();
         prevSongId = -1;
@@ -216,6 +279,7 @@ void Gamestate_UpdateSongSelect(float dt) {
     }
 
     if (Input_IsPadHit(0, PAD_DL)) {
+        Audio_Play(g_waveSoundIds[SND_3_2], false);
         selectedState = 0;
         stopPreview();
         prevSongId = -1;
@@ -261,7 +325,10 @@ void Gamestate_UpdateSongSelect(float dt) {
     }
 
     if (Input_IsPadHit(0, PAD_C)) {
+        if (!selectedState)
+            Audio_Play(g_waveSoundIds[SND_3_2], false);
         if (selectedState) {
+            Audio_Play(g_waveSoundIds[SND_4_2], false);
             stopPreview();
             g_game.selectedDifficulty = mode->difficulties[g_game.selectedSongIndex];
             selectedState = 0;
@@ -271,6 +338,12 @@ void Gamestate_UpdateSongSelect(float dt) {
         }
     }
 }
+
+// Frames dos keyframes do BGA para cada posicao (extraidos do 099.DAT)
+#define FRAME_LEFT    14   // Event 1: x=0,   y=0,   hx=0,   sx=1.0
+#define FRAME_CENTER  74   // Event 3: x=210, y=35,  hx=110, sx=1.3
+#define FRAME_RIGHT   134  // Event 5: x=430, y=0,   hx=110, sx=1.0
+#define FRAME_OFF     194  // Event 7: x=210, y=-130, hx=110, sx=1.0
 
 void Gamestate_RenderSongSelect(void) {
     if (g_game.state != STATE_SONG_SELECT && g_game.state != STATE_SONG_SELECT_B)
@@ -392,6 +465,7 @@ void Gamestate_RenderSongSelect(void) {
             float v1 = (1.0f - (float)slot->cdHalf) * 128.0f;
             float u2 = 256.0f;
             float v2 = v1 + 128.0f;
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             Texture_DrawUV(slot->texId,
                 slot->screenX - sw * 0.5f + cdOffX,
                 240.0f - sh * 0.5f - 10.0f + cdOffY,
@@ -413,6 +487,48 @@ void Gamestate_RenderSongSelect(void) {
             glPopMatrix();
         } else {
             BGA_SetEventLayer(0, slot->bgaSlotFrame, 0x0b);
+        }
+    }
+
+    // Desenha os sprites dos modos (esquerda, centro, direita)
+    if (g_game.bgaPicCount > 0) {
+        int leftIdx  = (g_selDispIdx - 1 + 6) % 6;
+        int centIdx  = g_selDispIdx;
+        int rightIdx = (g_selDispIdx + 1) % 6;
+
+        if (g_modeAnimActive) {
+            float t = g_modeAnimFrame / (float)MODE_ANIM_DURATION;
+            int oldLeft   = (g_selDispIdx - 1 + 6) % 6;
+            int oldCenter = g_selDispIdx;
+            int oldRight  = (g_selDispIdx + 1) % 6;
+            if (g_modeAnimDir == 1) {
+                // UR: oldCenter→LEFT, oldRight→CENTER, newRight enters from OFF
+                int newRight = (g_selDispIdx + 2) % 6;
+                // oldLeft:  LEFT→OFF  (Event 14→15, frame 420→434, direto s/ passar por C/R)
+                BGA_SetEventLayer(0, (int)Math_Lerp(420.0f, 434.0f, t), g_modeLayers1P[oldLeft]);
+                // oldCenter: CENTER→LEFT (Event 3→2, frame 74→60, reverso de L→C)
+                BGA_SetEventLayer(0, (int)Math_Lerp(74.0f, 60.0f, t), g_modeLayers1P[oldCenter]);
+                // oldRight:  RIGHT→CENTER (Event 5→4, frame 134→120, reverso de C→R)
+                BGA_SetEventLayer(0, (int)Math_Lerp(134.0f, 120.0f, t), g_modeLayers1P[oldRight]);
+                // newRight:  OFF→RIGHT  (Event 7→6, frame 194→180, reverso de R→O)
+                BGA_SetEventLayer(0, (int)Math_Lerp(194.0f, 180.0f, t), g_modeLayers1P[newRight]);
+            } else {
+                // UL: oldCenter→RIGHT, oldLeft→CENTER, newLeft enters from OFF
+                int newLeft = (g_selDispIdx - 2 + 6) % 6;
+                // oldRight: RIGHT→OFF  (Event 6→7, frame 180→194)
+                BGA_SetEventLayer(0, (int)Math_Lerp(180.0f, 194.0f, t), g_modeLayers1P[oldRight]);
+                // oldCenter: CENTER→RIGHT (Event 4→5, frame 120→134)
+                BGA_SetEventLayer(0, (int)Math_Lerp(120.0f, 134.0f, t), g_modeLayers1P[oldCenter]);
+                // oldLeft:  LEFT→CENTER (Event 2→3, frame 60→74)
+                BGA_SetEventLayer(0, (int)Math_Lerp(60.0f, 74.0f, t), g_modeLayers1P[oldLeft]);
+                // newLeft:  OFF→LEFT   (Event 15→14, frame 434→420, reverso de L→O)
+                BGA_SetEventLayer(0, (int)Math_Lerp(434.0f, 420.0f, t), g_modeLayers1P[newLeft]);
+            }
+        } else {
+            // Estatico: BGA_SetEventLayer com frame fixo de cada posicao
+            BGA_SetEventLayer(0, FRAME_LEFT,   g_modeLayers1P[leftIdx]);
+            BGA_SetEventLayer(0, FRAME_CENTER, g_modeLayers1P[centIdx]);
+            BGA_SetEventLayer(0, FRAME_RIGHT,  g_modeLayers1P[rightIdx]);
         }
     }
 

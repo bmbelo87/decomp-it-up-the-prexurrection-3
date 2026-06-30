@@ -6,7 +6,7 @@ A faithful C reconstruction of **PUMPY.EXE**, the arcade executable for **Pump I
 
 This project reverse-engineers the original x86 binary and reproduces its gameplay, rendering, audio, and state machine as closely as possible — no emulation, no wrappers. Native Windows executable built with OpenGL and DirectSound.
 
-## Status — v0.5
+## Status — v0.6
 
 | Feature | Status |
 |---|---|
@@ -27,7 +27,7 @@ This project reverse-engineers the original x86 binary and reproduces its gamepl
 | Stage transition flow | ✅ |
 | P2 input handling | 🚧 Disabled |
 | Modifiers (random/mirror/vanish) | ❌ |
-| Fade in/out transitions | ❌ |
+| Fade in/out transitions | ✅ |
 | FreeStyle/Nightmare | ❌ |
 | HalfDouble | ❌ |
 | Division | ❌ |

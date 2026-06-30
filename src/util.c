@@ -85,6 +85,8 @@ const char* State_ToString(GameState state) {
         case STATE_GAMEOPTION_EXIT: return "GAMEOPTION_EXIT";
         case STATE_SONG_SELECT: return "SONG_SELECT";
         case STATE_SONG_SELECT_B: return "SONG_SELECT_B";
+        case STATE_SONG_TITLE: return "SONG_TITLE";
+        case STATE_SONG_TITLE_OUT: return "SONG_TITLE_OUT";
         case STATE_LOGO_SKIP: return "LOGO_SKIP";
         case STATE_EXIT: return "EXIT";
         default: return "UNKNOWN";

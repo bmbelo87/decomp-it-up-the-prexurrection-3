@@ -4,6 +4,9 @@ static int g_resultFrame;
 static int g_fontTexId = -1;
 static int g_gradeP1 = 5; // 0=S..5=F
 static int g_gradeP2 = 5;
+static int g_lastDigitSoundCount = 0;
+static int g_lastSoundFrame = 0;
+static bool g_gradeSoundPlayed = false;
 
 // Y original Ghidra -> Y-DOWN (topo do digito)
 // 480 - yUp - 39 = valor
@@ -114,10 +117,13 @@ GameState Result_GetNextState(void) {
 
 void Result_Enter(void) {
     g_resultFrame = 0;
+    g_lastDigitSoundCount = 0;
+    g_lastSoundFrame = -100;
+    g_gradeSoundPlayed = false;
     g_game.bgaLoop = false;
     g_game.bgaFrame = 0;
 
-    if (g_fontTexId < 0) g_fontTexId = Font_LoadTexture();
+    g_fontTexId = Font_LoadTexture();
 
     BGM_Stop();
     char ap[MAX_PATH];
@@ -188,6 +194,26 @@ void Result_Render(void) {
     if (g_game.state != STATE_DANCE_GRADE_DISPLAY) return;
 
     int f = g_resultFrame;
+
+    // Toca 8-1.wav a cada 5 frames (independente do digito, total 25)
+    if (f >= 60 && (f - g_lastSoundFrame) >= 5 && g_lastDigitSoundCount < 25) {
+        Audio_Play(g_waveSoundIds[SND_8_1], false);
+        g_lastDigitSoundCount++;
+        g_lastSoundFrame = f;
+    }
+
+    // Grade sound (5-1 + rank) quando a nota aparece no frame 0xd2
+    if (f >= 0xd2 && !g_gradeSoundPlayed) {
+        g_gradeSoundPlayed = true;
+        Audio_Play(g_waveSoundIds[SND_5_1], false);
+        int rankSnd = SND_RANK_A;
+        if (g_gradeP1 == 0 || g_gradeP1 == 1) rankSnd = SND_RANK_A; // S ou A
+        else if (g_gradeP1 == 2) rankSnd = SND_RANK_B;
+        else if (g_gradeP1 == 3) rankSnd = SND_RANK_C;
+        else if (g_gradeP1 == 4) rankSnd = SND_RANK_D;
+        else rankSnd = SND_RANK_F;
+        Audio_Play(g_waveSoundIds[rankSnd], false);
+    }
 
     // Last frames: only show "Press ENTER" text, no BGA/CLEAR/FAIL
     if (f >= 0x24E) {

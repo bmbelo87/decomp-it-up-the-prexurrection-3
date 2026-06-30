@@ -214,6 +214,46 @@ int Audio_LoadFromResource(const char* name, int resId) {
     return Audio_LoadWAV(name, data, size);
 }
 
+int Audio_LoadWaveFile(const char* filename) {
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s\\WAVE\\%s", g_game.currentDirectory, filename);
+    FILE* f = fopen(path, "rb");
+    if (!f) { Log_Print("Audio: failed to open '%s'\n", path); return -1; }
+
+    fseek(f, 0, SEEK_END);
+    DWORD size = (DWORD)ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    uint8_t* data = (uint8_t*)malloc(size);
+    if (!data) { fclose(f); return -1; }
+    fread(data, 1, size, f);
+    fclose(f);
+
+    int idx = Audio_LoadWAV(filename, data, size);
+    free(data);
+    return idx;
+}
+
+static const char* g_waveFiles[SND_COUNT] = {
+    "3-2.wav",   // SND_3_2
+    "2-1.wav",   // SND_2_1
+    "4-2.wav",   // SND_4_2
+    "8-1.wav",   // SND_8_1
+    "5-1.wav",   // SND_5_1
+    "RANK_A.wav", // SND_RANK_A
+    "RANK_B.wav", // SND_RANK_B
+    "RANK_C.wav", // SND_RANK_C
+    "RANK_D.wav", // SND_RANK_D
+    "REMIX_F.wav" // SND_RANK_F
+};
+
+int g_waveSoundIds[SND_COUNT];
+
+void Audio_LoadAllWaves(void) {
+    for (int i = 0; i < SND_COUNT; i++)
+        g_waveSoundIds[i] = Audio_LoadWaveFile(g_waveFiles[i]);
+}
+
 void Audio_Play(int id, bool loop) {
     if (id < 0 || id >= MAX_SOUNDS || !g_game.sounds[id].inUse) return;
     IDirectSoundBuffer_SetCurrentPosition(g_game.sounds[id].buffer, 0);

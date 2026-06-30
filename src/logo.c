@@ -18,6 +18,7 @@ void Gamestate_UpdateLogo(float dt) {
     switch (g_game.state) {
     case STATE_LOGO_ENTER:
         if (padHit(0, PAD_C)) {
+            Audio_Play(g_waveSoundIds[SND_3_2], false);
             Game_ChangeState(STATE_LOGO_SKIP);
             return;
         }

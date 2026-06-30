@@ -1347,20 +1347,15 @@ void Gameplay_Render(void)
         }
 
         // Hit flash (p1 tile) nos receptores acertados
-        static int kHitBaseInit = 0;
-        static int kHitBase[5];
-        if (!kHitBaseInit) {
-            kHitBase[0] = g_fontArrow542;
-            kHitBase[1] = g_fontArrow541;
-            kHitBase[2] = g_fontArrow545;
-            kHitBase[3] = g_fontArrow543;
-            kHitBase[4] = g_fontArrow544;
-            kHitBaseInit = 1;
-        }
         for (int pan = 0; pan < 5; pan++) {
             int ht = g_hitTimer[p][pan];
-            if (ht <= 0 || kHitBase[pan] < 0) continue;
-            int p1Idx = kHitBase[pan] + 6;
+            int baseIdx = (pan == 0) ? g_fontArrow542 :
+                          (pan == 1) ? g_fontArrow541 :
+                          (pan == 2) ? g_fontArrow545 :
+                          (pan == 3) ? g_fontArrow543 :
+                                        g_fontArrow544;
+            if (ht <= 0 || baseIdx < 0) continue;
+            int p1Idx = baseIdx + 6;
             if (p1Idx >= g_game.sprTileCount) continue;
             float sw = (float)g_game.sprTiles[p1Idx].srcW;
             float sh = (float)g_game.sprTiles[p1Idx].srcH;
@@ -1758,19 +1753,13 @@ void Gameplay_Render(void)
         expPosX[4] = expPosX[3] + 48.0f;
         float erY = 38.0f + 28.0f;
         static const float expOffX[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
-        static int kExpBaseInit = 0;
-        static int kExpBase[5];
-        if (!kExpBaseInit) {
-            kExpBase[0] = g_fontArrow542;
-            kExpBase[1] = g_fontArrow541;
-            kExpBase[2] = g_fontArrow545;
-            kExpBase[3] = g_fontArrow543;
-            kExpBase[4] = g_fontArrow544;
-            kExpBaseInit = 1;
-        }
         for (int pan = 0; pan < 5; pan++) {
             if (g_noteState[pe][pan] != 1) continue;
-            int base = kExpBase[pan];
+            int base = (pan == 0) ? g_fontArrow542 :
+                       (pan == 1) ? g_fontArrow541 :
+                       (pan == 2) ? g_fontArrow545 :
+                       (pan == 3) ? g_fontArrow543 :
+                                     g_fontArrow544;
             if (base < 0) continue;
             float ef = (float)g_noteExplodeFrame[pe][pan];
             float eAlpha = ef < 20.0f ? 1.0f : 1.0f - (ef - 19.0f) / 5.0f;
