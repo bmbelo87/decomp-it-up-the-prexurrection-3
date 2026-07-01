@@ -6,31 +6,31 @@ A faithful C reconstruction of **PUMPY.EXE**, the arcade executable for **Pump I
 
 This project reverse-engineers the original x86 binary and reproduces its gameplay, rendering, audio, and state machine as closely as possible — no emulation, no wrappers. Native Windows executable built with OpenGL and DirectSound.
 
-## Status — v0.7
+## Status — v0.8
 
-| Feature                                      | Status      |
-| -------------------------------------------- | ----------- |
-| Song select + difficulty                     | ✅           |
-| Gameplay (5-panel, scrolling, holds)         | ✅           |
-| Timing windows (Perfect/Great/Good/Bad/Miss) | ✅           |
-| Combo system + scoring                       | ✅           |
-| Grade calculation + stage flow               | ✅           |
-| Judge animation (pop-in + squeeze)           | ✅           |
-| Arrow animation (n1→n6 cycling)              | ✅           |
-| Hit flash (p1 border on input)               | ✅           |
-| Explosion effect (ARROWF.SPR)                | ✅           |
-| Hold bodies / tails auto-capture             | ✅           |
-| Life bar (03/04/05.SPR)                      | ✅           |
-| BGA playback (BGA/BGA2/VSL)                  | ✅           |
-| BGM audio (DirectSound + MCI)                | ✅           |
-| Menu + staff screen                          | ✅           |
-| Stage transition flow                        | ✅           |
-| P2 input handling                            | 🚧 Disabled |
-| Modifiers (random/mirror/vanish)             | ❌           |
-| Fade in/out transitions                      | ✅           |
-| FreeStyle/Nightmare                          | ✅           |
-| HalfDouble                                   | ✅           |
-| Division                                     | ❌           |
+| Feature                                      | Status                  |
+| -------------------------------------------- | ----------------------- |
+| Song select + difficulty                     | ✅                       |
+| Gameplay (5-panel, scrolling, holds)         | ✅                       |
+| Timing windows (Perfect/Great/Good/Bad/Miss) | ✅                       |
+| Combo system + scoring                       | ✅                       |
+| Grade calculation + stage flow               | ✅                       |
+| Judge animation (pop-in + squeeze)           | ✅                       |
+| Arrow animation (n1→n6 cycling)              | ✅                       |
+| Hit flash (p1 border on input)               | ✅                       |
+| Explosion effect (ARROWF.SPR)                | ✅                       |
+| Hold bodies / tails auto-capture             | ✅                       |
+| Life bar (03/04/05.SPR)                      | ✅                       |
+| BGA playback (BGA/BGA2/VSL)                  | ✅                       |
+| BGM audio (DirectSound + MCI)                | ✅                       |
+| Menu + staff screen                          | ✅                       |
+| Stage transition flow                        | ✅                       |
+| P2 input handling                            | 🚧 Disabled             |
+| Modifiers (random/mirror/vanish)             | ❌                       |
+| Fade in/out transitions                      | ✅                       |
+| FreeStyle/Nightmare                          | ✅                       |
+| HalfDouble                                   | ✅                       |
+| Division                                     | ⏳ Planned for post-v1.0 |
 
 ## Project Structure
 
@@ -76,7 +76,7 @@ cmake ..
 cmake --build . --config Release
 ```
 
-Place the resulting `.exe` in the game's root directory alongside `AUDIO/`, `BGA/`, and `BGA_extracted/` folders from the original game. Assets are **not** included — you must provide your own copy of PUMP IT UP Prex 3 data files.
+Place the resulting `.exe` in the game's root directory alongside the `AUDIO/` and `BGA/` folders from the original game. Assets are **not** included — you must provide your own copy of PUMP IT UP Prex 3 data files.
 
 ## Technical Notes
 

@@ -146,6 +146,8 @@ void Game_Init(HINSTANCE hInstance) {
     g_game.showDebug = true;
     g_game.stageBreak = 1;
     g_game.showHelp = 0;
+    g_game.cmdSpeedMult = 1;     /* Command: velocidade padrão x1 */
+    g_game.cmdSpeedRV   = false; /* Command: RV desativado por padrão */
     Render_SetGlobalColor(0, 0, 0, 0);
     GetCurrentDirectoryA(MAX_PATH, g_game.currentDirectory);
     InitSystems();

@@ -1,6 +1,52 @@
 #include "pumpy.h"
 #include <string.h>
 
+/* ── Command detection ──────────────────────────────────────────────────────
+ * Sequência confirmada no Ghidra (FUN_00407390 / DAT_00442378):
+ *   Byte pattern: 08 10 08 10 04 — no original, UL=0x08, UR=0x10, CN=0x04.
+ *   Traduzido para os nossos enum values: UL UR UL UR CN.
+ * Cada detecção avança para o próximo estado:
+ *   x1 → x2 → x3 → x4 → RV → x1
+ */
+#define CMD_BUF_LEN 5
+static PadButton g_cmdBuf[CMD_BUF_LEN];
+static int       g_cmdBufCount = 0;
+static int       g_cmdSpeedIdx = 0; /* índice atual na tabela abaixo */
+
+static const PadButton k_speedSeq[CMD_BUF_LEN] = {
+    PAD_UL, PAD_UR, PAD_UL, PAD_UR, PAD_C
+};
+/* Ciclo original do Prex3: x1→x2→x3→x4→RV→x1
+ * RV usa cmdSpeedMult=1 (velocidade normal) mas inverte a direção das setas. */
+#define CMD_SPEED_COUNT 5
+static const int  k_speedMult[] = {1, 2, 3, 4, 1};   /* multiplicadores (RV=1) */
+static const bool k_speedRV[]   = {false, false, false, false, true}; /* RV flag */
+
+/* Empurra um botão no buffer circular e verifica a sequência de velocidade.
+ * Retorna true se a sequência foi completada e o speed foi avançado. */
+static bool Cmd_Push(PadButton btn) {
+    if (g_cmdBufCount < CMD_BUF_LEN) {
+        g_cmdBuf[g_cmdBufCount++] = btn;
+    } else {
+        memmove(g_cmdBuf, g_cmdBuf + 1, (CMD_BUF_LEN - 1) * sizeof(PadButton));
+        g_cmdBuf[CMD_BUF_LEN - 1] = btn;
+    }
+    if (g_cmdBufCount >= CMD_BUF_LEN &&
+        memcmp(g_cmdBuf, k_speedSeq, CMD_BUF_LEN * sizeof(PadButton)) == 0)
+    {
+        g_cmdBufCount = 0; /* reset buffer para evitar dupla detecção */
+        g_cmdSpeedIdx = (g_cmdSpeedIdx + 1) % CMD_SPEED_COUNT;
+        g_game.cmdSpeedMult = k_speedMult[g_cmdSpeedIdx];
+        g_game.cmdSpeedRV   = k_speedRV[g_cmdSpeedIdx];
+        Log_Print("CMD: Speed -> x%d%s (idx=%d)\n",
+                  g_game.cmdSpeedMult,
+                  g_game.cmdSpeedRV ? " RV" : "",
+                  g_cmdSpeedIdx);
+        return true;
+    }
+    return false;
+}
+
 static int prevSongId = -1;
 static int previewState = 0;
 static int selectedState = 0;
@@ -141,6 +187,14 @@ void SongSelect_Reset(void) {
     g_previewDelay = 0.0f;
     loadCdTextures();
     cacheModeTileIndices();
+
+    /* Carrega font/arrows (00.DAT) se ainda não estiverem carregados.
+     * Necessário para os ícones de Command (X, R, M, V, NS) na HUD do SongSelect. */
+    if (g_fontArrow541 < 0) {
+        char datPath[MAX_PATH];
+        snprintf(datPath, sizeof(datPath), "%s\\BGA\\00.DAT", g_game.currentDirectory);
+        Resource_LoadFontAndArrows(datPath);
+    }
 }
 
 void SongSelect_ResetIntro(void) {
@@ -198,7 +252,22 @@ void Gamestate_UpdateSongSelect(float dt) {
 
     SongDB* db = &g_game.songDB;
 
-    if (Input_IsPadHit(0, PAD_UR) && !g_modeAnimActive) {
+    /* ── Captura todos os botões para detecção de Commands ──────────────── */
+    {
+        static const PadButton all5[] = {PAD_UL, PAD_UR, PAD_C, PAD_DL, PAD_DR};
+        for (int _ci = 0; _ci < 5; _ci++) {
+            if (Input_IsPadHit(0, all5[_ci]))
+                Cmd_Push(all5[_ci]);
+        }
+    }
+
+    if (Input_IsPadHit(0, PAD_UR)) {
+        /* Interrompe animação de modo em curso (comportamento original: sem delay) */
+        if (g_modeAnimActive) {
+            g_selDispIdx = (g_selDispIdx + g_modeAnimDir + 6) % 6;
+            g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
+            g_modeAnimActive = false;
+        }
         loadCdTextures();
         cacheModeTileIndices();
         Audio_Play(g_waveSoundIds[SND_3_2], false);
@@ -217,7 +286,13 @@ void Gamestate_UpdateSongSelect(float dt) {
         g_carrosselTarget = 588;
     }
 
-    if (Input_IsPadHit(0, PAD_UL) && !g_modeAnimActive) {
+    if (Input_IsPadHit(0, PAD_UL)) {
+        /* Interrompe animação de modo em curso (comportamento original: sem delay) */
+        if (g_modeAnimActive) {
+            g_selDispIdx = (g_selDispIdx + g_modeAnimDir + 6) % 6;
+            g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
+            g_modeAnimActive = false;
+        }
         loadCdTextures();
         cacheModeTileIndices();
         Audio_Play(g_waveSoundIds[SND_3_2], false);
@@ -252,16 +327,10 @@ void Gamestate_UpdateSongSelect(float dt) {
 
     if (g_carrosselIntro) {
         g_introFrame++;
-
-        if (Input_IsPadHit(0, PAD_DR) || Input_IsPadHit(0, PAD_DL)) {
-            Audio_Play(g_waveSoundIds[SND_3_2], false);
-            g_carrosselIntro = false;
-        }
-
         if (g_introFrame >= 50) {
             g_carrosselIntro = false;
         }
-        return;
+        /* Não retorna: DL/DR abaixo cancela a intro e move o carrossel normalmente */
     }
 
     if (Input_IsPadHit(0, PAD_DR)) {
@@ -269,13 +338,23 @@ void Gamestate_UpdateSongSelect(float dt) {
         selectedState = 0;
         stopPreview();
         prevSongId = -1;
-        // Se já animando, ignore input para evitar acúmulo
-        if (g_carrosselDir == 0) {
-            g_pendingMove = +1;
-            g_carrosselTarget = g_carrosselFrame - 16;
-            g_carrosselDir = -1;
-            g_previewDelay = 1.0f;
+        g_carrosselIntro = false;
+        /* Interrompe animação em curso: snap para destino e aplica movimento pendente */
+        if (g_carrosselDir != 0) {
+            g_carrosselFrame = g_carrosselTarget;
+            if (g_pendingMove != 0) {
+                g_game.selectedSongIndex += g_pendingMove;
+                if (g_game.selectedSongIndex >= songCount) g_game.selectedSongIndex = 0;
+                if (g_game.selectedSongIndex < 0) g_game.selectedSongIndex = songCount - 1;
+                g_pendingMove = 0;
+            }
+            g_carrosselFrame = 588;
+            g_carrosselDir = 0;
         }
+        g_pendingMove = +1;
+        g_carrosselTarget = g_carrosselFrame - 16;
+        g_carrosselDir = -1;
+        g_previewDelay = 1.0f;
     }
 
     if (Input_IsPadHit(0, PAD_DL)) {
@@ -283,12 +362,23 @@ void Gamestate_UpdateSongSelect(float dt) {
         selectedState = 0;
         stopPreview();
         prevSongId = -1;
-        if (g_carrosselDir == 0) {
-            g_pendingMove = -1;
-            g_carrosselTarget = g_carrosselFrame + 16;
-            g_carrosselDir = +1;
-            g_previewDelay = 1.0f;
+        g_carrosselIntro = false;
+        /* Interrompe animação em curso: snap para destino e aplica movimento pendente */
+        if (g_carrosselDir != 0) {
+            g_carrosselFrame = g_carrosselTarget;
+            if (g_pendingMove != 0) {
+                g_game.selectedSongIndex += g_pendingMove;
+                if (g_game.selectedSongIndex >= songCount) g_game.selectedSongIndex = 0;
+                if (g_game.selectedSongIndex < 0) g_game.selectedSongIndex = songCount - 1;
+                g_pendingMove = 0;
+            }
+            g_carrosselFrame = 588;
+            g_carrosselDir = 0;
         }
+        g_pendingMove = -1;
+        g_carrosselTarget = g_carrosselFrame + 16;
+        g_carrosselDir = +1;
+        g_previewDelay = 1.0f;
     }
 
     // Avanca o frame do carrossel — velocidade 1 = mais lento
@@ -312,16 +402,23 @@ void Gamestate_UpdateSongSelect(float dt) {
     }
 
     int songId = mode->songIds[g_game.selectedSongIndex];
-    if (g_previewDelay > 0.0f) {
-        g_previewDelay -= dt;
-        if (g_previewDelay <= 0.0f) {
-            if (songId != prevSongId) {
-                playPreview(songId);
+    /* Preview audio: não inicia enquanto animação de modo ou intro do carrossel estiver ativa.
+     * Ghidra (SongSelect_RenderCarouselMove @ 0x4086c0): no original, Box2 (layer 0x18) só
+     * aparece quando local_30 == 20.0 (carrossel de DL/DR no pico). Ao pressionar UL/UR,
+     * g_nCarouselSpeed=0 → local_30=0.0 → Box2 nunca aparece e audio para.
+     * Aqui replicamos: bloqueamos o preview durante troca de modo e intro do carrossel. */
+    if (!g_modeAnimActive && !g_carrosselIntro) {
+        if (g_previewDelay > 0.0f) {
+            g_previewDelay -= dt;
+            if (g_previewDelay <= 0.0f) {
+                if (songId != prevSongId) {
+                    playPreview(songId);
+                }
             }
+        } else {
+            if (songId != prevSongId)
+                playPreview(songId);
         }
-    } else {
-        if (songId != prevSongId)
-            playPreview(songId);
     }
 
     if (Input_IsPadHit(0, PAD_C)) {
@@ -591,8 +688,10 @@ void Gamestate_RenderSongSelect(void) {
         }
     }
 
-    // box2.spr glow pulsante, começa junto com o preview
-    if (g_game.bgaPicCount > 0 && previewState) {
+    // box2.spr glow pulsante — só mostra quando preview está ativo E fora de animação de modo/intro.
+    // Ghidra: Box2 (0x18) aparece apenas quando carrossel DL/DR chegou ao pico (local_30==20.0).
+    // Durante UL/UR (troca de modo), local_30=0.0 → Box2 nunca renderizado no original.
+    if (g_game.bgaPicCount > 0 && previewState && !g_modeAnimActive && !g_carrosselIntro) {
         if (selectedState) {
             glPushMatrix();
             glTranslatef(320.0f, 240.0f, 0.0f);
@@ -613,5 +712,36 @@ void Gamestate_RenderSongSelect(void) {
 
     if (selectedState) {
         Font_DrawStringCentered(320, 380, "SELECTED", 0.0f, 1.0f, 0.0f, 1.0f);
+    }
+
+    /* ── Ícones de Command na HUD do SongSelect ─────────────────────────────
+     * Mesma posição e sprites da Gameplay, mas sem o ícone de modo (EZ/HD/CZ).
+     * X (velocidade): accel1=36, accel2=7, accel3=8, accel4=9 — do ARROW541.SP2.
+     * R/M/V/NS: offsets 34/35/37/38 (sempre no estado "desabilitado" por ora).
+     */
+    if (g_fontArrow541 >= 0) {
+        int speedOff = 36; /* accel1 (x1 ou RV) */
+        if (!g_game.cmdSpeedRV) {
+            if      (g_game.cmdSpeedMult >= 4) speedOff = 9;
+            else if (g_game.cmdSpeedMult >= 3) speedOff = 8;
+            else if (g_game.cmdSpeedMult >= 2) speedOff = 7;
+        }
+        int speedIdx = g_fontArrow541 + speedOff;
+        if (speedIdx < g_game.sprTileCount) {
+            float sw = (float)g_game.sprTiles[speedIdx].srcW;
+            float sh = (float)g_game.sprTiles[speedIdx].srcH;
+            Sprite_DrawTileUV(speedIdx, 18 + sw/2, 184 + sh/2, sw, sh, 1.0f);
+        }
+        /* R (Random), M (Mirror), V (Vanish), NS (Non-Step) */
+        static const int   kModOff[4] = { 34, 35, 37, 38 };
+        static const float kModY[4]   = { 216.0f, 248.0f, 280.0f, 312.0f };
+        for (int di = 0; di < 4; di++) {
+            int didx = g_fontArrow541 + kModOff[di];
+            if (didx < g_game.sprTileCount) {
+                float sw = (float)g_game.sprTiles[didx].srcW;
+                float sh = (float)g_game.sprTiles[didx].srcH;
+                Sprite_DrawTileUV(didx, 18 + sw/2, kModY[di] + sh/2, sw, sh, 1.0f);
+            }
+        }
     }
 }

@@ -17,9 +17,9 @@
 #include "song.h"
 #include "step.h"
 
-#define GAME_VERSION "0.6"
-#define GAME_BUILD_DATE "Jun 26 2026"
-#define GAME_BUILD_TIME "15:15:00"
+#define GAME_VERSION "0.8.2"
+#define GAME_BUILD_DATE "Jul 01 2026"
+#define GAME_BUILD_TIME "19:05:00"
 #define TARGET_FPS 60
 #define FRAME_TIME_MS (1000 / TARGET_FPS)
 
@@ -300,6 +300,29 @@ typedef struct {
     int optionCurrentItem; // 0-4
     int stageBreak;       // Stage Break global (0=OFF, 1=ON)
     int showHelp;         // Show Help global (0=OFF, 1=ON)
+
+    /* ── Commands (códigos inseridos na SongSelect) ──────────────────────────
+     * Sequência confirmada no Ghidra (DAT_00442378, byte pattern 08 10 08 10 04):
+     *   UL UR UL UR CN  — 5 botões, buffer circular de 5 posições.
+     *   (no original: UL=0x08, UR=0x10, CN=0x04 como nota mask)
+     * Cada vez que a sequência é completada, avança para o próximo estado:
+     *   x1 → x2 → x3 → x4 → RV → x1
+     *
+     * RV (Reverse): no original, mantém velocidade x1 mas inverte a direção das
+     * setas (de cima para baixo em vez de baixo para cima). cmdSpeedRV=true.
+     * A inversão de direção ainda não está implementada na gameplay.
+     *
+     * Outros commands (9 botões, buffer separado no original — não implementados):
+     *   UL UR UL UR UL UR UL UR CN  → bit 9 (0x200) — outro modifier
+     *   UL UR UL UR ... CN  → bit 6 (0x40) → FUN_004109c0 (HalfDouble?)
+     *   Mirror   – inverte painéis: UL↔DR, UR↔DL, CN=CN
+     *   Vanish   – setas somem no meio da tela para cima
+     *   Non-Step – todas as setas ficam invisíveis
+     *   Freedom  – receptor invisível
+     *   Earthworm– setas sobem em movimento senoidal (vai e volta)
+     */
+    int  cmdSpeedMult;  /* multiplicador de velocidade: 1, 2, 3 ou 4. Default=1 */
+    bool cmdSpeedRV;    /* true = RV (Reverse): setas descem em vez de subir. Default=false */
     bool isVSL;           // true when current song uses 3D VSL instead of BGA
     
     bool showDebug;

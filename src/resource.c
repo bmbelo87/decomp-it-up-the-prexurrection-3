@@ -1178,6 +1178,15 @@ void Resource_ClearBGA(void)
     Texture_Shutdown();
     Font_Shutdown();
     g_cdLoaded = false;
+    /* BGA_Shutdown zera sprTileCount mas não reseta os índices de fonte/arrow.
+     * Resetar aqui para evitar que indices stale sejam usados após o clear. */
+    g_fontArrow541 = -1;
+    g_fontArrow542 = -1;
+    g_fontArrow543 = -1;
+    g_fontArrow544 = -1;
+    g_fontArrow545 = -1;
+    g_fontArrowETC = -1;
+    g_fontArrowF   = -1;
 }
 
 int Resource_SwitchBGA(const char* datName)

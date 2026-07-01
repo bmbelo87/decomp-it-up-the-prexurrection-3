@@ -13,7 +13,12 @@
 #define JUDGE_GOOD     0.165f
 #define JUDGE_BAD      0.220f
 
-#define BASE_ROW_SPACING 18.0f
+/* BASE_ROW_SPACING: no original, o espaçamento por row = 60.0 / beatSplit.
+ * beatSplit=2 → 30 px/row; beatSplit=4 → 15 px/row.
+ * Confirmado via Ghidra: fórmula original y = 376 - scrollSpeed*beatPos*(1/1000),
+ * onde beatPos += 60.0/beatSplit por row, e scrollSpeed=1000 no x1.
+ * Calculado dinamicamente como g_baseRowSpacing = 60.0f / g_baseBeatSplit. */
+/* #define BASE_ROW_SPACING 18.0f */
 #define MAX_VISIBLE_ROWS 512
 
 typedef enum {
@@ -307,8 +312,11 @@ static bool loadChartForSong(int songId, int diffTier, const char* modeName)
         g_totalSongSeconds = total;
     }
     g_autoplay = g_game.input.autoplay;
-    g_scrollSpeedX = 1.0f;
-    g_scrollSpeedTarget = 1.0f;
+
+    /* Aplica multiplicador de velocidade do Command (padrão = 1 se não configurado) */
+    float initSpeed = (g_game.cmdSpeedMult >= 1) ? (float)g_game.cmdSpeedMult : 1.0f;
+    g_scrollSpeedX      = initSpeed;
+    g_scrollSpeedTarget = initSpeed;
 
     memset(g_noteHits, 0, sizeof(g_noteHits));
     memset(g_noteHitCount, 0, sizeof(g_noteHitCount));
@@ -1413,7 +1421,9 @@ void Gameplay_Render(void)
     double actualScrollRow = getRowAtTimeFloat(g_songTime);
 
     // Visual scroll row: BPM-based, beatSplit-normalized for constant visual speed
-    float pixelsPerRow = BASE_ROW_SPACING * g_scrollSpeedX;
+    // Espaçamento original: 60.0 / beatSplit px/row × speedMult (confirmado Ghidra).
+    float g_baseRowSpacing = (g_baseBeatSplit > 0) ? (60.0f / (float)g_baseBeatSplit) : 15.0f;
+    float pixelsPerRow = g_baseRowSpacing * g_scrollSpeedX;
     double visualScrollRow = 0;
     if (g_visualRow && g_visualRowCount > 0) {
         int vr = (int)actualScrollRow;
