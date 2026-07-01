@@ -57,10 +57,9 @@ static BGAKeyframe* interpolate_layer(BGALayer* layer, int frameNum, float* outA
     float t = (span > 0) ? (float)(frameNum - a->frame) / span : 0.0f;
 
     result = lerp_kf(a, b, t);
-    {
-        int blendIdx = (segIdx > 0) ? segIdx - 1 : 0;
-        result.blendMode = layer->keyframes[blendIdx].blendMode;
-    }
+    /* blendMode vem do keyframe A (inicio do segmento atual) — igual ao original:
+       BGA_RenderLayer usa *(short*)(pfVar1 - 4) onde pfVar1 aponta para B, logo A+0x30 */
+    result.blendMode = layer->keyframes[segIdx].blendMode;
 
     if (a->type == 0) result.a = 0;
     else if (b->type == 0 && t >= 1.0f) result.a = 0;
@@ -83,6 +82,8 @@ static bool parseBGA2(const uint8_t* bgaData, uint32_t bgaSize, BGAPicture* pic)
 
         int nameLen = (int)strlen(filename);
         int count = *(int*)(bgaData + entryPos + 64);
+        /* Original FUN_00401200: if (*piVar2 < 0) { *piVar2 = 1; } */
+        if (count < 0) count = 1;
 
         if (nameLen == 0 && count == 0) {
             entryPos += 68;
@@ -117,7 +118,8 @@ static bool parseBGA2(const uint8_t* bgaData, uint32_t bgaSize, BGAPicture* pic)
             uint32_t ts = *(uint32_t*)(bgaData + ofs + 0x2c);
             BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
 
-            kf->frame = (int)(ts & 0xFFFF);
+            /* BGA2: frame é int16_t signed (valores negativos = "ativo desde antes do frame 0") */
+            kf->frame = (int)(int16_t)(ts & 0xFFFF);
             kf->type = (int)((ts >> 16) & 0xFFFF);
             kf->x = *(float*)(bgaData + ofs + 0x00);
             kf->y = *(float*)(bgaData + ofs + 0x04);
@@ -308,11 +310,24 @@ void BGA_Reset(void) {
 }
 
 static void drawTileQuad(SPRTileDef* tile, float offsetX, float offsetY) {
-    if (strstr(tile->name, "01.spr")) {
-        Log_Print("BGA_drawTileQuad: %s\n", tile->name);
-    }
     GLuint glTexId = (tile->texId >= 0 && tile->texId < MAX_TEXTURES && g_game.textures[tile->texId].inUse) ? g_game.textures[tile->texId].id : 0;
-    if (!glTexId) return;
+    /* DBG: loga hall.spr uma vez na primeira chamada */
+    if (strstr(tile->name, "hall.spr")) {
+        static int hallDbgOnce = 0;
+        if (!hallDbgOnce) {
+            hallDbgOnce = 1;
+            Log_Print("HALL drawTileQuad: texId=%d glTexId=%u inUse=%d u1=%.3f u2=%.3f v1=%.3f v2=%.3f srcX=%d srcY=%d srcW=%d srcH=%d\n",
+                tile->texId, glTexId,
+                (tile->texId >= 0 && tile->texId < MAX_TEXTURES) ? g_game.textures[tile->texId].inUse : -1,
+                tile->u1, tile->u2, tile->v1, tile->v2, tile->srcX, tile->srcY, tile->srcW, tile->srcH);
+        }
+    }
+    if (!glTexId) {
+        if (strstr(tile->name, "hall.spr")) {
+            Log_Print("HALL drawTileQuad: EARLY RETURN glTexId=0 texId=%d\n", tile->texId);
+        }
+        return;
+    }
 
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, glTexId);
@@ -335,8 +350,15 @@ static void drawTileQuad(SPRTileDef* tile, float offsetX, float offsetY) {
 }
 
 static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX, float scaleY, float hotX, float hotY, float rotation, float r, float g, float b, float alpha) {
-    if (!tile || tile->texId < 0) return;
-    if (alpha <= 0.01f) return;
+    bool isHall = tile && strstr(tile->name, "hall.spr");
+    if (!tile || tile->texId < 0) {
+        if (isHall) Log_Print("HALL renderSPTile: RETURN tile=%p texId=%d\n", (void*)tile, tile ? tile->texId : -99);
+        return;
+    }
+    if (alpha <= 0.01f) {
+        if (isHall) Log_Print("HALL renderSPTile: RETURN alpha=%.4f\n", alpha);
+        return;
+    }
 
     float sx = scaleX;
     float sy = scaleY;
@@ -345,10 +367,26 @@ static void renderSPTile(SPRTileDef* tile, float posX, float posY, float scaleX,
 
     float destW = (float)tile->srcW * sx;
     float destH = (float)tile->srcH * sy;
-    if (destW <= 0 || destH <= 0) return;
+    /* Usar valor absoluto: scaleX/scaleY negativo = flip horizontal/vertical (não bloquear) */
+    if (fabsf(destW) <= 0.001f || fabsf(destH) <= 0.001f) {
+        if (isHall) Log_Print("HALL renderSPTile: RETURN destW=%.1f destH=%.1f sx=%.3f sy=%.3f\n", destW, destH, sx, sy);
+        return;
+    }
 
     GLuint glTexId = (tile->texId >= 0 && tile->texId < MAX_TEXTURES && g_game.textures[tile->texId].inUse) ? g_game.textures[tile->texId].id : 0;
-    if (!glTexId) return;
+    if (!glTexId) {
+        if (isHall) Log_Print("HALL renderSPTile: RETURN glTexId=0 texId=%d inUse=%d\n",
+            tile->texId, (tile->texId >= 0 && tile->texId < MAX_TEXTURES) ? g_game.textures[tile->texId].inUse : -1);
+        return;
+    }
+    if (isHall) {
+        static int hallSpTileOnce = 0;
+        if (!hallSpTileOnce) {
+            hallSpTileOnce = 1;
+            Log_Print("HALL renderSPTile: OK alpha=%.3f sx=%.3f sy=%.3f glTexId=%u posX=%.1f posY=%.1f\n",
+                alpha, sx, sy, glTexId, posX, posY);
+        }
+    }
 
     glPushMatrix();
     glTranslatef(0.0f, 480.0f, 0.0f);
@@ -453,12 +491,15 @@ static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, 
     float renderR = state->r, renderG = state->g, renderB = state->b;
 
     glEnable(GL_BLEND);
-    if (state->blendMode == 1)
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-    else if (state->blendMode == 2)
-        glBlendFunc(GL_ZERO, GL_SRC_COLOR);
-    else
-        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    /* FUN_00401450 no original: 5 modos de blend
+       0=alpha normal, 1=additive, 2=multiply, 3=dst_color, 4=inv_dst_color */
+    switch (state->blendMode) {
+        case 1:  glBlendFunc(GL_SRC_ALPHA, GL_ONE);                        break; /* additive    */
+        case 2:  glBlendFunc(GL_ZERO, GL_SRC_COLOR);                       break; /* multiply    */
+        case 3:  glBlendFunc(GL_DST_COLOR, GL_SRC_ALPHA);                  break; /* dst_color   */
+        case 4:  glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA); break; /* inv_dst  */
+        default: glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);        break; /* alpha normal */
+    }
 
     if (layer->isSPR) {
         if (layer->patCols > 0 && layer->patRows > 0 && layer->sprTileCount > 0) {
@@ -529,7 +570,11 @@ static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, 
         }
     } else if (layer->texId >= 0) {
         Texture* tex = &g_game.textures[layer->texId];
-        if (!tex->inUse) return;
+        if (!tex->inUse) {
+            /* early return: reseta blend func para nao vazar modo aditivo/multiply */
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            return;
+        }
         float sx = state->scaleX;
         float sy = state->scaleY;
         if (sy == 0.0f) sy = sx;
@@ -571,10 +616,36 @@ void BGA_SetEventLayer(int bgaIndex, int frame, int layerIdx) {
 
     float animT = 0.0f;
     BGAKeyframe* state = interpolate_layer(layer, frame, &animT);
+
+    /* DBG: loga estado de hall.spr nas transições importantes */
+    if (strstr(layer->filename, "hall")) {
+        static int lastHallFrame = -99;
+        /* loga na primeira vez e depois em frames chave */
+        int doLog = (lastHallFrame == -99) ||
+                    (frame <= 120 && frame != lastHallFrame && (frame % 10 == 0)) ||
+                    (frame == 56) || (frame == 57) || (frame == 172);
+        if (doLog) {
+            lastHallFrame = frame;
+            Log_Print("HALL DBG frame=%d: kfCount=%d sprTileStart=%d sprTileCount=%d aniFC=%d state=%s alpha=%.3f type=%d\n",
+                frame, layer->kfCount, layer->sprTileStart, layer->sprTileCount, layer->aniFrameCount,
+                state ? "OK" : "NULL",
+                state ? state->a : -1.0f,
+                state ? state->type : -1);
+        }
+    }
+
     if (!state) return;
 
     if (state->type == 0 || state->a <= 0.01f) return;
     renderOneLayer(layer, state, pic->version, animT);
+
+    /* Reset estado GL apos cada layer — igual ao original: FUN_00401450(0) apenas
+       reseta a blend FUNC para modo normal, mantendo GL_BLEND habilitado (o jogo
+       assume blend sempre ativo). Desativa textura e reseta cor para nao vazar. */
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDisable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 }
 
 void BGA_SetEventFrame(int bgaIndex, int frame) {

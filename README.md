@@ -6,31 +6,31 @@ A faithful C reconstruction of **PUMPY.EXE**, the arcade executable for **Pump I
 
 This project reverse-engineers the original x86 binary and reproduces its gameplay, rendering, audio, and state machine as closely as possible — no emulation, no wrappers. Native Windows executable built with OpenGL and DirectSound.
 
-## Status — v0.6
+## Status — v0.7
 
-| Feature | Status |
-|---|---|
-| Song select + difficulty | ✅ |
-| Gameplay (5-panel, scrolling, holds) | ✅ |
-| Timing windows (Perfect/Great/Good/Bad/Miss) | ✅ |
-| Combo system + scoring | ✅ |
-| Grade calculation + stage flow | ✅ |
-| Judge animation (pop-in + squeeze) | ✅ |
-| Arrow animation (n1→n6 cycling) | ✅ |
-| Hit flash (p1 border on input) | ✅ |
-| Explosion effect (ARROWF.SPR) | ✅ |
-| Hold bodies / tails auto-capture | ✅ |
-| Life bar (03/04/05.SPR) | ✅ |
-| BGA playback (BGA/BGA2/VSL) | ✅ |
-| BGM audio (DirectSound + MCI) | ✅ |
-| Menu + staff screen | ✅ |
-| Stage transition flow | ✅ |
-| P2 input handling | 🚧 Disabled |
-| Modifiers (random/mirror/vanish) | ❌ |
-| Fade in/out transitions | ✅ |
-| FreeStyle/Nightmare | ❌ |
-| HalfDouble | ❌ |
-| Division | ❌ |
+| Feature                                      | Status      |
+| -------------------------------------------- | ----------- |
+| Song select + difficulty                     | ✅           |
+| Gameplay (5-panel, scrolling, holds)         | ✅           |
+| Timing windows (Perfect/Great/Good/Bad/Miss) | ✅           |
+| Combo system + scoring                       | ✅           |
+| Grade calculation + stage flow               | ✅           |
+| Judge animation (pop-in + squeeze)           | ✅           |
+| Arrow animation (n1→n6 cycling)              | ✅           |
+| Hit flash (p1 border on input)               | ✅           |
+| Explosion effect (ARROWF.SPR)                | ✅           |
+| Hold bodies / tails auto-capture             | ✅           |
+| Life bar (03/04/05.SPR)                      | ✅           |
+| BGA playback (BGA/BGA2/VSL)                  | ✅           |
+| BGM audio (DirectSound + MCI)                | ✅           |
+| Menu + staff screen                          | ✅           |
+| Stage transition flow                        | ✅           |
+| P2 input handling                            | 🚧 Disabled |
+| Modifiers (random/mirror/vanish)             | ❌           |
+| Fade in/out transitions                      | ✅           |
+| FreeStyle/Nightmare                          | ✅           |
+| HalfDouble                                   | ✅           |
+| Division                                     | ❌           |
 
 ## Project Structure
 
@@ -65,6 +65,7 @@ PumpyReconstructed/
 ## Building
 
 Requirements:
+
 - Windows (the original targets Win95, but builds on 10/11)
 - Visual Studio 2022 (or compatible MSVC)
 - CMake 3.10+
@@ -80,11 +81,13 @@ Place the resulting `.exe` in the game's root directory alongside `AUDIO/`, `BGA
 ## Technical Notes
 
 ### Coordinate System
+
 - OpenGL projection: **Y-UP** (0 at bottom, 480 at top)
 - External API: **Y-DOWN** (0 at top, 480 at bottom)
 - `Texture_DrawUV` converts Y-DOWN to Y-UP internally
 
 ### SPR vs SP2
+
 - **`.sp2`**: u2/v2 are **offsets** (width/height) from u1/v1. Negative = flip. Use `SPR_LoadSP2()`.
 - **`.spr`**: u2/v2 are **absolute** pixel coordinates (left/top → right/bottom). Use `SPR_LoadSPR()`.
 
@@ -101,6 +104,7 @@ Perfect/Great get a longer animation (40 frames vs 25 for others). An implicit 0
 ### Hold System
 
 Hold notes (heads, bodies, tails) use a per-panel auto-capture system:
+
 - `g_holdRows[p][panel]` tracks active hold row
 - Auto-capture scans from `g_nextNoteRow` for HH/HB/HT when button is held and timing window is valid
 - Hold bodies use `g_fontArrowETC` with per-panel tile offsets

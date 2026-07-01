@@ -55,6 +55,11 @@ void Loading_Update(float dt) {
         g_loadingTimer -= ms;
 
         if (g_loadingTimer <= 0) {
+            /* Resource_ClearBGA chama Texture_Shutdown, que destrói TODAS as texturas
+               incluindo o pnz. Resetar g_pnzTexId antes para evitar Texture_Unload
+               posterior no slot que já foi reutilizado pelo BGA (bug: destruía HALL.PNG). */
+            g_pnzTexId = -1;
+
             Resource_ClearBGA();
 
             char bgaPath[MAX_PATH];
@@ -77,11 +82,6 @@ void Loading_Update(float dt) {
             g_game.stateFrame = 0;
             g_game.bgaFrame = 0;
             Render_SetGlobalColor(0, 0, 0, 0);
-
-            if (g_pnzTexId >= 0) {
-                Texture_Unload(g_pnzTexId);
-                g_pnzTexId = -1;
-            }
         }
         return;
     }

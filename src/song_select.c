@@ -379,7 +379,10 @@ void Gamestate_RenderSongSelect(void) {
         float th;
         int bgaSlotFrame;
         float introXOff;
+        float cdYOff;   /* Y offset por posicao: far=10, mid=5, center=0 */
     } SlotRender;
+    /* Y offset do CD por slot (si): si=1/5→10, si=2/4→5, si=3→0 */
+    static const float s_cdSlotYOff[7] = { 0.0f, 10.0f, 5.0f, 0.0f, 5.0f, 10.0f, 0.0f };
 
     SlotRender slots[7];
     int slotCount = 0;
@@ -389,18 +392,25 @@ void Gamestate_RenderSongSelect(void) {
         float introXOff = 0.0f;
 
         if (g_carrosselIntro) {
-            int slotPhase = si - 1;
-            int phaseStart = slotPhase * 5;
-            int local = g_introFrame - phaseStart;
-            if (local <= 0) {
-                introXOff = 500.0f;
-            } else if (local < 5) {
-                float t = local / 5.0f;
-                introXOff = 500.0f * (1.0f - t);
-            } else {
-                introXOff = 0.0f;
-            }
-            slotFrame = (float)(588 + g_slotFrameOffset[si]);
+            /* Cascata de entrada — segue SongSelect_RenderBoxesStatic (00408290):
+             * todos os BCDs entram simultaneamente da direita a 106px/frame,
+             * mas cada posição começa a uma distância diferente (incremento de 636):
+             *   far-left(556): 640px → chega ao fim em ~6 frames
+             *   left(572):    1276px → ~12 frames
+             *   center(588):  1912px → ~18 frames
+             *   right(604):   2548px → ~24 frames
+             *   far-right(620): 3184px → ~30 frames
+             * Valor 0x6a=106 = velocidade original exata. */
+            int rawFrame = 588 + g_slotFrameOffset[si];
+            float cascadeStart;
+            if      (rawFrame <= 556) cascadeStart = 640.0f;
+            else if (rawFrame <= 572) cascadeStart = 1276.0f;
+            else if (rawFrame <= 588) cascadeStart = 1912.0f;
+            else if (rawFrame <= 604) cascadeStart = 2548.0f;
+            else                      cascadeStart = 3184.0f;
+            float remaining = cascadeStart - 106.0f * (float)g_introFrame;
+            introXOff = (remaining > 0.0f) ? remaining : 0.0f;
+            slotFrame = (float)rawFrame;
         } else {
             slotFrame = (float)(g_carrosselFrame + g_slotFrameOffset[si]);
         }
@@ -432,16 +442,31 @@ void Gamestate_RenderSongSelect(void) {
             slots[slotCount].th = 128.0f * bsc;
             slots[slotCount].bgaSlotFrame = bgaSlotFrame;
             slots[slotCount].introXOff = introXOff;
+            slots[slotCount].cdYOff = s_cdSlotYOff[si];
             slotCount++;
         }
     }
 
-    // Ordena do mais distante ao mais próximo do centro para manter a sobreposição correta.
+    /* Ordena pela posição de REPOUSO (sem introXOff), maior distância primeiro.
+     * Para mesma distância, esquerda antes de direita — segue a ordem do Ghidra:
+     * far-left, far-right, left, right, center.
+     * Importante: durante a cascata screenX inclui introXOff (posição atual),
+     * mas a profundidade deve ser determinada pela posição final de cada slot. */
     for (int i = 0; i < slotCount - 1; i++) {
         for (int j = i + 1; j < slotCount; j++) {
-            float distI = fabsf(slots[i].screenX - 320.0f);
-            float distJ = fabsf(slots[j].screenX - 320.0f);
+            float restI = slots[i].screenX - slots[i].introXOff;
+            float restJ = slots[j].screenX - slots[j].introXOff;
+            float distI = fabsf(restI - 320.0f);
+            float distJ = fabsf(restJ - 320.0f);
+            bool swap = false;
             if (distI < distJ) {
+                swap = true;
+            } else if (distI == distJ) {
+                /* Mesma distância: esquerda (< 320) antes de direita */
+                if (restI > 320.0f && restJ < 320.0f)
+                    swap = true;
+            }
+            if (swap) {
                 SlotRender tmp = slots[i];
                 slots[i] = slots[j];
                 slots[j] = tmp;
@@ -449,13 +474,27 @@ void Gamestate_RenderSongSelect(void) {
         }
     }
 
+    /* Loop único de renderização — segue SongSelect_RenderBoxesStatic (00408290):
+     * para cada slot, CD primeiro (atrás), depois Box (na frente).
+     * Ordem dos slots: far-left, far-right, left, right, center.
+     *
+     * Estado estático (g_carrosselDir==0, !g_carrosselIntro):
+     *   Layers dedicadas por posição (não-compactadas), frame=0:
+     *     556 → 0x0b(11) far-left, 572 → 0x11(17) left,
+     *     588 → 0x17(23) center,   604 → 0x14(20) right,
+     *     620 → 0x0e(14) far-right
+     * Estado animando: todos usam layer 0x0b com frame 540-636.
+     */
+    bool bgaIsAnimating = (g_carrosselDir != 0) || g_carrosselIntro;
+
     for (int i = 0; i < slotCount; i++) {
         SlotRender* slot = &slots[i];
-        float selScale = (selectedState && slot->slotIndex == 3) ? 1.1f : 1.0f;
+
+        /* --- CD art (atrás, igual ao glPushMatrix inner do Ghidra) --- */
         if (slot->texId >= 0) {
             float cdScaleX, cdScaleY, cdOffX, cdOffY;
             if (selectedState && slot->slotIndex == 3) {
-                cdScaleX = 1.1f; cdScaleY = 1.1f; cdOffX = 2.0f; cdOffY = -10.0f;
+                cdScaleX = 1.1f; cdScaleY = 1.1f; cdOffX = 0.0f; cdOffY = -10.0f;
             } else {
                 cdScaleX = 1.00f; cdScaleY = 0.95f; cdOffX = 0.0f; cdOffY = -1.0f;
             }
@@ -469,24 +508,44 @@ void Gamestate_RenderSongSelect(void) {
             Texture_DrawUV(slot->texId,
                 slot->screenX - sw * 0.5f + cdOffX,
                 240.0f - sh * 0.5f - 10.0f + cdOffY,
-                sw,
-                sh * 1.6f,
+                sw, sh * 1.6f,
                 u1, v1, u2, v2,
                 1.0f, 1.0f, 1.0f, slot->balpha);
         }
-        if (selScale != 1.0f || (g_carrosselIntro && slot->introXOff != 0.0f)) {
-            glPushMatrix();
-            if (selScale != 1.0f) {
-                glTranslatef(290.0f, 216.5f, 0.0f);
-                glScalef(selScale, selScale, 1.0f);
-                glTranslatef(-290.0f, -216.5f, 0.0f);
-            }
-            if (g_carrosselIntro && slot->introXOff != 0.0f)
+
+        /* --- Box frame (na frente, BGA_SetEventLayer) --- */
+        if (bgaIsAnimating) {
+            /* Carousel em movimento: layer 0x0b, frame interpolado */
+            if (g_carrosselIntro && slot->introXOff != 0.0f) {
+                glPushMatrix();
                 glTranslatef(slot->introXOff, 0.0f, 0.0f);
-            BGA_SetEventLayer(0, slot->bgaSlotFrame, 0x0b);
-            glPopMatrix();
+                BGA_SetEventLayer(0, slot->bgaSlotFrame, 0x0b);
+                glPopMatrix();
+            } else {
+                BGA_SetEventLayer(0, slot->bgaSlotFrame, 0x0b);
+            }
         } else {
-            BGA_SetEventLayer(0, slot->bgaSlotFrame, 0x0b);
+            /* Estático: layer dedicada, frame=0 */
+            int staticLayer = -1;
+            switch (slot->bgaSlotFrame) {
+                case 556: staticLayer = 0x0b; break; /* far-left  */
+                case 572: staticLayer = 0x11; break; /* left      */
+                case 588: staticLayer = 0x17; break; /* center    */
+                case 604: staticLayer = 0x14; break; /* right     */
+                case 620: staticLayer = 0x0e; break; /* far-right */
+            }
+            if (staticLayer >= 0) {
+                if (selectedState && slot->slotIndex == 3) {
+                    glPushMatrix();
+                    glTranslatef(320.0f, 240.0f, 0.0f);
+                    glScalef(1.1f, 1.1f, 1.0f);
+                    glTranslatef(-320.0f, -240.0f, 0.0f);
+                    BGA_SetEventLayer(0, 0, staticLayer);
+                    glPopMatrix();
+                } else {
+                    BGA_SetEventLayer(0, 0, staticLayer);
+                }
+            }
         }
     }
 

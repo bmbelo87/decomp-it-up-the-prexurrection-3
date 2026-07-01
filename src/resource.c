@@ -481,7 +481,8 @@ static bool loadBGAFromRES(const char* bgaName, int bgaIdx) {
                     uint32_t z_order = *(uint32_t*)(raw + 52);
 
                     BGAKeyframe* kf = &layer->keyframes[layer->kfCount];
-                    kf->frame = (int)(ts & 0xFFFF);
+                    /* BGA2: frame é int16_t signed (valores negativos = "ativo desde antes do frame 0") */
+                    kf->frame = (int)(int16_t)(ts & 0xFFFF);
                     kf->type = (int)((ts >> 16) & 0xFFFF);
                     kf->x = floats[0];
                     kf->y = floats[1];
@@ -901,7 +902,8 @@ bool Resource_LoadBGADirect(const char* datPath) {
             if (kfSize == 64) {
                 float* kfData = (float*)(bgaData + ofs);
                 uint32_t ts = *(uint32_t*)(bgaData + ofs + 44);
-                kf->frame = (int)(ts & 0xFFFF);
+                /* BGA2: frame é int16_t signed (valores negativos = "ativo desde antes do frame 0") */
+                kf->frame = (int)(int16_t)(ts & 0xFFFF);
                 kf->type = (int)((ts >> 16) & 0xFFFF);
                 kf->x = kfData[0];
                 kf->y = kfData[1];
@@ -967,8 +969,15 @@ bool Resource_LoadBGADirect(const char* datPath) {
             layer->patCols = patC;
             layer->patRows = patR;
             layer->patFlags = patF;
+            Log_Print("BGA SPR layer[%d] '%s': sprTileStart=%d sprTileCount=%d aniFrames=%d patCols=%d patRows=%d\n",
+                i, srcName, layer->sprTileStart, layer->sprTileCount, aniFrames, patC, patR);
+            /* DBG: logar texId dos tiles carregados */
+            for (int ti = layer->sprTileStart; ti < layer->sprTileStart + layer->sprTileCount && ti < g_game.sprTileCount; ti++) {
+                Log_Print("  tile[%d] name='%s' texId=%d\n", ti, g_game.sprTiles[ti].name, g_game.sprTiles[ti].texId);
+            }
         } else {
             layer->texId = loadTextureFromRES(srcName);
+            Log_Print("BGA TGA layer[%d] '%s': texId=%d\n", i, srcName, layer->texId);
         }
     }
 

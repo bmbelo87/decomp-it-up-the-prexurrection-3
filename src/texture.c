@@ -332,6 +332,7 @@ void Texture_DrawUV(int id, float x, float y, float w, float h,
     Texture* t = &g_game.textures[id];
     float yUp = 480.0f - y - h;
 
+    glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, t->id);
     glColor4f(r, g, b, alpha);
     float texW = (float)t->width;
@@ -357,6 +358,7 @@ void Texture_Draw(int id, float x, float y, float scaleX, float scaleY, float al
     float h = t->height * scaleY;
     float yUp = 480.0f - y - h;
 
+    glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, t->id);
     glColor4f(1.0f, 1.0f, 1.0f, alpha);
     glBegin(GL_QUADS);

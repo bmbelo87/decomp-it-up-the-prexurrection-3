@@ -1,6 +1,7 @@
 #include "pumpy.h"
 #include "vsl.h"
 
+#define MAX_PANELS 10
 #define PANEL_SIZE 30
 #define P1_CENTER_X 160
 #define P2_CENTER_X 480
@@ -46,13 +47,17 @@ static double g_songTime;
 static double g_secondsPerRow;
 static double g_totalSongSeconds;
 static double g_chartDelay;
+static int g_baseBeatSplit;
+static double g_baseBpm;
+static double* g_visualRow = NULL;
+static int g_visualRowCount = 0;
 static double g_maxSongTime;
 static int g_stagnantFrames;
 static uint32_t g_lastPosMs;
 static int g_lastNoteRow;
 static bool g_hasAudio;
 static bool g_autoplay;
-static bool g_autoPanel[5]; // per-panel autoplay: DL, UL, CN, UR, DR
+static bool g_autoPanel[10]; // per-panel autoplay: 0-4 P1, 5-9 P2
 static float g_scrollSpeedX; // current (interpolated) speed
 static float g_scrollSpeedTarget; // target speed from keypress
 
@@ -177,26 +182,26 @@ static double getRowAtTimeFloat(double t)
     return (double)g_chart->rowCount - 1;
 }
 
-static NoteHit g_noteHits[2][5][2048];
-static int g_noteHitCount[2][5];
-static int g_nextNoteRow[2][5];
+static NoteHit g_noteHits[2][MAX_PANELS][2048];
+static int g_noteHitCount[2][MAX_PANELS];
+static int g_nextNoteRow[2][MAX_PANELS];
 
 // Hold tracking: which rows have active hold heads per player/panel
-static int g_holdRows[2][5]; // row index of active hold (-1 = none)
+static int g_holdRows[2][MAX_PANELS]; // row index of active hold (-1 = none)
 
 static float g_judgeDisplayTimer[2];
 static JudgeType g_judgeDisplayType[2];
 static int g_judgeDisplayCombo[2];
 static int g_judgeFrame[2]; // frame counter 25->0 for judge animation
-static int g_hitTimer[2][5]; // hit flash animation timer (p1)
+static int g_hitTimer[2][MAX_PANELS]; // hit flash animation timer (p1)
 
 // Maquina de estados da nota
-static int g_noteState[2][5]; // 0=normal, 1=exploding, 2=dead
-static int g_noteExplodeRow[2][5]; // row index for clearing when dead
-static int g_noteExplodeFrame[2][5]; // explosion frame counter 0..15
+static int g_noteState[2][MAX_PANELS]; // 0=normal, 1=exploding, 2=dead
+static int g_noteExplodeRow[2][MAX_PANELS]; // row index for clearing when dead
+static int g_noteExplodeFrame[2][MAX_PANELS]; // explosion frame counter 0..15
 static int g_blindTimer[2];
 static int g_prevBlindRow;
-static int g_lastPerfectRow[2][5];
+static int g_lastPerfectRow[2][MAX_PANELS];
 
 // Pop-up de score (catch effect)
 #define MAX_POPUPS 32
@@ -309,11 +314,28 @@ static bool loadChartForSong(int songId, int diffTier, const char* modeName)
     memset(g_noteHitCount, 0, sizeof(g_noteHitCount));
     memset(g_nextNoteRow, 0, sizeof(g_nextNoteRow));
     for (int p = 0; p < 2; p++)
-        for (int pan = 0; pan < 5; pan++)
+        for (int pan = 0; pan < MAX_PANELS; pan++)
             g_holdRows[p][pan] = -1;
 
-    Log_Print("GP: chart %d: BPM=%.1f subdiv=%d rows=%d panels=%d time=%.1fs spR=%.4f\n",
-        g_chartIdx, bpm, subdiv, g_chart->rowCount, g_chart->panelCount, g_totalSongSeconds, g_secondsPerRow);
+    g_baseBeatSplit = g_chart->segments[0].beatSplit;
+    g_baseBpm = g_chart->segments[0].bpm;
+
+    // Pre-compute normalized visual rows (BPM-based, ignoring beatSplit)
+    g_visualRowCount = (int)g_chart->rowCount;
+    g_visualRow = (double*)realloc(g_visualRow, g_visualRowCount * sizeof(double));
+    if (g_visualRow) {
+        double vRow = 0;
+        for (int s = 0; s < g_chart->segmentCount; s++) {
+            double beatRatio = (double)g_baseBeatSplit / (double)g_chart->segments[s].beatSplit;
+            for (uint32_t r = g_chart->segments[s].rowStart; r < g_chart->segments[s].rowStart + g_chart->segments[s].rowCount; r++) {
+                if ((int)r < g_visualRowCount) g_visualRow[r] = vRow;
+                vRow += beatRatio;
+            }
+        }
+    }
+
+    Log_Print("GP: chart %d: BPM=%.1f subdiv=%d rows=%d panels=%d time=%.1fs spR=%.4f segments=%d baseSpr=%.4f\n",
+        g_chartIdx, bpm, subdiv, g_chart->rowCount, g_chart->panelCount, g_totalSongSeconds, g_secondsPerRow, g_chart->segmentCount, 60.0/(g_baseBpm*(double)g_baseBeatSplit));
     g_songLoaded = true;
 
     g_chart->totalNotes = 0;
@@ -390,21 +412,105 @@ static uint8_t getPanelValue(StepRow* row, int panel, int player)
     return 0;
 }
 
+// HalfDouble note reading: 6 posicoes mapeadas para colunas 2-7 do STX (10-col)
+// pos 0..2 = half1 cols 2..4 (CN, UR, DR)
+// pos 3..5 = half2 cols 0..2 (DL, UL, CN)
+static uint8_t getNoteHD(StepRow* row, int pos)
+{
+    StepHalf* h = (pos < 3) ? &row->half1 : &row->half2;
+    int pd = (pos < 3) ? (pos + 2) : (pos - 3);
+    switch (pd) {
+        case 0: return h->dl;
+        case 1: return h->ul;
+        case 2: return h->cn;
+        case 3: return h->ur;
+        case 4: return h->dr;
+        default: return 0;
+    }
+}
+
+static void clearHDPanel(StepRow* row, int pan)
+{
+    switch (pan) { case 0: row->half1.cn = 0; break; case 1: row->half1.ur = 0; break; case 2: row->half1.dr = 0; break; case 3: row->half2.dl = 0; break; case 4: row->half2.ul = 0; break; case 5: row->half2.cn = 0; break; }
+}
+
+static void clearPanel(StepRow* row, int pan, int player)
+{
+    StepHalf* hh = (player == 0) ? &row->half1 : &row->half2;
+    switch (pan) { case 0: hh->dl = 0; break; case 1: hh->ul = 0; break; case 2: hh->cn = 0; break; case 3: hh->ur = 0; break; case 4: hh->dr = 0; break; }
+}
+
+// HD: panels 0=P1_CN(left/center), 1=P1_UR(up), 2=P1_DR(down)
+// panels 3=P2_DL(keypad1), 4=P2_UL(keypad7), 5=P2_CN(keypad5)
+static PadButton hdPanelBtn(int pan)
+{
+    static const PadButton hdBtn[6] = { PAD_C, PAD_UR, PAD_DR, PAD_DL, PAD_UL, PAD_C };
+    return (pan >= 0 && pan < 6) ? hdBtn[pan] : PAD_C;
+}
+
+static int hdPanelPlayer(int pan)
+{
+    return (pan < 3) ? 0 : 1;
+}
+
+static bool isHDMode(void)
+{
+    return (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&
+            strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "HALFDOUBLE") == 0);
+}
+
+static bool isDNMode(void)
+{
+    return (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&
+           (strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "DOUBLE") == 0 ||
+            strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "NIGHTMARE") == 0));
+}
+
+static int dnPanelBtn(int pan)
+{
+    static const PadButton dnBtn[10] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR, PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
+    return (pan >= 0 && pan < 10) ? dnBtn[pan] : PAD_C;
+}
+
+static int dnPanelPlayer(int pan)
+{
+    return (pan < 5) ? 0 : 1;
+}
+
+static uint8_t getDNPanelValue(StepRow* row, int pan)
+{
+    return (pan < 5) ? getPanelValue(row, pan, 0) : getPanelValue(row, pan - 5, 1);
+}
+
+static void clearDNPanel(StepRow* row, int pan)
+{
+    if (pan < 5) clearPanel(row, pan, 0);
+    else clearPanel(row, pan - 5, 1);
+}
+
 // Processa o julgamento final de uma linha
 static void processRowJudgment(int player, int row, JudgeType jt) {
     int receptorY = 38;
+    bool hdCheck = isHDMode();
+    bool dnJdg = isDNMode();
+    int jdPanels = hdCheck ? 6 : (dnJdg ? 10 : 5);
     // So Perfect/Great consomem a nota (ela some). Good/Bad/Miss passam reto.
     if (jt == JT_PERFECT || jt == JT_GREAT) {
         StepRow* r = &g_chart->rows[row];
-        for (int pan = 0; pan < 5; pan++) {
-            if (getPanelValue(r, pan, player)) {
-                g_noteState[player][pan] = 1; // EXPLODING
+        for (int pan = 0; pan < jdPanels; pan++) {
+            uint8_t pv = hdCheck ? getNoteHD(r, pan) : (dnJdg ? getDNPanelValue(r, pan) : getPanelValue(r, pan, player));
+            if (pv) {
+                g_noteState[player][pan] = 1;
                 g_noteExplodeRow[player][pan] = row;
                 g_noteExplodeFrame[player][pan] = 0;
+                if (hdCheck) clearHDPanel(r, pan);
+                else if (dnJdg) clearDNPanel(r, pan);
+                else clearPanel(r, pan, player);
             }
             g_lastPerfectRow[player][pan] = row;
         }
-        memset(r, 0, sizeof(StepRow)); // Limpa a linha pra nao conflitar com processamento
+        if (!hdCheck && !dnJdg)
+            memset(r, 0, sizeof(StepRow));
     }
     g_judgeDisplayType[player] = jt;
     g_judgeDisplayTimer[player] = 0.6f;
@@ -470,31 +576,45 @@ static void processPendingRows(int player) {
         g_pending[i].active = false;
         g_pendingCount--;
         JudgeType jt;
+        bool hdCheck = isHDMode();
+        bool dnPr = isDNMode();
+        int jdPanels = hdCheck ? 6 : (dnPr ? 10 : 5);
         if (g_pending[i].hitMask == g_pending[i].totalMask)
             jt = evaluateTiming(g_pending[i].worstDiff);
         else
             jt = JT_MISS;
-        // Row com HH/HB/HT nao capturado
-        for (int pan = 0; pan < 5; pan++) {
-            uint8_t pv = getPanelValue(&g_chart->rows[g_pending[i].row], pan, player);
+        for (int pan = 0; pan < jdPanels; pan++) {
+            uint8_t pv = hdCheck ? getNoteHD(&g_chart->rows[g_pending[i].row], pan) : (dnPr ? getDNPanelValue(&g_chart->rows[g_pending[i].row], pan) : getPanelValue(&g_chart->rows[g_pending[i].row], pan, player));
             if (!pv) continue;
-            if ((pv == NT_HOLD_H || pv == NT_HOLD_B || pv == NT_HOLD_T) && g_holdRows[player][pan] < 0) {
-                static const PadButton btnMap[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
-                if (!Input_IsPadDown(player, btnMap[pan]))
-                    jt = JT_MISS;
-                else {
-                    g_holdRows[player][pan] = g_pending[i].row;
-                    StepHalf* hh = (player == 0) ? &g_chart->rows[g_pending[i].row].half1 : &g_chart->rows[g_pending[i].row].half2;
-                    switch (pan) { case 0: hh->dl = 0; break; case 1: hh->ul = 0; break; case 2: hh->cn = 0; break; case 3: hh->ur = 0; break; case 4: hh->dr = 0; break; }
+            int hdPly = hdCheck ? hdPanelPlayer(pan) : (dnPr ? dnPanelPlayer(pan) : player);
+            PadButton holdBtn = hdCheck ? hdPanelBtn(pan) : (dnPr ? dnPanelBtn(pan) : 0);
+            if ((pv == NT_HOLD_H || pv == NT_HOLD_B || pv == NT_HOLD_T) && g_holdRows[hdPly][pan] < 0) {
+                if (hdCheck || dnPr) {
+                    if (!Input_IsPadDown(hdPly, holdBtn))
+                        jt = JT_MISS;
+                    else {
+                        g_holdRows[hdPly][pan] = g_pending[i].row;
+                        if (hdCheck) clearHDPanel(&g_chart->rows[g_pending[i].row], pan);
+                        else clearDNPanel(&g_chart->rows[g_pending[i].row], pan);
+                    }
+                } else {
+                    static const PadButton btnMap[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
+                    if (!Input_IsPadDown(player, btnMap[pan]))
+                        jt = JT_MISS;
+                    else {
+                        g_holdRows[player][pan] = g_pending[i].row;
+                        clearPanel(&g_chart->rows[g_pending[i].row], pan, player);
+                    }
                 }
             }
         }
-        // Setar hold rows para hold heads na linha (mesmo em MISS)
-        for (int pan = 0; pan < 5; pan++)
-            if (getPanelValue(&g_chart->rows[g_pending[i].row], pan, player) == NT_HOLD_H)
+        for (int pan = 0; pan < jdPanels; pan++) {
+            uint8_t pv = hdCheck ? getNoteHD(&g_chart->rows[g_pending[i].row], pan) : (dnPr ? getDNPanelValue(&g_chart->rows[g_pending[i].row], pan) : getPanelValue(&g_chart->rows[g_pending[i].row], pan, player));
+            if (pv == NT_HOLD_H)
                 g_holdRows[player][pan] = g_pending[i].row;
-        for (int pan = 0; pan < 5; pan++) {
-            uint8_t pv = getPanelValue(&g_chart->rows[g_pending[i].row], pan, player);
+        }
+        for (int pan = 0; pan < jdPanels; pan++) {
+            uint8_t pv = hdCheck ? getNoteHD(&g_chart->rows[g_pending[i].row], pan) : (dnPr ? getDNPanelValue(&g_chart->rows[g_pending[i].row], pan) : getPanelValue(&g_chart->rows[g_pending[i].row], pan, player));
             if (pv && pv != NT_HOLD_B && pv != NT_HOLD_T)
                 g_nextNoteRow[player][pan] = g_pending[i].row + 1;
         }
@@ -514,25 +634,49 @@ static int rowIsHold(int player, int panel, StepRow* row)
     return (v == NT_HOLD_H || v == NT_HOLD_B || v == NT_HOLD_T);
 }
 
+static int rowAnyNoteHD(StepRow* row)
+{
+    return row->half1.cn || row->half1.ur || row->half1.dr ||
+           row->half2.dl || row->half2.ul || row->half2.cn;
+}
+
 static void processInput(int player)
 {
     if (!g_songLoaded) return;
 
-    // Depois: isNewHit para taps (hold heads sao capturados pelo processHolds)
-    static int logCtr = 0; logCtr++;
-    for (int b = 0; b < PAD_BUTTONS_PER_PLAYER; b++)
+    bool isHD = isHDMode();
+    bool isDN = isDNMode();
+    int panCount = isHD ? 6 : (isDN ? 10 : 5);
+    int numBtns = isHD ? 6 : (isDN ? 10 : PAD_BUTTONS_PER_PLAYER);
+
+    for (int b = 0; b < numBtns; b++)
     {
-        int panel = getPanelForButton((PadButton)b);
+        int panel;
+        PadButton btn;
+        int usePlayer;
+        if (isHD) {
+            panel = b;
+            btn = hdPanelBtn(panel);
+            usePlayer = hdPanelPlayer(panel);
+        } else if (isDN) {
+            panel = b;
+            btn = dnPanelBtn(panel);
+            usePlayer = dnPanelPlayer(panel);
+        } else {
+            panel = getPanelForButton((PadButton)b);
+            btn = (PadButton)b;
+            usePlayer = player;
+        }
         if (panel < 0) continue;
-        if (!Input_IsPadHit(player, (PadButton)b)) continue;
-        g_hitTimer[player][panel] = 17; // p1 borda no receptor
+        if (!Input_IsPadHit(usePlayer, btn)) continue;
+        g_hitTimer[player][panel] = 17;
 
         double bestDiff = 999;
         int bestRow = -1;
 
         for (int ri = g_nextNoteRow[player][panel]; ri < (int)g_chart->rowCount; ri++)
         {
-            uint8_t val = getPanelValue(&g_chart->rows[ri], panel, player);
+            uint8_t val = isHD ? getNoteHD(&g_chart->rows[ri], panel) : (isDN ? getDNPanelValue(&g_chart->rows[ri], panel) : getPanelValue(&g_chart->rows[ri], panel, player));
             if (!val || val == NT_HOLD_B || val == NT_HOLD_T) continue;
 
             double rowTime = getRowTime(ri);
@@ -546,16 +690,13 @@ static void processInput(int player)
 
         if (bestRow < 0) continue;
 
-        // DEBUG: tap hit
         Log_Print("TAPHIT: p=%d pan=%d row=%d diff=%.3f\n", player, panel, bestRow, bestDiff);
 
-        // Conta quantas setas na linha
         int arrowsInRow = 0;
-        for (int pan = 0; pan < 5; pan++)
-            if (getPanelValue(&g_chart->rows[bestRow], pan, player)) arrowsInRow++;
+        for (int pan = 0; pan < panCount; pan++)
+            if (isHD ? getNoteHD(&g_chart->rows[bestRow], pan) : (isDN ? getDNPanelValue(&g_chart->rows[bestRow], pan) : getPanelValue(&g_chart->rows[bestRow], pan, player))) arrowsInRow++;
 
         if (arrowsInRow > 1) {
-            // Pendente: aguardar todas as setas
             g_nextNoteRow[player][panel] = bestRow + 1;
             int slot = -1;
             for (int i = 0; i < MAX_PENDING; i++)
@@ -570,9 +711,8 @@ static void processInput(int player)
                     g_pending[slot].deadline = g_songTime + JUDGE_BAD;
                     g_pending[slot].totalMask = 0;
                     g_pending[slot].hitMask = 0;
-                    for (int pan = 0; pan < 5; pan++) {
-                        uint8_t pv = getPanelValue(&g_chart->rows[bestRow], pan, player);
-                        // So contar taps (ignorar HH=10, HB=11, HT=12)
+                    for (int pan = 0; pan < panCount; pan++) {
+                        uint8_t pv = isHD ? getNoteHD(&g_chart->rows[bestRow], pan) : (isDN ? getDNPanelValue(&g_chart->rows[bestRow], pan) : getPanelValue(&g_chart->rows[bestRow], pan, player));
                         if (pv && pv < NT_HOLD_H)
                             g_pending[slot].totalMask |= (1 << pan);
                     }
@@ -581,46 +721,62 @@ static void processInput(int player)
                 g_pending[slot].hitMask |= (1 << panel);
                 g_pending[slot].worstDiff = bestDiff;
 
-                // Se todas apertadas, processa AGORA
                 if ((g_pending[slot].hitMask & g_pending[slot].totalMask) == g_pending[slot].totalMask) {
                     g_pending[slot].active = false;
                     g_pendingCount--;
                     JudgeType pjt = evaluateTiming(g_pending[slot].worstDiff);
-                    // Se row tem HH/HB/HT nao capturado
-                    for (int pan = 0; pan < 5; pan++) {
-                        uint8_t pv = getPanelValue(&g_chart->rows[bestRow], pan, player);
+                    for (int pan = 0; pan < panCount; pan++) {
+                        uint8_t pv = isHD ? getNoteHD(&g_chart->rows[bestRow], pan) : (isDN ? getDNPanelValue(&g_chart->rows[bestRow], pan) : getPanelValue(&g_chart->rows[bestRow], pan, player));
                         if (!pv) continue;
                         if ((pv == NT_HOLD_H || pv == NT_HOLD_B || pv == NT_HOLD_T) && g_holdRows[player][pan] < 0) {
-                            static const PadButton btnMap[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
-                            if (!Input_IsPadDown(player, btnMap[pan]))
-                                pjt = JT_MISS;
-                            else {
-                                g_holdRows[player][pan] = bestRow;
-                                // Limpa SÓ este painel (catch visual)
-                                StepHalf* hh = (player == 0) ? &g_chart->rows[bestRow].half1 : &g_chart->rows[bestRow].half2;
-                                switch (pan) { case 0: hh->dl = 0; break; case 1: hh->ul = 0; break; case 2: hh->cn = 0; break; case 3: hh->ur = 0; break; case 4: hh->dr = 0; break; }
+                            if (isHD) {
+                                if (!Input_IsPadDown(hdPanelPlayer(pan), hdPanelBtn(pan)))
+                                    pjt = JT_MISS;
+                                else {
+                                    g_holdRows[player][pan] = bestRow;
+                                    clearHDPanel(&g_chart->rows[bestRow], pan);
+                                }
+                            } else if (isDN) {
+                                if (!Input_IsPadDown(dnPanelPlayer(pan), dnPanelBtn(pan)))
+                                    pjt = JT_MISS;
+                                else {
+                                    g_holdRows[player][pan] = bestRow;
+                                    clearDNPanel(&g_chart->rows[bestRow], pan);
+                                }
+                            } else {
+                                static const PadButton btnMap[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
+                                if (!Input_IsPadDown(player, btnMap[pan]))
+                                    pjt = JT_MISS;
+                                else {
+                                    g_holdRows[player][pan] = bestRow;
+                                    clearPanel(&g_chart->rows[bestRow], pan, player);
+                                }
                             }
                         }
                     }
                     if (pjt == JT_PERFECT || pjt == JT_GREAT) {
-                        for (int pan = 0; pan < 5; pan++)
-                            if (getPanelValue(&g_chart->rows[bestRow], pan, player)) {
-                                g_noteState[player][pan] = 1; // EXPLODING
+                        for (int pan = 0; pan < panCount; pan++)
+                            if (isHD ? getNoteHD(&g_chart->rows[bestRow], pan) : (isDN ? getDNPanelValue(&g_chart->rows[bestRow], pan) : getPanelValue(&g_chart->rows[bestRow], pan, player))) {
+                                g_noteState[player][pan] = 1;
                                 g_noteExplodeRow[player][pan] = bestRow;
                                 g_noteExplodeFrame[player][pan] = 0;
+                                if (isHD) clearHDPanel(&g_chart->rows[bestRow], pan);
+                                else if (isDN) clearDNPanel(&g_chart->rows[bestRow], pan);
+                                else clearPanel(&g_chart->rows[bestRow], pan, player);
                             }
+                        if (!isHD && !isDN)
                         memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
                     }
                     g_judgeDisplayType[player] = pjt;
                     g_judgeDisplayTimer[player] = 0.6f;
                     g_judgeFrame[player] = (pjt == JT_GREAT || pjt == JT_PERFECT) ? 40 : 25;
                     { int sc = 0, cb = g_game.stats.combo[player];
-                      int receptorY = 38; // Receptor Y position for combo popup calculation
+                      int receptorY = 38;
                       switch (pjt) {
                         case JT_PERFECT: sc = 1000; if (cb > 3) sc += 1000; cb++; break;
                         case JT_GREAT:   sc = 500;  if (cb > 3) sc += 1000; cb++; break;
                         default: break;
-} if (sc > 0) popupCreate(player, sc, cb, 178.0f); } // Y=80 (Ghidra) + 98 offset = Y=178 (game reality)
+} if (sc > 0) popupCreate(player, sc, cb, 178.0f); }
                     switch (pjt) {
                         case JT_PERFECT: case JT_GREAT:
                             g_game.stats.combo[player]++;
@@ -656,28 +812,31 @@ static void processInput(int player)
             continue;
         }
 
-        // 1 seta: processa direto
         g_nextNoteRow[player][panel] = bestRow + 1;
         JudgeType jt = evaluateTiming(bestDiff);
         if (jt == JT_PERFECT || jt == JT_GREAT) {
-            for (int pan = 0; pan < 5; pan++)
-                if (getPanelValue(&g_chart->rows[bestRow], pan, player)) {
-                    g_noteState[player][pan] = 1; // EXPLODING
+            for (int pan = 0; pan < panCount; pan++)
+                if (isHD ? getNoteHD(&g_chart->rows[bestRow], pan) : (isDN ? getDNPanelValue(&g_chart->rows[bestRow], pan) : getPanelValue(&g_chart->rows[bestRow], pan, player))) {
+                    g_noteState[player][pan] = 1;
                     g_noteExplodeRow[player][pan] = bestRow;
                     g_noteExplodeFrame[player][pan] = 0;
+                    if (isHD) clearHDPanel(&g_chart->rows[bestRow], pan);
+                    else if (isDN) clearDNPanel(&g_chart->rows[bestRow], pan);
+                    else clearPanel(&g_chart->rows[bestRow], pan, player);
                 }
-            memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
+            if (!isHD && !isDN)
+                memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
         }
         g_judgeDisplayType[player] = jt;
         g_judgeDisplayTimer[player] = 0.6f;
         g_judgeFrame[player] = (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25;
         { int sc = 0, cb = g_game.stats.combo[player];
-          int receptorY = 38; // Receptor Y position for combo popup calculation
+          int receptorY = 38;
           switch (jt) {
             case JT_PERFECT: sc = 1000; if (cb > 3) sc += 1000; cb++; break;
             case JT_GREAT:   sc = 500;  if (cb > 3) sc += 1000; cb++; break;
             default: break;
-} if (sc > 0) popupCreate(player, sc, cb, 178.0f); } // Y=80 (Ghidra) + 98 offset = Y=178 (game reality)
+} if (sc > 0) popupCreate(player, sc, cb, 178.0f); }
         switch (jt) {
             case JT_PERFECT: case JT_GREAT:
                 g_game.stats.combo[player]++;
@@ -713,7 +872,13 @@ static void processInput(int player)
 
 static bool anyAutoPanel(void)
 {
-    for (int a = 0; a < 5; a++)
+    bool isHD = (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&
+                 strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "HALFDOUBLE") == 0);
+    bool dnAP = (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&
+                (strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "DOUBLE") == 0 ||
+                 strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "NIGHTMARE") == 0));
+    int pc = dnAP ? 10 : (isHD ? 6 : 5);
+    for (int a = 0; a < pc; a++)
         if (g_autoPanel[a]) return true;
     return false;
 }
@@ -722,17 +887,20 @@ static void processAutoplay(void)
 {
     if (!g_songLoaded || !anyAutoPanel()) return;
 
+    bool isHD = isHDMode();
+    bool dnAP = isDNMode();
+    int panCount = isHD ? 6 : (dnAP ? 10 : 5);
+
     for (int p = 0; p < 1; p++)
     {
-        // Collect autoplay hits per row
         int hitRows[10], hitCount = 0;
-        for (int panel = 0; panel < 5; panel++)
+        for (int panel = 0; panel < panCount; panel++)
         {
             if (!g_autoPanel[panel]) continue;
 
             for (int ri = g_nextNoteRow[p][panel]; ri < (int)g_chart->rowCount; ri++)
             {
-                uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
+                uint8_t val = isHD ? getNoteHD(&g_chart->rows[ri], panel) : (dnAP ? getDNPanelValue(&g_chart->rows[ri], panel) : getPanelValue(&g_chart->rows[ri], panel, p));
                 if (!val) continue;
                 if (val == NT_HOLD_B || val == NT_HOLD_T) continue;
 
@@ -748,7 +916,6 @@ static void processAutoplay(void)
             }
         }
 
-        // Deduplicate by row (1 combo per row)
         int dedupRows[10], dedupCount = 0;
         for (int i = 0; i < hitCount; i++)
         {
@@ -764,12 +931,6 @@ static void processAutoplay(void)
             g_judgeDisplayTimer[p] = 0.6f;
             g_judgeFrame[p] = 40;
             g_judgeDisplayCombo[p] = ++g_game.stats.combo[p];
-                // Update combo comparison variables (original logic)
-                if (p == 0) {
-                    g_game.stats.combo_0 = g_game.stats.combo[p];
-                } else {
-                    g_game.stats.combo_1 = g_game.stats.combo[p];
-                }
             g_game.stats.missCombo[p] = 0;
             g_game.stats.score[p] += 1000;
             if (g_game.stats.combo[p] > 3)
@@ -777,31 +938,22 @@ static void processAutoplay(void)
             if (g_game.stats.combo[p] > g_game.stats.maxCombo[p])
                 g_game.stats.maxCombo[p] = g_game.stats.combo[p];
 
-            // Start holds for hold heads
-            for (int panel = 0; panel < 5; panel++)
+            for (int panel = 0; panel < panCount; panel++)
             {
-                uint8_t val = getPanelValue(&g_chart->rows[hitRows[i]], panel, p);
+                uint8_t val = isHD ? getNoteHD(&g_chart->rows[hitRows[i]], panel) : (dnAP ? getDNPanelValue(&g_chart->rows[hitRows[i]], panel) : getPanelValue(&g_chart->rows[hitRows[i]], panel, p));
                 if (val == NT_HOLD_H)
                     g_holdRows[p][panel] = hitRows[i];
-
-                // Autoplay: marca row como consumida pra não renderizar
                 if (val)
                     g_lastPerfectRow[p][panel] = hitRows[i];
             }
 
-            // Autoplay: limpa SÓ os painéis com autoplay
-            for (int panel = 0; panel < 5; panel++) {
+            for (int panel = 0; panel < panCount; panel++) {
                 if (!g_autoPanel[panel]) continue;
-                uint8_t val = getPanelValue(&g_chart->rows[hitRows[i]], panel, p);
+                uint8_t val = isHD ? getNoteHD(&g_chart->rows[hitRows[i]], panel) : (dnAP ? getDNPanelValue(&g_chart->rows[hitRows[i]], panel) : getPanelValue(&g_chart->rows[hitRows[i]], panel, p));
                 if (!val) continue;
-                StepHalf* h = (p == 0) ? &g_chart->rows[hitRows[i]].half1 : &g_chart->rows[hitRows[i]].half2;
-                switch (panel) {
-                    case 0: h->dl = 0; break;
-                    case 1: h->ul = 0; break;
-                    case 2: h->cn = 0; break;
-                    case 3: h->ur = 0; break;
-                    case 4: h->dr = 0; break;
-                }
+                if (isHD) clearHDPanel(&g_chart->rows[hitRows[i]], panel);
+                else if (dnAP) clearDNPanel(&g_chart->rows[hitRows[i]], panel);
+                else clearPanel(&g_chart->rows[hitRows[i]], panel, p);
             }
         }
     }
@@ -810,36 +962,49 @@ static void processAutoplay(void)
 static void processHolds(void)
 {
     if (!g_songLoaded) return;
+    bool isHD = isHDMode();
+    bool dnAP = isDNMode();
+    int panCount = isHD ? 6 : (dnAP ? 10 : 5);
     for (int p = 0; p < 1; p++)
     {
-        for (int panel = 0; panel < 5; panel++)
+        for (int panel = 0; panel < panCount; panel++)
         {
-            static const PadButton panelToBtn[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
-            bool held = g_autoPanel[panel] ? true : Input_IsPadDown(p, panelToBtn[panel]);
+            int holdPly;
+            PadButton holdBtn;
+            if (isHD) {
+                holdPly = hdPanelPlayer(panel);
+                holdBtn = hdPanelBtn(panel);
+            } else if (dnAP) {
+                holdPly = dnPanelPlayer(panel);
+                holdBtn = dnPanelBtn(panel);
+            } else {
+                static const PadButton panelToBtn[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
+                holdPly = 0;
+                holdBtn = panelToBtn[panel];
+            }
+            bool held = g_autoPanel[panel] ? true : Input_IsPadDown(holdPly, holdBtn);
 
             // Auto-capture: botao segurado e HH ou HB/HT nao capturado (re-press)
             if (g_holdRows[p][panel] < 0 && held)
             {
                 for (int ri = g_nextNoteRow[p][panel]; ri < (int)g_chart->rowCount; ri++)
                 {
-                    uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
+                    uint8_t val = isHD ? getNoteHD(&g_chart->rows[ri], panel) : (dnAP ? getDNPanelValue(&g_chart->rows[ri], panel) : getPanelValue(&g_chart->rows[ri], panel, p));
                     if (!val) continue;
                     double rt = getRowTime(ri);
-                    if (g_songTime < rt - JUDGE_BAD) break; // muito no futuro
-                    // So captura se for nota de hold (HH, HB, HT)
+                    if (g_songTime < rt - JUDGE_BAD) break;
                     if (val == NT_HOLD_H || val == NT_HOLD_B || val == NT_HOLD_T) {
-                        Log_Print("AUTOCAPTURE: p=%d pan=%d ri=%d val=%d held=%d\n", p, panel, ri, val, held);
                         g_holdRows[p][panel] = ri;
                         g_nextNoteRow[p][panel] = ri + 1;
-                        // Limpa SÓ este painel (catch visual), deixa outros paineis (taps) intactos
-                        StepHalf* hh = (p == 0) ? &g_chart->rows[ri].half1 : &g_chart->rows[ri].half2;
-                        switch (panel) { case 0: hh->dl = 0; break; case 1: hh->ul = 0; break; case 2: hh->cn = 0; break; case 3: hh->ur = 0; break; case 4: hh->dr = 0; break; }
-                        g_noteState[p][panel] = 1; // EXPLODING
+                        if (isHD) clearHDPanel(&g_chart->rows[ri], panel);
+                        else if (dnAP) clearDNPanel(&g_chart->rows[ri], panel);
+                        else clearPanel(&g_chart->rows[ri], panel, p);
+                        g_noteState[p][panel] = 1;
                         g_noteExplodeRow[p][panel] = ri;
                         g_noteExplodeFrame[p][panel] = 0;
                         int hasTap = 0;
-                        for (int pan = 0; pan < 5; pan++)
-                            if (pan != panel && getPanelValue(&g_chart->rows[ri], pan, p)) { hasTap = 1; break; }
+                        for (int pan = 0; pan < panCount; pan++)
+                            if (pan != panel && (isHD ? getNoteHD(&g_chart->rows[ri], pan) : (dnAP ? getDNPanelValue(&g_chart->rows[ri], pan) : getPanelValue(&g_chart->rows[ri], pan, p)))) { hasTap = 1; break; }
                         if (!hasTap) {
                             g_game.stats.combo[p]++;
                             g_game.stats.missCombo[p] = 0;
@@ -858,22 +1023,15 @@ static void processHolds(void)
 
             if (g_holdRows[p][panel] < 0) continue;
 
-            // Scan forward from head to find body/tail rows
-            { int db=0, ub=0, cb=0, urb=0, drb=0;
-              if (Input_IsPadDown(p, PAD_DL)) db=1; if (Input_IsPadDown(p, PAD_UL)) ub=1;
-              if (Input_IsPadDown(p, PAD_C)) cb=1; if (Input_IsPadDown(p, PAD_UR)) urb=1;
-              if (Input_IsPadDown(p, PAD_DR)) drb=1;
-              Log_Print("BODYSCAN: p=%d pan=%d start=%d holdRows=%d isDown=%d%d%d%d%d\n", p, panel, g_holdRows[p][panel] + 1, g_holdRows[p][panel], db, ub, cb, urb, drb); }
             for (int ri = g_holdRows[p][panel] + 1; ri < (int)g_chart->rowCount; ri++)
             {
-                uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
+                uint8_t val = isHD ? getNoteHD(&g_chart->rows[ri], panel) : (dnAP ? getDNPanelValue(&g_chart->rows[ri], panel) : getPanelValue(&g_chart->rows[ri], panel, p));
                 if (val != 0 && val != NT_HOLD_B && val != NT_HOLD_T) break;
                 if (val == 0) continue;
 
                 double rowTime = getRowTime(ri);
                 if (g_songTime < rowTime - 0.01) break;
 
-                // Ja julgado? (por processMisses ou anterior)
                 bool alreadyJudged = false;
                 for (int h = 0; h < g_noteHitCount[p][panel]; h++)
                     if (g_noteHits[p][panel][h].rowIndex == ri) { alreadyJudged = true; break; }
@@ -881,28 +1039,25 @@ static void processHolds(void)
 
                 if (!held)
                 {
-                    Log_Print("HOLD MISS: p=%d pan=%d ri=%d held=%d\n", p, panel, ri, held);
                     g_game.stats.combo[p] = 0;
                     g_game.stats.missCount[p]++;
                     g_game.stats.missCombo[p]++;
                 }
                 else
                 {
-                    // Verifica se tem tap na mesma row (se sim, nao da score - o tap dita)
-                    bool hasUnjudgedTap = false;
-                    for (int op = 0; op < 5; op++) {
+                    int hasUnjudgedTap = false;
+                    for (int op = 0; op < panCount; op++) {
                         if (op == panel) continue;
-                        uint8_t ov = getPanelValue(&g_chart->rows[ri], op, p);
+                        uint8_t ov = isHD ? getNoteHD(&g_chart->rows[ri], op) : (dnAP ? getDNPanelValue(&g_chart->rows[ri], op) : getPanelValue(&g_chart->rows[ri], op, p));
                         if (ov && ov != NT_HOLD_B && ov != NT_HOLD_T) { hasUnjudgedTap = true; break; }
                     }
-                    // Held body sempre limpa SÓ este painel (catch visual), mesmo com tap
-                    StepHalf* hh = (p == 0) ? &g_chart->rows[ri].half1 : &g_chart->rows[ri].half2;
-                    switch (panel) { case 0: hh->dl = 0; break; case 1: hh->ul = 0; break; case 2: hh->cn = 0; break; case 3: hh->ur = 0; break; case 4: hh->dr = 0; break; }
-                    g_noteState[p][panel] = 1; // EXPLODING
+                    if (isHD) clearHDPanel(&g_chart->rows[ri], panel);
+                    else if (dnAP) clearDNPanel(&g_chart->rows[ri], panel);
+                    else clearPanel(&g_chart->rows[ri], panel, p);
+                    g_noteState[p][panel] = 1;
                     g_noteExplodeRow[p][panel] = ri;
                     g_noteExplodeFrame[p][panel] = 0;
                     if (!hasUnjudgedTap) {
-                        Log_Print("HOLD PERF: p=%d pan=%d ri=%d held=%d\n", p, panel, ri, held);
                         g_game.stats.combo[p]++;
                     g_game.stats.missCombo[p] = 0;
                     g_game.stats.score[p] += 1000;
@@ -924,7 +1079,7 @@ static void processHolds(void)
                     g_nextNoteRow[p][panel] = ri + 1;
                 }
             }
-            }
+        }
     }
 }
 
@@ -932,22 +1087,37 @@ static void processMisses(void)
 {
     if (!g_songLoaded) return;
 
+    bool isHD = isHDMode();
+    bool dnAP = isDNMode();
+    int panCount = isHD ? 6 : (dnAP ? 10 : 5);
+
     double missThreshold = g_songTime - JUDGE_BAD;
-    for (int p = 0; p < 2; p++)
+    for (int p = 0; p < 1; p++)
     {
         int missedRows[256], missCount = 0;
-        for (int panel = 0; panel < 5; panel++)
+        for (int panel = 0; panel < panCount; panel++)
         {
+            int missPly;
+            PadButton missBtn;
+            if (isHD) {
+                missPly = hdPanelPlayer(panel);
+                missBtn = hdPanelBtn(panel);
+            } else if (dnAP) {
+                missPly = dnPanelPlayer(panel);
+                missBtn = dnPanelBtn(panel);
+            } else {
+                static const PadButton btnMap[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
+                missPly = 0;
+                missBtn = btnMap[panel];
+            }
             for (int ri = g_nextNoteRow[p][panel]; ri < (int)g_chart->rowCount; ri++)
             {
-                uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
+                uint8_t val = isHD ? getNoteHD(&g_chart->rows[ri], panel) : (dnAP ? getDNPanelValue(&g_chart->rows[ri], panel) : getPanelValue(&g_chart->rows[ri], panel, p));
                 if (!val) continue;
                 if (val == NT_HOLD_H || val == NT_HOLD_B || val == NT_HOLD_T)
                 {
                     if (g_holdRows[p][panel] >= 0) continue;
-                    // Se botao segurado, pula tambem (auto-capture ou pending vai processar)
-                    static const PadButton btnMap[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
-                    if (Input_IsPadDown(p, btnMap[panel])) continue;
+                    if (Input_IsPadDown(missPly, missBtn)) continue;
                 }
 
                 double rowTime = getRowTime(ri);
@@ -972,9 +1142,9 @@ static void processMisses(void)
             g_judgeDisplayCombo[p] = g_game.stats.missCombo[p];
             for (int m = 0; m < missCount; m++)
             {
-                for (int pan = 0; pan < 5; pan++)
+                for (int pan = 0; pan < panCount; pan++)
                 {
-                    uint8_t val = getPanelValue(&g_chart->rows[missedRows[m]], pan, p);
+                    uint8_t val = isHD ? getNoteHD(&g_chart->rows[missedRows[m]], pan) : (dnAP ? getDNPanelValue(&g_chart->rows[missedRows[m]], pan) : getPanelValue(&g_chart->rows[missedRows[m]], pan, p));
                     if (val)
                     {
                         NoteHit* nh = &g_noteHits[p][pan][g_noteHitCount[p][pan]++];
@@ -1001,7 +1171,7 @@ void Gameplay_Start(int songId)
     memset(g_noteState, 0, sizeof(g_noteState));
     memset(g_noteExplodeFrame, 0, sizeof(g_noteExplodeFrame));
     for (int p = 0; p < 2; p++)
-        for (int pan = 0; pan < 5; pan++)
+        for (int pan = 0; pan < MAX_PANELS; pan++)
             g_holdRows[p][pan] = -1;
 
     g_game.bgaFrame = 0;
@@ -1039,6 +1209,9 @@ void Gameplay_Exit(void)
         Step_FreeSong(&g_playSong);
         g_songLoaded = false;
     }
+    free(g_visualRow);
+    g_visualRow = NULL;
+    g_visualRowCount = 0;
     Log_Print("Gameplay: exit\n");
 }
 
@@ -1049,17 +1222,24 @@ void Gameplay_Update(float dt)
     if (dt > 0.05f) dt = 0.05f;
 
     {
-        int autoKeys[5] = { VK_F1, VK_F2, VK_F3, VK_F4, VK_F5 };
-        static const char* autoNames[5] = { "DL", "UL", "CN", "UR", "DR" };
-        for (int a = 0; a < 5; a++)
+        bool hdAP = (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&
+                     strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "HALFDOUBLE") == 0);
+        bool dnAP = (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&
+                    (strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "DOUBLE") == 0 ||
+                     strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "NIGHTMARE") == 0));
+        int apKeys[10] = { VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10 };
+        int apCount = dnAP ? 10 : (hdAP ? 6 : 5);
+        for (int a = 0; a < apCount; a++)
         {
-            if (Input_IsKeyHit(autoKeys[a]))
+            if (Input_IsKeyHit(apKeys[a]))
             {
                 g_autoPanel[a] = !g_autoPanel[a];
-                Log_Print("GP: autoplay %s %s\n", autoNames[a], g_autoPanel[a] ? "ON" : "OFF");
+                Log_Print("GP: autoplay %d: %s\n", a, g_autoPanel[a] ? "ON" : "OFF");
             }
         }
-        g_autoplay = g_autoPanel[0] && g_autoPanel[1] && g_autoPanel[2] && g_autoPanel[3] && g_autoPanel[4];
+        g_autoplay = true;
+        for (int a = 0; a < apCount; a++)
+            if (!g_autoPanel[a]) { g_autoplay = false; break; }
     }
 
     // Scroll speed adjustment (number keys 1-8, smooth animation)
@@ -1103,7 +1283,6 @@ void Gameplay_Update(float dt)
     }
 
     processInput(0);
-    //processInput(1);  // P2 desativado
     processPendingRows(0);
     //processPendingRows(1);
     processAutoplay();
@@ -1116,7 +1295,7 @@ void Gameplay_Update(float dt)
             g_judgeDisplayTimer[p] -= dt;
         if (g_judgeFrame[p] > 0)
             g_judgeFrame[p]--;
-        for (int pan = 0; pan < 5; pan++) {
+        for (int pan = 0; pan < MAX_PANELS; pan++) {
             if (g_hitTimer[p][pan] > 0)
                 g_hitTimer[p][pan]--;
             if (g_noteState[p][pan] == 1) { // EXPLODING
@@ -1208,26 +1387,49 @@ void Gameplay_Render(void)
     }
 
     int receptorY = 38;
+    bool isHalfDouble = (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&
+                         strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "HALFDOUBLE") == 0);
+    bool isDoubleOrNightmare = (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&
+                               (strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "DOUBLE") == 0 ||
+                                strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "NIGHTMARE") == 0));
+    int sprReceptor = isHalfDouble ? g_fontSprHD01 : (isDoubleOrNightmare ? g_fontSprW01 : g_fontSpr01);
+    int sprBlind    = isHalfDouble ? g_fontSprHD02 : (isDoubleOrNightmare ? g_fontSprW02 : g_fontSpr02);
+    int sprLifeBord = isHalfDouble ? g_fontSprHD03 : (isDoubleOrNightmare ? g_fontSprW03 : g_fontSpr03);
+    int sprLifeGlow = isHalfDouble ? g_fontSprHD05 : (isDoubleOrNightmare ? g_fontSprW05 : g_fontSpr05);
     int scrollBottom = 480;
-    float pixelsPerRow = BASE_ROW_SPACING * g_scrollSpeedX;
-    double scrollRow = getRowAtTimeFloat(g_songTime);
 
-    // Find current segment for dynamic scroll speed (judgment zone sizing)
+    // Current segment and actual scrollRow for timing-dependent calculations
+    int currentSeg = 0;
     double currentSpr = g_secondsPerRow;
     for (int s = g_chart->segmentCount - 1; s >= 0; s--)
     {
         if (g_songTime >= getRowTime(g_chart->segments[s].rowStart))
         {
             currentSpr = getSegmentSpr(s);
+            currentSeg = s;
             break;
         }
     }
+    double actualScrollRow = getRowAtTimeFloat(g_songTime);
+
+    // Visual scroll row: BPM-based, beatSplit-normalized for constant visual speed
+    float pixelsPerRow = BASE_ROW_SPACING * g_scrollSpeedX;
+    double visualScrollRow = 0;
+    if (g_visualRow && g_visualRowCount > 0) {
+        int vr = (int)actualScrollRow;
+        if (vr < 0) vr = 0;
+        if (vr >= g_visualRowCount) vr = g_visualRowCount - 1;
+        double frac = actualScrollRow - floor(actualScrollRow);
+        visualScrollRow = g_visualRow[vr];
+        if (vr + 1 < g_visualRowCount)
+            visualScrollRow += (g_visualRow[vr + 1] - g_visualRow[vr]) * frac;
+    }
     float currentPixelsPerSec = (float)(pixelsPerRow / currentSpr);
 
-    // Determine visible row range
-    int startRow = (int)scrollRow - (int)(480 / pixelsPerRow) - 2;
+    // Determine visible actual row range (uses actualScrollRow, which is in actual-row space)
+    int startRow = (int)actualScrollRow - (int)(480 / pixelsPerRow) - 2;
     if (startRow < 0) startRow = 0;
-    int endRow = (int)scrollRow + (int)((scrollBottom - receptorY) / pixelsPerRow) + 4;
+    int endRow = (int)actualScrollRow + (int)((scrollBottom - receptorY) / pixelsPerRow) + 4;
     if (endRow >= (int)g_chart->rowCount) endRow = g_chart->rowCount - 1;
 
     // Compute judgment zone half-heights using current BPM-based scroll speed
@@ -1236,18 +1438,28 @@ void Gameplay_Render(void)
     for (int j = 0; j < 4; j++)
         jZoneHalf[j] = jWindows[j] * currentPixelsPerSec;
 
+    int panelCount = isHalfDouble ? 6 : (isDoubleOrNightmare ? 10 : 5);
+    float posX[10];
+    int pW[10];
+    if (isHalfDouble) {
+        for (int i = 0; i < 6; i++) {
+            posX[i] = 171.0f + i * 48.0f + (i >= 3 ? 7.0f : 0.0f);
+            pW[i] = 54;
+        }
+    } else if (isDoubleOrNightmare) {
+        for (int i = 0; i < 10; i++) pW[i] = 54;
+        for (int i = 0; i < 5; i++) posX[i] = 74.0f + i * 48.0f;     // P1 side
+        for (int i = 5; i < 10; i++) posX[i] = 323.0f + (i-5) * 48.0f; // P2 side
+    } else {
+        for (int i = 0; i < 5; i++) pW[i] = 54;
+        posX[0] = 38.0f;
+        for (int i = 1; i < 5; i++) posX[i] = posX[0] + i * 48.0f;
+    }
+
+    int centerX = isHalfDouble ? 320 : (isDoubleOrNightmare ? 320 : P1_CENTER_X);
+
     for (int p = 0; p < 1; p++)
     {
-        int centerX = (p == 0) ? P1_CENTER_X : P2_CENTER_X;
-        int baseX = centerX - 80;
-
-        float posX[5];
-        int pW[5] = {54, 54, 54, 54, 54};
-        posX[0] = 38.0f;  // DL
-        posX[1] = posX[0] + 48.0f;  // UL
-        posX[2] = posX[1] + 48.0f;  // CN
-        posX[3] = posX[2] + 48.0f;  // UR
-        posX[4] = posX[3] + 48.0f;  // DR
 
         /* // Zonas de acerto (julgamento) - desativadas, 01.SPR substitui
         {
@@ -1319,10 +1531,10 @@ void Gameplay_Render(void)
         */
 
         // 01.SPR receptor (g_fontSpr01) — renderiza ANTES das notas (abaixo delas)
-        if (g_fontSpr01 >= 0) {
-            int cnt = sprTileCount(g_fontSpr01);
+        if (sprReceptor >= 0) {
+            int cnt = sprTileCount(sprReceptor);
             for (int t = cnt - 1; t >= 0; t--) {
-                int idx = g_fontSpr01 + t;
+                int idx = sprReceptor + t;
                 float sx = (float)g_game.sprTiles[idx].srcX;
                 float sy = (float)g_game.sprTiles[idx].srcY;
                 float sw = (float)g_game.sprTiles[idx].srcW;
@@ -1331,12 +1543,12 @@ void Gameplay_Render(void)
             }
         }
         // 02.SPR blind (g_fontSpr02) — também antes das notas
-        if (g_fontSpr02 >= 0 && g_blindTimer[p] > 0) {
+        if (sprBlind >= 0 && g_blindTimer[p] > 0) {
             float blindA = (float)g_blindTimer[p] / 10.0f;
             glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-            int cnt = sprTileCount(g_fontSpr02);
+            int cnt = sprTileCount(sprBlind);
             for (int t = cnt - 1; t >= 0; t--) {
-                int idx = g_fontSpr02 + t;
+                int idx = sprBlind + t;
                 float sx = (float)g_game.sprTiles[idx].srcX;
                 float sy = (float)g_game.sprTiles[idx].srcY;
                 float sw = (float)g_game.sprTiles[idx].srcW;
@@ -1347,19 +1559,32 @@ void Gameplay_Render(void)
         }
 
         // Hit flash (p1 tile) nos receptores acertados
-        for (int pan = 0; pan < 5; pan++) {
+        for (int pan = 0; pan < panelCount; pan++) {
             int ht = g_hitTimer[p][pan];
-            int baseIdx = (pan == 0) ? g_fontArrow542 :
-                          (pan == 1) ? g_fontArrow541 :
-                          (pan == 2) ? g_fontArrow545 :
-                          (pan == 3) ? g_fontArrow543 :
-                                        g_fontArrow544;
+            int baseIdx;
+            int arrowType;
+            if (isHalfDouble) {
+                // HD: pan 0=CN, 1=UR, 2=DR, 3=DL, 4=UL, 5=CN
+                arrowType = (pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1;
+            } else if (isDoubleOrNightmare) {
+                arrowType = pan % 5;
+            } else {
+                arrowType = pan;
+            }
+            baseIdx = (arrowType == 0) ? g_fontArrow542 :
+                      (arrowType == 1) ? g_fontArrow541 :
+                      (arrowType == 2) ? g_fontArrow545 :
+                      (arrowType == 3) ? g_fontArrow543 :
+                      (arrowType == 4) ? g_fontArrow544 : -1;
             if (ht <= 0 || baseIdx < 0) continue;
             int p1Idx = baseIdx + 6;
             if (p1Idx >= g_game.sprTileCount) continue;
             float sw = (float)g_game.sprTiles[p1Idx].srcW;
             float sh = (float)g_game.sprTiles[p1Idx].srcH;
-            static const float p1OffX[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
+            static const float p1OffXReg[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
+            static const float p1OffXHD[6]  = {-5.0f, -6.0f, -7.0f, -7.0f, -6.0f, -5.0f};
+            const float* p1OffX = isHalfDouble ? p1OffXHD : p1OffXReg;
+            int p1Pan = isDoubleOrNightmare ? (pan % 5) : pan;
             float startScale = 54.0f / sw;
             float sc, alpha;
             if (ht > 2) {
@@ -1371,7 +1596,7 @@ void Gameplay_Render(void)
                 alpha = (float)ht / 2.0f;
             }
             glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-            Sprite_DrawTileUV(p1Idx, posX[pan] + p1OffX[pan] + sw / 2.0f, (float)(receptorY + 28), sw * sc, sh * sc, alpha);
+            Sprite_DrawTileUV(p1Idx, posX[pan] + p1OffX[p1Pan] + sw / 2.0f, (float)(receptorY + 28), sw * sc, sh * sc, alpha);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         }
 
@@ -1382,33 +1607,41 @@ void Gameplay_Render(void)
         static const int kBodyTile[5] = {12, 16, 20, 18, 14};
         static const int kTailTile[5] = {13, 17, 21, 19, 15};
         static const float kBodyOffX[5] = {-4.0f, -3.0f, 0.0f, 3.0f, 4.0f};
+        // HD mappings: pos 0=CN, 1=UR, 2=DR, 3=DL, 4=UL, 5=CN
+        static const int kHDBodyTile[6] = {20, 18, 14, 12, 16, 20};
+        static const int kHDTailTile[6] = {21, 19, 15, 13, 17, 21};
+        static const float kHDBodyOffX[6] = {0.0f, 3.0f, 4.0f, -4.0f, -3.0f, 0.0f};
 
         // Pass 0: Hold bodies (esticados entre runs de NT_HOLD_B)
         if (g_fontArrowETC >= 0) {
-            for (int panel = 0; panel < 5; panel++)
+            for (int panel = 0; panel < panelCount; panel++)
             {
+                int arrowIdx = isDoubleOrNightmare ? (panel % 5) : panel;
                 for (int ri = startRow; ri <= endRow; ri++)
                 {
-                    uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
+                    uint8_t val = isHalfDouble ? getNoteHD(&g_chart->rows[ri], panel) : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[ri], panel) : getPanelValue(&g_chart->rows[ri], panel, p));
                     if (val != NT_HOLD_B) continue;
                     if (ri == g_lastPerfectRow[p][panel]) continue;
 
                     int endRi = ri + 1;
                     while (endRi < (int)g_chart->rowCount) {
-                        uint8_t nv = getPanelValue(&g_chart->rows[endRi], panel, p);
+                        uint8_t nv = isHalfDouble ? getNoteHD(&g_chart->rows[endRi], panel) : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[endRi], panel) : getPanelValue(&g_chart->rows[endRi], panel, p));
                         if (nv != NT_HOLD_B) break;
                         endRi++;
                     }
 
-                    float y1 = (float)(receptorY + rh2 / 2 + (ri - scrollRow) * pixelsPerRow);
-                    float y2 = (float)(receptorY + rh2 / 2 + (endRi - scrollRow) * pixelsPerRow);
-                    if (y2 < y1) { float t = y1; y1 = y2; y2 = t; } // garantir Y1 < Y2 (Y-UP)
+                    float vri = (ri < g_visualRowCount && g_visualRow) ? (float)g_visualRow[ri] : (float)ri;
+                    float vendRi = (endRi < g_visualRowCount && g_visualRow) ? (float)g_visualRow[endRi] : (float)endRi;
+                    float y1 = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pixelsPerRow);
+                    float y2 = (float)(receptorY + rh2 / 2 + (vendRi - visualScrollRow) * pixelsPerRow);
+                    if (y2 < y1) { float t = y1; y1 = y2; y2 = t; }
                     float totalH = y2 - y1;
                     if (totalH <= 0) { ri = endRi - 1; continue; }
 
-                    int idx = g_fontArrowETC + kBodyTile[panel];
+                    int idx = g_fontArrowETC + (isHalfDouble ? kHDBodyTile[panel] : kBodyTile[arrowIdx]);
                     float sw = (float)g_game.sprTiles[idx].srcW;
-                    Sprite_DrawTileUV(idx, posX[panel] + sw / 2.0f + kBodyOffX[panel], y1 + totalH / 2.0f, sw, totalH, 1.0f);
+                    float offX = isHalfDouble ? kHDBodyOffX[panel] : kBodyOffX[arrowIdx];
+                    Sprite_DrawTileUV(idx, posX[panel] + sw / 2.0f + offX, y1 + totalH / 2.0f, sw, totalH, 1.0f);
                     ri = endRi - 1;
                 }
             }
@@ -1418,14 +1651,27 @@ void Gameplay_Render(void)
         for (int ri = startRow; ri <= endRow; ri++)
         {
             if (g_fontArrowETC < 0) break;
-            float y = (float)(receptorY + rh2 / 2 + (ri - scrollRow) * pixelsPerRow);
+                float vri = (ri < g_visualRowCount && g_visualRow) ? (float)g_visualRow[ri] : (float)ri;
+            float y = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pixelsPerRow);
             if (y < receptorY - rh2 / 2 - 50 || y > scrollBottom + PANEL_SIZE) continue;
-            for (int rio = 0; rio < 5; rio++)
+            for (int rio = 0; rio < panelCount; rio++)
             {
-                int panel = kPanelOrder[rio];
-                uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
+                int panel, arrowIdx;
+                if (isDoubleOrNightmare) {
+                    int halfBase = (rio < 5) ? 0 : 5;
+                    int localIdx = kPanelOrder[rio % 5];
+                    panel = halfBase + localIdx;
+                    arrowIdx = panel % 5;
+                } else if (isHalfDouble) {
+                    panel = rio;
+                    arrowIdx = panel;
+                } else {
+                    panel = kPanelOrder[rio];
+                    arrowIdx = panel;
+                }
+                uint8_t val = isHalfDouble ? getNoteHD(&g_chart->rows[ri], panel) : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[ri], panel) : getPanelValue(&g_chart->rows[ri], panel, p));
                 if (val != NT_HOLD_T) continue;
-                int idx = g_fontArrowETC + kTailTile[panel];
+                int idx = g_fontArrowETC + (isHalfDouble ? kHDTailTile[panel] : kTailTile[arrowIdx]);
                 float sw = (float)g_game.sprTiles[idx].srcW;
                 float sh = (float)g_game.sprTiles[idx].srcH;
                 Sprite_DrawTileUV(idx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
@@ -1434,50 +1680,46 @@ void Gameplay_Render(void)
         // Pass 2: Taps/HoldHeads
         for (int ri = startRow; ri <= endRow; ri++)
         {
-            float y = (float)(receptorY + rh2 / 2 + (ri - scrollRow) * pixelsPerRow);
+            float vri = (ri < g_visualRowCount && g_visualRow) ? (float)g_visualRow[ri] : (float)ri;
+            float y = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pixelsPerRow);
             if (y < receptorY - rh2 / 2 - 50 || y > scrollBottom + PANEL_SIZE) continue;
-            for (int rio = 0; rio < 5; rio++)
+            for (int rio = 0; rio < panelCount; rio++)
             {
-                int panel = kPanelOrder[rio];
-                uint8_t val = getPanelValue(&g_chart->rows[ri], panel, p);
+                int panel, arrowIdx;
+                if (isDoubleOrNightmare) {
+                    int halfBase = (rio < 5) ? 0 : 5;
+                    int localIdx = kPanelOrder[rio % 5];
+                    panel = halfBase + localIdx;
+                    arrowIdx = panel % 5;
+                } else if (isHalfDouble) {
+                    panel = rio;
+                    arrowIdx = panel;
+                } else {
+                    panel = kPanelOrder[rio];
+                    arrowIdx = panel;
+                }
+                uint8_t val = isHalfDouble ? getNoteHD(&g_chart->rows[ri], panel) : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[ri], panel) : getPanelValue(&g_chart->rows[ri], panel, p));
                 if (!val || val == NT_HOLD_B || val == NT_HOLD_T) continue;
 
-                if (panel == 0 && g_fontArrow542 >= 0) {
+                // HD: pos 0=CN(545), 1=UR(543), 2=DR(544), 3=DL(542), 4=UL(541), 5=CN(545)
+                int arrowGroup;
+                if (isHalfDouble) {
+                    arrowGroup = (panel == 0 || panel == 5) ? 2 : (panel == 1) ? 3 : (panel == 2) ? 4 : (panel == 3) ? 0 : 1;
+                } else {
+                    arrowGroup = arrowIdx;
+                }
+                int arrowSpr = (arrowGroup == 0) ? g_fontArrow542 :
+                               (arrowGroup == 1) ? g_fontArrow541 :
+                               (arrowGroup == 2) ? g_fontArrow545 :
+                               (arrowGroup == 3) ? g_fontArrow543 :
+                               (arrowGroup == 4) ? g_fontArrow544 : -1;
+                if (arrowSpr >= 0) {
                     int af = (g_game.frameCounter / 3) % 6;
-                    int aidx = g_fontArrow542 + af;
+                    int aidx = arrowSpr + af;
                     float sw = (float)g_game.sprTiles[aidx].srcW;
                     float sh = (float)g_game.sprTiles[aidx].srcH;
                     Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
                 }
-                else if (panel == 1 && g_fontArrow541 >= 0) {
-                    int af = (g_game.frameCounter / 3) % 6;
-                    int aidx = g_fontArrow541 + af;
-                    float sw = (float)g_game.sprTiles[aidx].srcW;
-                    float sh = (float)g_game.sprTiles[aidx].srcH;
-                    Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
-                }
-                else if (panel == 2 && g_fontArrow545 >= 0) {
-                    int af = (g_game.frameCounter / 3) % 6;
-                    int aidx = g_fontArrow545 + af;
-                    float sw = (float)g_game.sprTiles[aidx].srcW;
-                    float sh = (float)g_game.sprTiles[aidx].srcH;
-                    Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
-                }
-                else if (panel == 3 && g_fontArrow543 >= 0) {
-                    int af = (g_game.frameCounter / 3) % 6;
-                    int aidx = g_fontArrow543 + af;
-                    float sw = (float)g_game.sprTiles[aidx].srcW;
-                    float sh = (float)g_game.sprTiles[aidx].srcH;
-                    Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
-                }
-                else if (panel == 4 && g_fontArrow544 >= 0) {
-                    int af = (g_game.frameCounter / 3) % 6;
-                    int aidx = g_fontArrow544 + af;
-                    float sw = (float)g_game.sprTiles[aidx].srcW;
-                    float sh = (float)g_game.sprTiles[aidx].srcH;
-                    Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
-                }
-                // SPRs cobrem todos os tipos de nota
             }
         }
 
@@ -1532,6 +1774,11 @@ void Gameplay_Render(void)
             float sy = (float)g_game.sprTiles[stageSpr].srcY;
             float sw = (float)g_game.sprTiles[stageSpr].srcW;
             float sh = (float)g_game.sprTiles[stageSpr].srcH;
+            if (isHalfDouble && sprLifeBord >= 0) {
+                sx = (float)g_game.sprTiles[sprLifeBord].srcX - sw - 10.0f;
+            } else if (isDoubleOrNightmare && g_fontSprW04 >= 0) {
+                sx = (float)g_game.sprTiles[g_fontSprW04].srcX - sw - 10.0f;
+            }
             Sprite_DrawTileUV(stageSpr, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 1.0f);
         }
 
@@ -1668,24 +1915,76 @@ void Gameplay_Render(void)
         for (int i = 0; i < MAX_POPUPS; i++) {
             if (!g_popups[i].active || g_popups[i].player != p) continue;
             char buf[32];
-            int centerX = (p == 0) ? 160 : 480;
+            int popCenterX = isDoubleOrNightmare ? 320 : ((p == 0) ? 160 : 480);
             snprintf(buf, sizeof(buf), "+%d", g_popups[i].score);
-            Font_DrawStringCenteredScaled(centerX, (int)g_popups[i].y, buf, 1,1,0, g_popups[i].alpha, 1.2f);
+            Font_DrawStringCenteredScaled(popCenterX, (int)g_popups[i].y, buf, 1,1,0, g_popups[i].alpha, 1.2f);
             if (g_popups[i].combo > 1) {
                 snprintf(buf, sizeof(buf), "%d", g_popups[i].combo);
-                Font_DrawStringCenteredScaled(centerX, (int)g_popups[i].y - 16, buf, 1,1,1, g_popups[i].alpha * 0.7f, 0.8f);
+                Font_DrawStringCenteredScaled(popCenterX, (int)g_popups[i].y - 16, buf, 1,1,1, g_popups[i].alpha * 0.7f, 0.8f);
             }
         }
     }  // end for p
 
-    // Life bars (03/04/05) — renderizadas DEPOIS de todos os players, por cima de tudo
+    // Life bars (03/04/05 ou W03/W04/W05) — renderizadas DEPOIS de todos os players
+    if (isDoubleOrNightmare) {
+        // Double: W03-W05 com posicoes naturais do SPR (2 tiles cada, P1 e P2)
+        if (sprLifeBord >= 0) {
+            int cnt = sprTileCount(sprLifeBord);
+            for (int t = cnt - 1; t >= 0; t--) {
+                int idx = sprLifeBord + t;
+                float sx = (float)g_game.sprTiles[idx].srcX;
+                float sy = (float)g_game.sprTiles[idx].srcY;
+                float sw = (float)g_game.sprTiles[idx].srcW;
+                float sh = (float)g_game.sprTiles[idx].srcH;
+                Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 1.0f);
+            }
+        }
+        int sprFill = isDoubleOrNightmare ? g_fontSprW04 : g_fontSpr04;
+        if (sprFill >= 0) {
+            int cnt = sprTileCount(sprFill);
+            for (int t = cnt - 1; t >= 0; t--) {
+                int idx = sprFill + t;
+                SPRTileDef* tile = &g_game.sprTiles[idx];
+                float sx = (float)tile->srcX;
+                float sy = (float)tile->srcY;
+                float sw = (float)tile->srcW;
+                float sh = (float)tile->srcH;
+                if (tile->texId < 0) continue;
+                float lifePct = g_game.stats.life[0] / 100.0f;
+                int tw = Texture_GetWidth(tile->texId);
+                int th = Texture_GetHeight(tile->texId);
+                if (tw <= 0) tw = 256;
+                if (th <= 0) th = 256;
+                float u1 = (float)tile->u1 * (float)tw;
+                float v1 = (float)tile->v1 * (float)th;
+                float u2 = (float)tile->u2 * (float)tw;
+                float v2 = (float)tile->v2 * (float)th;
+                float cx = sx + sw / 2.0f;
+                float cw = sw * lifePct;
+                Texture_DrawUV(tile->texId, cx - cw / 2.0f, sy, cw, sh,
+                              u1, v1, u2, v2, 1.0f, 1.0f, 1.0f, 1.0f);
+            }
+        }
+        if (sprLifeGlow >= 0) {
+            if (g_game.stats.life[0] < 25.0f && (g_game.frameCounter % 6) < 3) {
+                for (int t = 0; t < sprTileCount(sprLifeGlow); t++) {
+                    int idx = sprLifeGlow + t;
+                    float sx = (float)g_game.sprTiles[idx].srcX;
+                    float sy = (float)g_game.sprTiles[idx].srcY;
+                    float sw = (float)g_game.sprTiles[idx].srcW;
+                    float sh = (float)g_game.sprTiles[idx].srcH;
+                    Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 0.8f);
+                }
+            }
+        }
+    } else {
     for (int p = 0; p < 1; p++) {
         // 03.SPR life bar border (g_fontSpr03)
-        if (g_fontSpr03 >= 0) {
+        if (sprLifeBord >= 0) {
             float px = (p == 0) ? 0.0f : 320.0f;
-            int cnt = sprTileCount(g_fontSpr03);
+            int cnt = sprTileCount(sprLifeBord);
             for (int t = cnt - 1; t >= 0; t--) {
-                int idx = g_fontSpr03 + t;
+                int idx = sprLifeBord + t;
                 float sx = px + (float)g_game.sprTiles[idx].srcX;
                 float sy = (float)g_game.sprTiles[idx].srcY;
                 float sw = (float)g_game.sprTiles[idx].srcW;
@@ -1696,12 +1995,16 @@ void Gameplay_Render(void)
         // 04.SPR life bar fill (g_fontSpr04)
         if (g_fontSpr04 >= 0) {
             float px = (p == 0) ? 0.0f : 320.0f;
+            float fillOffX = 0.0f;
+            if (isHalfDouble && g_fontSpr03 >= 0 && sprLifeBord >= 0) {
+                fillOffX = (float)(g_game.sprTiles[sprLifeBord].srcX - g_game.sprTiles[g_fontSpr03].srcX);
+            }
             float lifePct = g_game.stats.life[p] / 100.0f;
             int cnt = sprTileCount(g_fontSpr04);
             for (int t = cnt - 1; t >= 0; t--) {
                 int idx = g_fontSpr04 + t;
                 SPRTileDef* tile = &g_game.sprTiles[idx];
-                float sx = px + (float)tile->srcX - (p == 0 ? 2.0f : 0.0f);
+                float sx = px + fillOffX + (float)tile->srcX - (p == 0 ? 2.0f : 0.0f);
                 float sy = (float)tile->srcY;
                 float sw = (float)tile->srcW;
                 float sh = (float)tile->srcH;
@@ -1726,13 +2029,13 @@ void Gameplay_Render(void)
             }
         }
         // 05.SPR life bar glow (g_fontSpr05) — Ghidra: pisca em vida critica a cada 3 frames
-        if (g_fontSpr05 >= 0) {
+        if (sprLifeGlow >= 0) {
             float px = (p == 0) ? 0.0f : 320.0f;
             float lifePct = g_game.stats.life[p] / 100.0f;
             if (lifePct < 0.25f && (g_game.frameCounter % 6) < 3) {
-                int cnt = sprTileCount(g_fontSpr05);
+                int cnt = sprTileCount(sprLifeGlow);
                 for (int t = cnt - 1; t >= 0; t--) {
-                    int idx = g_fontSpr05 + t;
+                    int idx = sprLifeGlow + t;
                     float sx = px + (float)g_game.sprTiles[idx].srcX;
                     float sy = (float)g_game.sprTiles[idx].srcY;
                     float sw = (float)g_game.sprTiles[idx].srcW;
@@ -1742,24 +2045,42 @@ void Gameplay_Render(void)
             }
         }
         }  // end for p (life bars)
+    }
 
     // Explosao: seta congelada + ARROWF (depois de tudo, sobrepoe tudo)
-    for (int pe = 0; pe < 1; pe++) {
-        float expPosX[5];
+    float expPosX[10];
+    int expPanels = isHalfDouble ? 6 : (isDoubleOrNightmare ? 10 : 5);
+    if (isHalfDouble) {
+        for (int i = 0; i < 6; i++) expPosX[i] = 171.0f + i * 48.0f + (i >= 3 ? 7.0f : 0.0f);
+    } else if (isDoubleOrNightmare) {
+        for (int i = 0; i < 5; i++) expPosX[i] = 74.0f + i * 48.0f;
+        for (int i = 5; i < 10; i++) expPosX[i] = 323.0f + (i-5) * 48.0f;
+    } else {
         expPosX[0] = 38.0f;
-        expPosX[1] = expPosX[0] + 48.0f;
-        expPosX[2] = expPosX[1] + 48.0f;
-        expPosX[3] = expPosX[2] + 48.0f;
-        expPosX[4] = expPosX[3] + 48.0f;
+        for (int i = 1; i < 5; i++) expPosX[i] = expPosX[0] + i * 48.0f;
+    }
+    for (int pe = 0; pe < 1; pe++) {
         float erY = 38.0f + 28.0f;
-        static const float expOffX[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
-        for (int pan = 0; pan < 5; pan++) {
+        static const float expOffXReg[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
+        static const float expOffXHD[6]  = {-5.0f, -6.0f, -7.0f, -7.0f, -6.0f, -5.0f};
+        for (int pan = 0; pan < expPanels; pan++) {
             if (g_noteState[pe][pan] != 1) continue;
-            int base = (pan == 0) ? g_fontArrow542 :
-                       (pan == 1) ? g_fontArrow541 :
-                       (pan == 2) ? g_fontArrow545 :
-                       (pan == 3) ? g_fontArrow543 :
-                                     g_fontArrow544;
+            int base;
+            if (isHalfDouble) {
+                int arrow = (pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1;
+                base = (arrow == 0) ? g_fontArrow542 :
+                       (arrow == 1) ? g_fontArrow541 :
+                       (arrow == 2) ? g_fontArrow545 :
+                       (arrow == 3) ? g_fontArrow543 :
+                       (arrow == 4) ? g_fontArrow544 : -1;
+            } else {
+                int arrowIdx = isDoubleOrNightmare ? (pan % 5) : pan;
+                base = (arrowIdx == 0) ? g_fontArrow542 :
+                       (arrowIdx == 1) ? g_fontArrow541 :
+                       (arrowIdx == 2) ? g_fontArrow545 :
+                       (arrowIdx == 3) ? g_fontArrow543 :
+                                         g_fontArrow544;
+            }
             if (base < 0) continue;
             float ef = (float)g_noteExplodeFrame[pe][pan];
             float eAlpha = ef < 20.0f ? 1.0f : 1.0f - (ef - 19.0f) / 5.0f;
@@ -1771,13 +2092,21 @@ void Gameplay_Render(void)
             if (g_fontArrowF >= 0) {
                 int fCnt = sprTileCount(g_fontArrowF);
                 if (fCnt > 0) {
-                    int fIdx = pan < fCnt ? pan : 0;
+                    int fArrow;
+                    if (isHalfDouble) {
+                        fArrow = (pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1;
+                    } else if (isDoubleOrNightmare) {
+                        fArrow = pan % 5;
+                    } else {
+                        fArrow = pan;
+                    }
+                    int fIdx = fArrow < fCnt ? fArrow : 0;
                     int fSpr = g_fontArrowF + fIdx;
                     float fw = (float)g_game.sprTiles[fSpr].srcW;
                     float fh = (float)g_game.sprTiles[fSpr].srcH;
                     float esc = 0.8f + ef * 0.02f;
                     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                    Sprite_DrawTileUV(fSpr, expPosX[pan] + expOffX[pan] + fw / 2.0f, erY, fw * esc, fh * esc, eAlpha);
+                    Sprite_DrawTileUV(fSpr, expPosX[pan] + expOffXReg[fArrow] + fw / 2.0f, erY, fw * esc, fh * esc, eAlpha);
                     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 }
             }
@@ -1798,10 +2127,13 @@ void Gameplay_Render(void)
     */
 
     if (anyAutoPanel()) {
-        static const char* pn[5] = {"DL","UL","CN","UR","DR"};
         char buf[64] = {0}; int pos = 0;
-        for (int a = 0; a < 5; a++)
-            if (g_autoPanel[a]) pos += snprintf(buf+pos, sizeof(buf)-pos, "%s ", pn[a]);
+        int apAn = isDoubleOrNightmare ? 10 : (isHalfDouble ? 6 : 5);
+        for (int a = 0; a < apAn; a++)
+            if (g_autoPanel[a]) {
+                int l = snprintf(buf+pos, sizeof(buf)-pos, "%d ", a);
+                if (l > 0) pos += l;
+            }
         Font_DrawStringCentered(g_game.screenWidth/2, 28, buf, 0, 1, 0, 0.7f);
     }
 }

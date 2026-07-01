@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+void Log_Print(const char* fmt, ...);
+
 bool Step_LoadSong(const char* path, StepSong* song)
 {
     memset(song, 0, sizeof(StepSong));
@@ -206,13 +208,20 @@ bool Step_LoadSong(const char* path, StepSong* song)
                             if (sRowCount == 0) { free(splitDecomp); break; }
 
                             bool validBpm = (sBpm > 0.0f && sBpm < 2000.0f);
-                            bool validSplitVal = (sBpmS > 0 && sBpmS <= 256 && sBpmM > 0 && (sBpmM % sBpmS == 0));
+                            bool validSplitVal = (sBpmS > 0 && sBpmS <= 256 && sBpmM > 0);
                             bool validDelay = (sDelay >= 0 && sDelay < 10000);
                             bool validRowCount = (sRowCount > 0 && sRowCount < 50000);
                             bool validSplit = (validBpm && validSplitVal && validDelay && validRowCount);
-                            if (!validSplit) { free(splitDecomp); break; }
+                            if (!validSplit) {
+                                Log_Print("STX: split validation FAILED in section %d: BPM=%.1f bpmM=%d bpmS=%d delay=%d rows=%d (validBpm=%d validSplitVal=%d validDelay=%d validRowCount=%d)\n",
+                                    si, sBpm, sBpmM, sBpmS, sDelay, sRowCount, validBpm, validSplitVal, validDelay, validRowCount);
+                                free(splitDecomp); break;
+                            }
 
                             if (!chart->hasSplit) chart->hasSplit = true;
+
+                            Log_Print("STX: split in section %d: BPM=%.1f bpmM=%d bpmS=%d delay=%d rows=%d at gapOff=%u\n",
+                                si, sBpm, sBpmM, sBpmS, sDelay, sRowCount, gapOff);
 
                             int segIdx = chart->segmentCount;
                             bool added = (segIdx < 8);
@@ -225,6 +234,7 @@ bool Step_LoadSong(const char* path, StepSong* song)
                                 chart->segments[segIdx].rowStart = rowCount;
                                 chart->segments[segIdx].rowCount = sRowCount;
                                 chart->segmentCount++;
+                                Log_Print("STX: split added as segment %d (rowStart=%d)\n", segIdx, rowCount);
                             }
 
                             if (added) {
