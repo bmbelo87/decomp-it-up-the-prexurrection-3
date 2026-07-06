@@ -199,6 +199,8 @@ static JudgeType g_judgeDisplayType[2];
 static int g_judgeDisplayCombo[2];
 static int g_judgeFrame[2]; // frame counter 25->0 for judge animation
 static int g_hitTimer[2][MAX_PANELS]; // hit flash animation timer (p1)
+static int g_glowTimer[2][MAX_PANELS];    // glow aditivo: apenas PERFECT/GREAT
+static int g_p1FlashTimer[2][MAX_PANELS]; // tile p1: zoom+fade ao pressionar
 
 // Maquina de estados da nota
 static int g_noteState[2][MAX_PANELS]; // 0=normal, 1=exploding, 2=dead
@@ -678,6 +680,7 @@ static void processInput(int player)
         if (panel < 0) continue;
         if (!Input_IsPadHit(usePlayer, btn)) continue;
         g_hitTimer[player][panel] = 17;
+        g_p1FlashTimer[player][panel] = 15; // inicia zoom+fade do tile p1
 
         double bestDiff = 999;
         int bestRow = -1;
@@ -768,6 +771,7 @@ static void processInput(int player)
                                 g_noteState[player][pan] = 1;
                                 g_noteExplodeRow[player][pan] = bestRow;
                                 g_noteExplodeFrame[player][pan] = 0;
+                                g_glowTimer[player][pan] = 17; // glow aditivo P/G
                                 if (isHD) clearHDPanel(&g_chart->rows[bestRow], pan);
                                 else if (isDN) clearDNPanel(&g_chart->rows[bestRow], pan);
                                 else clearPanel(&g_chart->rows[bestRow], pan, player);
@@ -828,6 +832,7 @@ static void processInput(int player)
                     g_noteState[player][pan] = 1;
                     g_noteExplodeRow[player][pan] = bestRow;
                     g_noteExplodeFrame[player][pan] = 0;
+                    g_glowTimer[player][pan] = 17; // glow aditivo P/G
                     if (isHD) clearHDPanel(&g_chart->rows[bestRow], pan);
                     else if (isDN) clearDNPanel(&g_chart->rows[bestRow], pan);
                     else clearPanel(&g_chart->rows[bestRow], pan, player);
@@ -1176,6 +1181,8 @@ void Gameplay_Start(int songId)
     g_game.stats.missCombo[1] = 0;
     memset(g_judgeDisplayTimer, 0, sizeof(g_judgeDisplayTimer));
     memset(g_hitTimer, 0, sizeof(g_hitTimer));
+    memset(g_glowTimer, 0, sizeof(g_glowTimer));
+    memset(g_p1FlashTimer, 0, sizeof(g_p1FlashTimer));
     memset(g_noteState, 0, sizeof(g_noteState));
     memset(g_noteExplodeFrame, 0, sizeof(g_noteExplodeFrame));
     for (int p = 0; p < 2; p++)
@@ -1306,6 +1313,10 @@ void Gameplay_Update(float dt)
         for (int pan = 0; pan < MAX_PANELS; pan++) {
             if (g_hitTimer[p][pan] > 0)
                 g_hitTimer[p][pan]--;
+            if (g_glowTimer[p][pan] > 0)
+                g_glowTimer[p][pan]--;
+            if (g_p1FlashTimer[p][pan] > 0)
+                g_p1FlashTimer[p][pan]--;
             if (g_noteState[p][pan] == 1) { // EXPLODING
                 g_noteExplodeFrame[p][pan]++;
                 if (g_noteExplodeFrame[p][pan] >= 25)
@@ -1568,46 +1579,45 @@ void Gameplay_Render(void)
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         }
 
-        // Hit flash (p1 tile) nos receptores acertados
-        for (int pan = 0; pan < panelCount; pan++) {
-            int ht = g_hitTimer[p][pan];
-            int baseIdx;
-            int arrowType;
-            if (isHalfDouble) {
-                // HD: pan 0=CN, 1=UR, 2=DR, 3=DL, 4=UL, 5=CN
-                arrowType = (pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1;
-            } else if (isDoubleOrNightmare) {
-                arrowType = pan % 5;
-            } else {
-                arrowType = pan;
+        /* Tile "p1" do ARROW54X.SP2 — borda branca/cinza da seta.
+         * Original (Ghidra): ao pressionar o botão (borda de subida), aparece com
+         * zoom (1.3x→1.0x) e some. IsPadHit dispara g_p1FlashTimer. */
+        {
+            for (int pan = 0; pan < panelCount; pan++) {
+                int ft = g_p1FlashTimer[p][pan];
+                if (ft <= 0) continue;
+
+                int arrowType;
+                if (isHalfDouble) {
+                    arrowType = (pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1;
+                } else if (isDoubleOrNightmare) {
+                    arrowType = pan % 5;
+                } else {
+                    arrowType = pan;
+                }
+                int baseIdx = (arrowType == 0) ? g_fontArrow542 :
+                              (arrowType == 1) ? g_fontArrow541 :
+                              (arrowType == 2) ? g_fontArrow545 :
+                              (arrowType == 3) ? g_fontArrow543 :
+                              (arrowType == 4) ? g_fontArrow544 : -1;
+                if (baseIdx < 0) continue;
+                int p1Idx = baseIdx + 6;  /* tile "p1" = índice 6 no SP2 */
+                if (p1Idx >= g_game.sprTileCount) continue;
+                float sw = (float)g_game.sprTiles[p1Idx].srcW;
+                float sh = (float)g_game.sprTiles[p1Idx].srcH;
+                int p1Pan = isDoubleOrNightmare ? (pan % 5) : (isHalfDouble ? arrowType : pan);
+                static const float p1OffXReg[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
+                static const float p1OffXHD[5]  = {-5.0f, -6.0f, -7.0f, -6.0f, -5.0f};
+                const float* p1OffX = (isHalfDouble || isDoubleOrNightmare) ? p1OffXHD : p1OffXReg;
+
+                /* t: 1.0 no início → 0.0 no fim da animação */
+                float t = (float)ft / 15.0f;
+                float scale = 1.1f - 0.3f * t;  /* 0.8x → 1.1x (zoom out) */
+                float alpha = t;                  /* fade out */
+                float cx = posX[pan] + p1OffX[p1Pan] + sw / 2.0f;
+                float cy = (float)(receptorY + 28);
+                Sprite_DrawTileUV(p1Idx, cx, cy, sw * scale, sh * scale, alpha);
             }
-            baseIdx = (arrowType == 0) ? g_fontArrow542 :
-                      (arrowType == 1) ? g_fontArrow541 :
-                      (arrowType == 2) ? g_fontArrow545 :
-                      (arrowType == 3) ? g_fontArrow543 :
-                      (arrowType == 4) ? g_fontArrow544 : -1;
-            if (ht <= 0 || baseIdx < 0) continue;
-            int p1Idx = baseIdx + 6;
-            if (p1Idx >= g_game.sprTileCount) continue;
-            float sw = (float)g_game.sprTiles[p1Idx].srcW;
-            float sh = (float)g_game.sprTiles[p1Idx].srcH;
-            static const float p1OffXReg[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
-            static const float p1OffXHD[6]  = {-5.0f, -6.0f, -7.0f, -7.0f, -6.0f, -5.0f};
-            const float* p1OffX = isHalfDouble ? p1OffXHD : p1OffXReg;
-            int p1Pan = isDoubleOrNightmare ? (pan % 5) : pan;
-            float startScale = 54.0f / sw;
-            float sc, alpha;
-            if (ht > 2) {
-                float t = 1.0f - (float)(ht - 2) / 15.0f;
-                sc = startScale + (1.0f - startScale) * t;
-                alpha = 1.0f;
-            } else {
-                sc = 1.0f;
-                alpha = (float)ht / 2.0f;
-            }
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-            Sprite_DrawTileUV(p1Idx, posX[pan] + p1OffX[p1Pan] + sw / 2.0f, (float)(receptorY + 28), sw * sc, sh * sc, alpha);
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         }
 
         int rh = 57;
@@ -1875,47 +1885,63 @@ void Gameplay_Render(void)
             bool showCombo = false;
             if (jt == JT_MISS) {
                 comboVal = g_game.stats.missCombo[p];
-                showCombo = comboVal > 0;
+                showCombo = comboVal > 3;  /* Ghidra: "if (3 < count)" — exibe a partir de 4 */
             } else {
                 comboVal = g_game.stats.combo[p];
-                showCombo = comboVal > 1;
+                showCombo = comboVal > 3;  /* Ghidra: "if (3 < count)" — exibe a partir de 4 */
             }
 
             if (showCombo)
             {
-                // O combo herda o uniformScale + squeezeX (mas SEM o 0.8x do sprite interno)
+                /* Ghidra Judge_RenderAnim (0x40dd70) — layout fiel ao original:
+                 *
+                 * Dígitos do combo:
+                 *   glTranslatef(0, -70, 0) no espaço anim-scaled, depois Combo_RenderValue:
+                 *     glTranslatef(24, 0, 0) + glScalef(1.1) + glifos em (0,0)-(44,45)
+                 *   → dígito BOTTOM world Y = 240-70 = 170 → screen Y = centerY+70
+                 *   → dígito TOP world Y = 219.5 → screen Y = centerY+20.5
+                 *   → tens LEFT em local = X_player-20; spacing = 44px (= T(-40) dentro de S(1.1))
+                 *
+                 * Sprite COMBO_ (label "COMBO" em DEC00.TGA):
+                 *   Inner block: glPushMatrix + glScalef(0.8) + RenderSPRData(0x44606c)
+                 *   combo_ em ARROW542.SP2: srcX=-67 srcY=-105 srcW=126 srcH=42
+                 *   centro local Y-UP = (-4, -84); após 0.8x → screen (centerX-3, centerY+67)
+                 */
                 float comboScaleX = uniformScale * squeezeX;
                 float comboScaleY = uniformScale;
-                // O Y do combo tambem anima: original faz glTranslatef(0,-70,0) dentro do scaled space
-                float comboAnimY = (float)centerY + 70.0f * uniformScale;
 
-                float glyphW = 48.0f * comboScaleY;
-                float spacing = 44.0f * comboScaleX; // glTranslatef(-40) * scale(1.1) = 44px entre bordas esquerdas
+                /* Dígitos — Y: bottom = centerY+70*scale, top = centerY+20.5*scale */
+                float dy = (float)centerY + 70.0f * uniformScale - 49.5f * comboScaleY;
+                /* X: T(24)*S(1.1)*T(-40 per digit) → tens LEFT = X-20, spacing = 44px */
+                float spacing = 44.0f * comboScaleX;
+                float tensLeft = (float)centerX - 20.0f * comboScaleX;
+                float ux = tensLeft + spacing;   /* units LEFT = X+24 */
+                float hx = tensLeft - spacing;   /* hundreds LEFT = X-64 */
+
                 int d3 = comboVal % 10;
                 int d2 = (comboVal / 10) % 10;
                 int d1 = comboVal / 100;
-                // Tens centralizado, units/combo seguem o espacamento do original (edge-to-edge com 4px overlap)
-                float dy = (float)(centerY + 42) + 70.0f * (uniformScale - 1.0f);
-                dy -= 22.5f * 1.1f * comboScaleY; // correcao meia altura do glifo (45/2 * 1.1x)
-                float tensLeft = (float)centerX - glyphW / 2.0f;
-                float ux = tensLeft + spacing;
-                float hx = tensLeft - spacing;
-                float cr = (jt == JT_MISS) ? 1.0f : 1.0f;
+                float cr = 1.0f;
                 float cg = (jt == JT_MISS) ? 0.3f : 1.0f;
                 float cb = (jt == JT_MISS) ? 0.3f : 1.0f;
-                Font_DrawDecDigit(g_fontDec00Id, ux, dy, d3, spriteAlpha, comboScaleX, comboScaleY, cr, cg, cb);
+                Font_DrawDecDigit(g_fontDec00Id, ux,       dy, d3, spriteAlpha, comboScaleX, comboScaleY, cr, cg, cb);
                 Font_DrawDecDigit(g_fontDec00Id, tensLeft, dy, d2, spriteAlpha, comboScaleX, comboScaleY, cr, cg, cb);
-                Font_DrawDecDigit(g_fontDec00Id, hx, dy, d1, spriteAlpha, comboScaleX, comboScaleY, cr, cg, cb);
-                // "COMBO" sprite (tambem animado)
+                Font_DrawDecDigit(g_fontDec00Id, hx,       dy, d1, spriteAlpha, comboScaleX, comboScaleY, cr, cg, cb);
+
+                /* Sprite COMBO_ (label): inner 0.8x scale, srcX/srcY em local Y-UP
+                 * Centro: (srcX+srcW/2, srcY+srcH/2) = (-4, -84) → screen (centerX-3, centerY+67) */
                 if (g_fontArrow542 >= 0) {
                     int comboIdx = g_fontArrow542 + g_judgeSpriteIndices[5] + 1;
                     if (comboIdx < g_game.sprTileCount) {
-                        float sw = (float)g_game.sprTiles[comboIdx].srcW * comboScaleX * 0.8f;
-                        float sh = (float)g_game.sprTiles[comboIdx].srcH * comboScaleY * 0.8f;
-                        // Centro do TENS = centerX. 35px abaixo do centro do TENS em Y-DOWN
-                        float tensCenterY = dy + (49.5f * comboScaleY) * 0.5f;
-                        float comboY = tensCenterY + 35.0f;
-                        Sprite_DrawTileUV(comboIdx, (float)centerX, comboY, sw, sh, spriteAlpha * 0.7f);
+                        SPRTileDef* ct = &g_game.sprTiles[comboIdx];
+                        float sw = (float)ct->srcW * comboScaleX * 0.8f;
+                        float sh = (float)ct->srcH * comboScaleY * 0.8f;
+                        /* Posição calculada a partir do srcX/srcY do tile (local Y-UP, inner 0.8x): */
+                        float ctCX = (float)(ct->srcX + ct->srcW / 2);   /* centro local X ≈ -4 */
+                        float ctCY = (float)(ct->srcY + ct->srcH / 2);   /* centro local Y ≈ -84 (Y-UP) */
+                        float comboTextX = (float)centerX + ctCX * squeezeX * 0.8f * uniformScale;
+                        float comboTextY = (float)centerY - ctCY * 0.8f * uniformScale; /* Y-UP → screen Y-DOWN */
+                        Sprite_DrawTileUV(comboIdx, comboTextX, comboTextY, sw, sh, spriteAlpha);
                     }
                 }
             }
@@ -2119,6 +2145,38 @@ void Gameplay_Render(void)
                     Sprite_DrawTileUV(fSpr, expPosX[pan] + expOffXReg[fArrow] + fw / 2.0f, erY, fw * esc, fh * esc, eAlpha);
                     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 }
+            }
+        }
+    }
+
+    /* ARROWF.SPR — brilho circular aditivo em PERFECT/GREAT.
+     * Original: SPR_RenderP2Offset → arrowf.spr com GL_ONE quando timer ativo após hit. */
+    if (g_fontArrowF >= 0) {
+        int fCnt = sprTileCount(g_fontArrowF);
+        if (fCnt > 0) {
+            float erY = 38.0f + 28.0f;
+            int glowPanels = isHalfDouble ? 6 : (isDoubleOrNightmare ? 10 : 5);
+            for (int pan = 0; pan < glowPanels; pan++) {
+                int ht = g_glowTimer[0][pan];  /* P1: glow ativo apenas após PERFECT/GREAT */
+                if (ht <= 0) continue;
+                /* Alpha: pleno no início, fade nos últimos 4 frames */
+                float alpha2 = (ht <= 4) ? (float)ht / 4.0f : 1.0f;
+                int arrowType;
+                if (isHalfDouble) {
+                    arrowType = (pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1;
+                } else if (isDoubleOrNightmare) {
+                    arrowType = pan % 5;
+                } else {
+                    arrowType = pan;
+                }
+                int fIdx = arrowType < fCnt ? arrowType : 0;
+                int fSpr = g_fontArrowF + fIdx;
+                if (fSpr >= g_game.sprTileCount) continue;
+                float fw = (float)g_game.sprTiles[fSpr].srcW;
+                float fh = (float)g_game.sprTiles[fSpr].srcH;
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                Sprite_DrawTileUV(fSpr, expPosX[pan] + fw / 2.0f, erY, fw, fh, alpha2);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             }
         }
     }

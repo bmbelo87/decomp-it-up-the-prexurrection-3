@@ -69,13 +69,19 @@ static const int g_slotFrameOffset[7] = { -48, -32, -16, 0, +16, +32, +48 };
 // TODO: quando P2 estiver ativo, substituir HALFDOUBLE/DOUBLE/NIGHTMARE por BATTLE
 static const char* g_modeNames1P[6] = {"NORMAL","HARD","CRAZY","HALFDOUBLE","DOUBLE","NIGHTMARE"};
 static const int g_modeLayers1P[6] = {31, 32, 30, 27, 28, 8};
-static int g_modeDBIdx[6];   // indices correspondentes no SongDB
-static int g_modeTileIdx[6]; // indices dos primeiros tiles SPR de cada modo
+static int g_modeDBIdx[6];      // indices correspondentes no SongDB
+static int g_modeTileIdx[6];    // indices dos primeiros tiles SPR de cada modo
+static int g_modeSongIndex[6];  // última posição de música lembrada por modo
 
 static int g_selDispIdx = 0;          // indice de exibicao atual (0-5)
 static bool g_modeAnimActive = false;
 static int g_modeAnimFrame = 0;
 static int g_modeAnimDir = 0;         // +1=UR, -1=UL
+/* Modo e índice de música a usar na RENDERIZAÇÃO dos CDs.
+ * Atualizado imediatamente ao pressionar UR/UL, para os CDs
+ * já mostrarem o novo modo desde o início da animação dos boxes. */
+static int g_displayModeDBIdx = 0;
+static int g_displaySongIndex = 0;
 #define MODE_ANIM_DURATION 15
 #define MODE_LEFT_X   107.0f
 #define MODE_CENTER_X 315.0f
@@ -158,6 +164,10 @@ static void loadCdTextures(void) {
     g_cdLoaded = true;
 }
 
+void SongSelect_ResetCreditIndices(void) {
+    memset(g_modeSongIndex, 0, sizeof(g_modeSongIndex));
+}
+
 void SongSelect_Reset(void) {
     prevSongId = -1;
     previewState = 0;
@@ -165,6 +175,7 @@ void SongSelect_Reset(void) {
     g_game.selectedSongIndex = 0;
     g_game.songSelectHighlighted = 0;
     g_game.previewSongId = -1;
+    memset(g_modeSongIndex, 0, sizeof(g_modeSongIndex));
 
     // Inicializa indices dos modos no DB
     for (int m = 0; m < 6; m++) {
@@ -173,6 +184,8 @@ void SongSelect_Reset(void) {
     }
     g_selDispIdx = 0;
     g_game.selectedModeIndex = g_modeDBIdx[0];
+    g_displayModeDBIdx = g_modeDBIdx[0];
+    g_displaySongIndex = 0;
     g_modeAnimActive = false;
     g_modeAnimFrame = 0;
     g_modeAnimDir = 0;
@@ -211,6 +224,13 @@ void SongSelect_ResetIntro(void) {
     g_previewDelay = 0.0f;
     loadCdTextures();
     cacheModeTileIndices();
+    /* Resource_ClearBGA (chamado antes pelo Game_ChangeState) reseta g_fontArrow541.
+     * Recarregar 00.DAT para que os ícones de Command continuem aparecendo. */
+    if (g_fontArrow541 < 0) {
+        char datPath[MAX_PATH];
+        snprintf(datPath, sizeof(datPath), "%s\\BGA\\00.DAT", g_game.currentDirectory);
+        Resource_LoadFontAndArrows(datPath);
+    }
 }
 
 static void stopPreview(void) {
@@ -262,11 +282,21 @@ void Gamestate_UpdateSongSelect(float dt) {
     }
 
     if (Input_IsPadHit(0, PAD_UR)) {
-        /* Interrompe animação de modo em curso (comportamento original: sem delay) */
+        /* Interrompe animação de modo em curso: snap para destino e restaura índice */
         if (g_modeAnimActive) {
+            g_modeSongIndex[g_selDispIdx] = g_game.selectedSongIndex;
             g_selDispIdx = (g_selDispIdx + g_modeAnimDir + 6) % 6;
             g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
+            g_game.selectedSongIndex = g_modeSongIndex[g_selDispIdx];
             g_modeAnimActive = false;
+        }
+        /* Salva índice do modo atual antes de sair */
+        g_modeSongIndex[g_selDispIdx] = g_game.selectedSongIndex;
+        /* Atualiza vars de display imediatamente: CDs já mostram o modo destino */
+        {
+            int nextDispIdx = (g_selDispIdx + 1) % 6;
+            g_displayModeDBIdx = g_modeDBIdx[nextDispIdx];
+            g_displaySongIndex = g_modeSongIndex[nextDispIdx];
         }
         loadCdTextures();
         cacheModeTileIndices();
@@ -276,7 +306,6 @@ void Gamestate_UpdateSongSelect(float dt) {
         g_modeAnimActive = true;
         g_modeAnimFrame = 0;
         g_modeAnimDir = 1;
-        g_game.selectedSongIndex = 0;
         prevSongId = -1;
         g_songAnimCounter = 0;
         g_carrosselIntro = true;
@@ -287,11 +316,21 @@ void Gamestate_UpdateSongSelect(float dt) {
     }
 
     if (Input_IsPadHit(0, PAD_UL)) {
-        /* Interrompe animação de modo em curso (comportamento original: sem delay) */
+        /* Interrompe animação de modo em curso: snap para destino e restaura índice */
         if (g_modeAnimActive) {
+            g_modeSongIndex[g_selDispIdx] = g_game.selectedSongIndex;
             g_selDispIdx = (g_selDispIdx + g_modeAnimDir + 6) % 6;
             g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
+            g_game.selectedSongIndex = g_modeSongIndex[g_selDispIdx];
             g_modeAnimActive = false;
+        }
+        /* Salva índice do modo atual antes de sair */
+        g_modeSongIndex[g_selDispIdx] = g_game.selectedSongIndex;
+        /* Atualiza vars de display imediatamente: CDs já mostram o modo destino */
+        {
+            int nextDispIdx = (g_selDispIdx - 1 + 6) % 6;
+            g_displayModeDBIdx = g_modeDBIdx[nextDispIdx];
+            g_displaySongIndex = g_modeSongIndex[nextDispIdx];
         }
         loadCdTextures();
         cacheModeTileIndices();
@@ -301,7 +340,6 @@ void Gamestate_UpdateSongSelect(float dt) {
         g_modeAnimActive = true;
         g_modeAnimFrame = 0;
         g_modeAnimDir = -1;
-        g_game.selectedSongIndex = 0;
         prevSongId = -1;
         g_songAnimCounter = 0;
         g_carrosselIntro = true;
@@ -318,6 +356,15 @@ void Gamestate_UpdateSongSelect(float dt) {
             g_modeAnimActive = false;
             g_selDispIdx = (g_selDispIdx + g_modeAnimDir + 6) % 6;
             g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
+            /* Restaura última posição de música do modo destino */
+            g_game.selectedSongIndex = g_modeSongIndex[g_selDispIdx];
+            /* Sincroniza display vars (devem já estar iguais, mas por segurança) */
+            g_displayModeDBIdx = g_game.selectedModeIndex;
+            g_displaySongIndex = g_game.selectedSongIndex;
+            g_pendingMove = 0;
+            g_carrosselDir = 0;
+            g_carrosselFrame = 588;
+            g_carrosselTarget = 588;
         }
     }
 
@@ -459,7 +506,11 @@ void Gamestate_RenderSongSelect(void) {
     }
 
     SongDB* db = &g_game.songDB;
-    SongMode* mode = &db->modes[g_game.selectedModeIndex];
+    /* Durante animação de modo, usa vars de display (atualizadas imediatamente
+     * no press de UR/UL) para que os CDs já mostrem o modo destino. */
+    int renderModeIdx = g_modeAnimActive ? g_displayModeDBIdx : g_game.selectedModeIndex;
+    int renderSongIdx = g_modeAnimActive ? g_displaySongIndex : g_game.selectedSongIndex;
+    SongMode* mode = &db->modes[renderModeIdx];
     int songCount = mode->songCount;
     if (songCount == 0) return;
 
@@ -517,7 +568,7 @@ void Gamestate_RenderSongSelect(void) {
 
         float screenX = 320.0f + bx;
         int slotOffset = si - 3;
-        int idx = (g_game.selectedSongIndex + slotOffset + songCount) % songCount;
+        int idx = (renderSongIdx + slotOffset + songCount) % songCount;
         int sid = mode->songIds[idx];
         int si2 = Song_FindByID(db, sid);
 

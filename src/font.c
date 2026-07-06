@@ -264,6 +264,9 @@ void Font_DrawDecDigit(int texId, float x, float y, int digit, float alpha, floa
     float u1 = u0 + 0.171875f;
     float vTga = (float)row * 0.17578125f + 0.65625f;
     float vEnd = vTga + 0.17578125f;
+    /* Row 1 (dígitos 5-9): vEnd = 1.00781 > 1.0 → com GL_REPEAT mostra linha do topo da textura.
+     * GL_CLAMP_TO_EDGE em Texture_CreateGL é o fix primário, mas clampamos aqui também por segurança. */
+    if (vEnd > 1.0f) vEnd = 1.0f;
     Texture_Bind(texId);
     glEnable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);

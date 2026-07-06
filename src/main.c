@@ -220,6 +220,9 @@ void Game_Update(float dt) {
             return;
         }
 
+        /* ESC de qualquer tela de jogo reseta os ponteiros de música por modo */
+        SongSelect_ResetCreditIndices();
+
         if (s == STATE_GAMEPLAY || s == STATE_GAME_INIT) {
             Resource_ClearBGA();
             Game_ChangeState(STATE_MENU_ENTER);

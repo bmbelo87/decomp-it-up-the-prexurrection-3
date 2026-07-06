@@ -70,7 +70,8 @@ static int calcGrade(int perfect, int great, int good, int bad, int miss, int ma
     int total = perfect + great + good + bad + miss;
     if (total == 0) return 5;
     float w = (float)(perfect*10 + great*7 + good*5 + bad*2) / (float)(total*10);
-    if (w >= 0.95f) return 0;  // S
+    /* S exige w >= 95% E zero misses. Com qualquer MISS, cai para A. */
+    if (w >= 0.95f && miss == 0) return 0;  // S
     if (w >= 0.85f) return 1;  // A
     if (w >= 0.75f) return 2;  // B
     if (w >= 0.60f) return 3;  // C

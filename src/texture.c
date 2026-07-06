@@ -1,5 +1,10 @@
 #include "pumpy.h"
 #include <wincodec.h>
+
+/* GL_CLAMP_TO_EDGE é OpenGL 1.2; o gl.h do Windows cobre apenas 1.1. */
+#ifndef GL_CLAMP_TO_EDGE
+#define GL_CLAMP_TO_EDGE 0x812F
+#endif
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "ole32.lib")
 
@@ -105,6 +110,13 @@ static GLuint Texture_CreateGL(uint8_t* data, int width, int height) {
                  GL_UNSIGNED_BYTE, data);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    /* GL_CLAMP_TO_EDGE: previne UV wrap em sprites cujas coordenadas excedem [0,1] por alguns pixels.
+     * Exemplos confirmados via análise do ARROW542.SP2:
+     *   - combo_ sprite: u2=258/256=1.007 → sem clamp, mostra borda esquerda do MISS (wrap S)
+     *   - dec00 dígitos 5-9: vEnd=258/256=1.007 → sem clamp, mostra linha PERFECT no fundo (wrap T)
+     * Com GL_CLAMP_TO_EDGE, UV > 1.0 usa o pixel da borda (transparente nessas texturas). */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     return id;
 }
 

@@ -506,6 +506,7 @@ void Gamestate_RenderMenu(int bgaIndex, int frame);
 void Gamestate_RenderSongSelect(void);
 void SongSelect_Reset(void);
 void SongSelect_ResetIntro(void);
+void SongSelect_ResetCreditIndices(void);
 
 void Gameplay_Start(int songId);
 void Gameplay_Enter(void);
