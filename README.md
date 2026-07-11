@@ -2,11 +2,11 @@
 
 # PumpyReconstructed
 
-A faithful C reconstruction of **PUMPY.EXE**, the arcade executable for **Pump It Up: Premiere 3** (1999).
+A faithful C reconstruction of **PUMPY.EXE**, the arcade executable for **Pump It Up: PREX 3** (1999).
 
 This project reverse-engineers the original x86 binary and reproduces its gameplay, rendering, audio, and state machine as closely as possible — no emulation, no wrappers. Native Windows executable built with OpenGL and DirectSound.
 
-## Status — v0.8.4
+## Status — v0.8.5
 
 | Feature                                      | Status                  |
 | -------------------------------------------- | ----------------------- |

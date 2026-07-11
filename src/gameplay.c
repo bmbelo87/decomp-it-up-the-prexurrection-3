@@ -1517,7 +1517,26 @@ void Gameplay_Render(void)
     // Determine visible actual row range (uses actualScrollRow, which is in actual-row space)
     int startRow = (int)actualScrollRow - (int)(480 / pixelsPerRow) - 2;
     if (startRow < 0) startRow = 0;
-    int endRow = (int)actualScrollRow + (int)((scrollBottom - receptorY) / pixelsPerRow) + 4;
+
+    /* endRow: percorre g_visualRow para achar o ultimo actual row visivel na tela.
+     * Necessario porque quando beatSplit aumenta (ex: 4->8), cada actual row ocupa
+     * menos espaco visual — o calculo simples (480/pixelsPerRow) fica curto e as
+     * setas aparecem do nada em vez de surgir organicamente pelo fundo da tela. */
+    int endRow;
+    if (g_visualRow && g_visualRowCount > 0) {
+        float targetVisualEnd = (float)visualScrollRow
+            + (float)(scrollBottom + PANEL_SIZE - receptorY) / pixelsPerRow;
+        endRow = (int)actualScrollRow;
+        for (int _ri = (int)actualScrollRow; _ri < g_visualRowCount; _ri++) {
+            if ((float)g_visualRow[_ri] >= targetVisualEnd) {
+                endRow = _ri + 2;
+                break;
+            }
+            endRow = _ri;
+        }
+    } else {
+        endRow = (int)actualScrollRow + (int)((scrollBottom - receptorY) / pixelsPerRow) + 4;
+    }
     if (endRow >= (int)g_chart->rowCount) endRow = g_chart->rowCount - 1;
 
     // Compute judgment zone half-heights using current BPM-based scroll speed

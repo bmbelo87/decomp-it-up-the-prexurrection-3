@@ -276,8 +276,10 @@ void Gamestate_UpdateSongSelect(float dt) {
     {
         static const PadButton all5[] = {PAD_UL, PAD_UR, PAD_C, PAD_DL, PAD_DR};
         for (int _ci = 0; _ci < 5; _ci++) {
-            if (Input_IsPadHit(0, all5[_ci]))
-                Cmd_Push(all5[_ci]);
+            if (Input_IsPadHit(0, all5[_ci])) {
+                if (Cmd_Push(all5[_ci]))
+                    Audio_Play(g_waveSoundIds[SND_2_1], false);
+            }
         }
     }
 

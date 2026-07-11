@@ -17,9 +17,9 @@
 #include "song.h"
 #include "step.h"
 
-#define GAME_VERSION "0.8.4"
+#define GAME_VERSION "0.8.5"
 #define GAME_BUILD_DATE "Jul 11 2026"
-#define GAME_BUILD_TIME "16:20"
+#define GAME_BUILD_TIME "16:50"
 #define TARGET_FPS 60
 #define FRAME_TIME_MS (1000 / TARGET_FPS)
 
