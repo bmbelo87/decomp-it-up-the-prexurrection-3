@@ -13,6 +13,24 @@
 #define JUDGE_GOOD     0.165f
 #define JUDGE_BAD      0.220f
 
+/* ── Lifebar — valores exatos do GameInit (Ghidra) ───────────────────────
+ * DAT_00da2324 = 500    (vida inicial P1)
+ * _DAT_00da2328 = 500   (speed inicial, modo normal)
+ * DAT_00da2260 = 200    (speed mínimo)
+ * DAT_00da22c0 = 1000   (speed máximo)
+ * DAT_00da225c = -700   (penalidade de speed em MISS; /2 em BAD)
+ * Danger threshold: vida < 180 → barra vermelha
+ * Stage break: missCombo > 50 → game over imediato */
+#define LIFE_INITIAL        500
+#define LIFE_DANGER         90
+#define LIFE_SPEED_INIT     500
+#define LIFE_SPEED_MIN      200
+#define LIFE_SPEED_MAX      1000
+#define LIFE_SPEED_PENALTY  (-700)
+#define STAGE_BREAK_MISSES  50
+/* Escala visual: barra cheia = 252 pixels (original), mapeada como 252.0f */
+#define LIFE_FULL_DISPLAY   252.0f
+
 /* BASE_ROW_SPACING: no original, o espaçamento por row = 60.0 / beatSplit.
  * beatSplit=2 → 30 px/row; beatSplit=4 → 15 px/row.
  * Confirmado via Ghidra: fórmula original y = 376 - scrollSpeed*beatPos*(1/1000),
@@ -65,6 +83,42 @@ static bool g_autoplay;
 static bool g_autoPanel[10]; // per-panel autoplay: 0-4 P1, 5-9 P2
 static float g_scrollSpeedX; // current (interpolated) speed
 static float g_scrollSpeedTarget; // target speed from keypress
+
+/* Aplica variação de vida para o julgamento dado (fórmulas exatas do Ghidra). */
+static void applyLife(int player, JudgeType jt)
+{
+    int* life  = &g_game.stats.life[player];
+    int* speed = &g_game.stats.lifeSpeed[player];
+    switch (jt) {
+        case JT_PERFECT:
+            *life  += (*speed * 12) / 1000;
+            *speed += 20;
+            if (*speed > LIFE_SPEED_MAX) *speed = LIFE_SPEED_MAX;
+            break;
+        case JT_GREAT:
+            *life  += (*speed * 10) / 1000;
+            *speed += 16;
+            if (*speed > LIFE_SPEED_MAX) *speed = LIFE_SPEED_MAX;
+            break;
+        case JT_GOOD:
+            /* Sem mudança na vida — apenas quebra o missCombo */
+            break;
+        case JT_BAD:
+            *life  -= 50;
+            if (*life < 0) *life = 0;
+            *speed += LIFE_SPEED_PENALTY / 2;   /* -= 350 */
+            if (*speed < LIFE_SPEED_MIN) *speed = LIFE_SPEED_MIN;
+            break;
+        case JT_MISS:
+            *life   = (*life * 3) / 4 - 20;
+            if (*life < 0) *life = 0;
+            *speed += LIFE_SPEED_PENALTY;        /* -= 700 */
+            if (*speed < LIFE_SPEED_MIN) *speed = LIFE_SPEED_MIN;
+            break;
+        default:
+            break;
+    }
+}
 
 static double getSegmentSpr(int seg)
 {
@@ -573,6 +627,7 @@ if (sc > 0) popupCreate(player, sc, cb, 178.0f); // Y=80 (Ghidra) + 98 offset = 
             break;
         default: break;
     }
+    applyLife(player, jt);
     if (g_game.stats.combo[player] > g_game.stats.maxCombo[player])
         g_game.stats.maxCombo[player] = g_game.stats.combo[player];
 }
@@ -817,6 +872,7 @@ static void processInput(int player)
                             break;
                         default: break;
                     }
+                    applyLife(player, pjt);
                     if (g_game.stats.combo[player] > g_game.stats.maxCombo[player])
                         g_game.stats.maxCombo[player] = g_game.stats.combo[player];
                 }
@@ -878,6 +934,7 @@ static void processInput(int player)
                 break;
             default: break;
         }
+        applyLife(player, jt);
         if (g_game.stats.combo[player] > g_game.stats.maxCombo[player])
             g_game.stats.maxCombo[player] = g_game.stats.combo[player];
     }
@@ -1154,6 +1211,8 @@ static void processMisses(void)
             g_judgeFrame[p] = 25;
             g_judgeDisplayCombo[p] = g_game.stats.missCombo[p];
             for (int m = 0; m < missCount; m++)
+                applyLife(p, JT_MISS); /* penalidade por linha perdida */
+            for (int m = 0; m < missCount; m++)
             {
                 for (int pan = 0; pan < panCount; pan++)
                 {
@@ -1175,10 +1234,10 @@ static void processMisses(void)
 void Gameplay_Start(int songId)
 {
     memset(&g_game.stats, 0, sizeof(g_game.stats));
-    g_game.stats.life[0] = 100;
-    g_game.stats.life[1] = 100;
-    g_game.stats.missCombo[0] = 0;
-    g_game.stats.missCombo[1] = 0;
+    g_game.stats.life[0]      = 224; /* baseline visual: 11+2/3 de 26 retangulos ao inicio da musica. */
+    g_game.stats.life[1]      = 224;
+    g_game.stats.lifeSpeed[0] = LIFE_SPEED_INIT; /* 500 — GameInit easy: _DAT_00da2328 = 500 */
+    g_game.stats.lifeSpeed[1] = LIFE_SPEED_INIT;
     memset(g_judgeDisplayTimer, 0, sizeof(g_judgeDisplayTimer));
     memset(g_hitTimer, 0, sizeof(g_hitTimer));
     memset(g_glowTimer, 0, sizeof(g_glowTimer));
@@ -1303,6 +1362,14 @@ void Gameplay_Update(float dt)
     processAutoplay();
     processHolds();
     processMisses();
+
+    /* Stage Break: missCombo consecutivo > 50 → game over imediato (original) */
+    if (g_game.stats.missCombo[0] > STAGE_BREAK_MISSES) {
+        Log_Print("GP: stage break (missCombo=%d)\n", g_game.stats.missCombo[0]);
+        BGM_Stop();
+        Game_ChangeState(STATE_GAMEOVER_ENTER);
+        return;
+    }
 
     for (int p = 0; p < 2; p++)
     {
@@ -1963,84 +2030,213 @@ void Gameplay_Render(void)
 
     // Life bars (03/04/05 ou W03/W04/W05) — renderizadas DEPOIS de todos os players
     if (isDoubleOrNightmare) {
-        // Double: W03-W05 com posicoes naturais do SPR (2 tiles cada, P1 e P2)
+        /* DN lifebar: mesma lógica de pulse BPM + glow que single/halfdouble.
+         * W04 = única sprite de fill que cresce da ESQUERDA proporcional à vida.
+         * Ordem: fill → glow → border (igual single mode). */
+        int lifeValDN = g_game.stats.life[0]; /* DN cooperativo: usa vida de P1 */
+
+        /* BPM pulse — fórmula subtrativa original Ghidra (array 0x442758).
+         * displayF = clamp(life/LIFE_INITIAL - (1-bpmTiming)*0.05, 0, 1)
+         * bpmTiming cai de 1.0 (inicio do beat) a 0.0 (fim do beat).
+         * Com vida baixa o clamp em 0 evita que o pulse apareca — comportamento original. */
+        static const float bpmTimingArrDN[60] = {
+            1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f, /* 0-9  */
+            0.6f,0.6f,0.6f,0.6f,0.6f,0.6f,0.6f,0.6f,0.6f,0.6f, /* 10-19 */
+            0.3f,0.3f,0.3f,0.3f,0.3f,0.3f,0.3f,0.3f,0.3f,0.3f, /* 20-29 */
+            0.1f,0.1f,0.1f,0.1f,0.1f,0.1f,0.1f,0.1f,0.1f,0.1f, /* 30-39 */
+            0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f, /* 40-49 */
+            0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f  /* 50-59 */
+        };
+        float bpmTimingDN = 1.0f;
+        if (g_chart && g_songLoaded && (float)g_songTime > 0.1f) {
+            float curBpm = (float)g_chart->segments[0].bpm;
+            double acc = g_chartDelay;
+            for (int s = 0; s < g_chart->segmentCount; s++) {
+                double segDur = g_chart->segments[s].rowCount * getSegmentSpr(s) + getSegmentDelay(s);
+                if (g_songTime < acc + segDur || s == g_chart->segmentCount - 1) {
+                    curBpm = (float)g_chart->segments[s].bpm; break;
+                } acc += segDur;
+            }
+            if (curBpm > 0.0f) {
+                float beatPeriodSec    = 60.0f / curBpm;
+                float beatPeriodFrames = beatPeriodSec * 60.0f;
+                float frameInBeat      = fmodf((float)g_songTime * 60.0f, beatPeriodFrames);
+                int   beatIdx          = (int)(frameInBeat / beatPeriodFrames * 60.0f);
+                if (beatIdx < 0)  beatIdx = 0;
+                if (beatIdx > 59) beatIdx = 59;
+                bpmTimingDN = bpmTimingArrDN[beatIdx];
+            }
+        }
+        float displayFDN = (float)lifeValDN / (float)LIFE_INITIAL - (1.0f - bpmTimingDN) * 0.05f;
+        if (displayFDN < 0.0f) displayFDN = 0.0f;
+        if (displayFDN > 1.0f) displayFDN = 1.0f;
+
+        /* iVar5 para lifeIsFull — fórmula original (igual single/halfdouble) */
+        float scaledDN   = displayFDN * (-256.0f);
+        int roundedDN    = (int)(scaledDN > 0.0f ? scaledDN + 0.5f : scaledDN - 0.5f);
+        int roundAbsDN   = (roundedDN >= 0) ? roundedDN : -roundedDN;
+        int quotientDN   = roundAbsDN / 6;
+        int iVar5DN      = 253 - quotientDN * 6;
+        if (iVar5DN < 1) iVar5DN = 1;
+        bool lifeIsFullDN = (iVar5DN < 2);
+
+        /* W04: barra contínua formada por N tiles sequenciais.
+         * Tile 0 preenche primeiro; tile 1 só começa após tile 0 estar cheio (~50%).
+         * fillW = totalW * displayFDN pixels a preencher no total. */
+        if (g_fontSprW04 >= 0) {
+            int tileCnt = sprTileCount(g_fontSprW04);
+            /* Soma largura total dos tiles */
+            float totalW = 0.0f;
+            for (int t = 0; t < tileCnt; t++)
+                totalW += (float)g_game.sprTiles[g_fontSprW04 + t].srcW;
+            float fillW    = totalW * displayFDN; /* pixels totais a preencher */
+            float consumed = 0.0f;
+            for (int t = 0; t < tileCnt; t++) {
+                int idx = g_fontSprW04 + t;
+                SPRTileDef* tile = &g_game.sprTiles[idx];
+                float tileW = (float)tile->srcW;
+                float remaining = fillW - consumed;
+                if (remaining <= 0.0f) break;       /* tiles seguintes ficam ocultos */
+                if (tile->texId < 0) { consumed += tileW; continue; }
+                int tw = Texture_GetWidth(tile->texId);  if (tw <= 0) tw = 256;
+                int th = Texture_GetHeight(tile->texId); if (th <= 0) th = 256;
+                float u1 = tile->u1 * (float)tw;
+                float v1 = tile->v1 * (float)th;
+                float u2 = tile->u2 * (float)tw;
+                float v2 = tile->v2 * (float)th;
+                float w_draw = (remaining < tileW) ? remaining : tileW;
+                float frac   = w_draw / tileW;          /* 0-1 dentro deste tile */
+                float uRight = u1 + (u2 - u1) * frac;   /* UV proporcional */
+                Texture_DrawUV(tile->texId, (float)tile->srcX, (float)tile->srcY,
+                               w_draw, (float)tile->srcH,
+                               u1, v1, uRight, v2, 1.0f, 1.0f, 1.0f, 1.0f);
+                consumed += tileW;
+            }
+        }
+
+        /* W05 glow — mesma lógica que single/halfdouble */
+        if (sprLifeGlow >= 0) {
+            #define DRAW_GLOW_DN(R, G, B, A) do { \
+                int _cnt = sprTileCount(sprLifeGlow); \
+                for (int _t = 0; _t < _cnt; _t++) { \
+                    int _idx = sprLifeGlow + _t; \
+                    SPRTileDef* _gt = &g_game.sprTiles[_idx]; \
+                    if (_gt->texId < 0) continue; \
+                    int _tw = Texture_GetWidth(_gt->texId);  if (_tw <= 0) _tw = 256; \
+                    int _th = Texture_GetHeight(_gt->texId); if (_th <= 0) _th = 256; \
+                    Texture_DrawUV(_gt->texId, (float)_gt->srcX, (float)_gt->srcY, \
+                                   (float)_gt->srcW, (float)_gt->srcH, \
+                                   _gt->u1*(float)_tw, _gt->v1*(float)_th, \
+                                   _gt->u2*(float)_tw, _gt->v2*(float)_th, (R),(G),(B),(A)); \
+                } \
+            } while(0)
+            /* Branco: barra cheia → pisca a cada 3 frames */
+            if (lifeIsFullDN && (g_game.frameCounter % 3 == 0)) {
+                DRAW_GLOW_DN(1.0f, 1.0f, 1.0f, 0.9f);
+            }
+            /* Vermelho: vida em perigo → pisca a cada 2 frames */
+            if (lifeValDN < LIFE_DANGER && (g_game.frameCounter & 1) == 0) {
+                DRAW_GLOW_DN(1.0f, 0.0f, 0.0f, 0.8f);
+            }
+            #undef DRAW_GLOW_DN
+        }
+
+        /* W03 border — por último, sobrepõe fill e glow (igual single mode) */
         if (sprLifeBord >= 0) {
             int cnt = sprTileCount(sprLifeBord);
             for (int t = cnt - 1; t >= 0; t--) {
                 int idx = sprLifeBord + t;
-                float sx = (float)g_game.sprTiles[idx].srcX;
-                float sy = (float)g_game.sprTiles[idx].srcY;
-                float sw = (float)g_game.sprTiles[idx].srcW;
-                float sh = (float)g_game.sprTiles[idx].srcH;
-                Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 1.0f);
-            }
-        }
-        int sprFill = isDoubleOrNightmare ? g_fontSprW04 : g_fontSpr04;
-        if (sprFill >= 0) {
-            int cnt = sprTileCount(sprFill);
-            for (int t = cnt - 1; t >= 0; t--) {
-                int idx = sprFill + t;
-                SPRTileDef* tile = &g_game.sprTiles[idx];
-                float sx = (float)tile->srcX;
-                float sy = (float)tile->srcY;
-                float sw = (float)tile->srcW;
-                float sh = (float)tile->srcH;
-                if (tile->texId < 0) continue;
-                float lifePct = g_game.stats.life[0] / 100.0f;
-                int tw = Texture_GetWidth(tile->texId);
-                int th = Texture_GetHeight(tile->texId);
-                if (tw <= 0) tw = 256;
-                if (th <= 0) th = 256;
-                float u1 = (float)tile->u1 * (float)tw;
-                float v1 = (float)tile->v1 * (float)th;
-                float u2 = (float)tile->u2 * (float)tw;
-                float v2 = (float)tile->v2 * (float)th;
-                float cx = sx + sw / 2.0f;
-                float cw = sw * lifePct;
-                Texture_DrawUV(tile->texId, cx - cw / 2.0f, sy, cw, sh,
-                              u1, v1, u2, v2, 1.0f, 1.0f, 1.0f, 1.0f);
-            }
-        }
-        if (sprLifeGlow >= 0) {
-            if (g_game.stats.life[0] < 25.0f && (g_game.frameCounter % 6) < 3) {
-                for (int t = 0; t < sprTileCount(sprLifeGlow); t++) {
-                    int idx = sprLifeGlow + t;
-                    float sx = (float)g_game.sprTiles[idx].srcX;
-                    float sy = (float)g_game.sprTiles[idx].srcY;
-                    float sw = (float)g_game.sprTiles[idx].srcW;
-                    float sh = (float)g_game.sprTiles[idx].srcH;
-                    Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 0.8f);
-                }
+                SPRTileDef* bt = &g_game.sprTiles[idx];
+                float bsx = (float)bt->srcX;
+                float bsy = (float)bt->srcY;
+                float bsw = (float)bt->srcW;
+                float bsh = (float)bt->srcH;
+                Sprite_DrawTileUV(idx, bsx + bsw / 2.0f, bsy + bsh / 2.0f, bsw, bsh, 1.0f);
             }
         }
     } else {
     for (int p = 0; p < 1; p++) {
-        // 03.SPR life bar border (g_fontSpr03)
-        if (sprLifeBord >= 0) {
-            float px = (p == 0) ? 0.0f : 320.0f;
-            int cnt = sprTileCount(sprLifeBord);
-            for (int t = cnt - 1; t >= 0; t--) {
-                int idx = sprLifeBord + t;
-                float sx = px + (float)g_game.sprTiles[idx].srcX;
-                float sy = (float)g_game.sprTiles[idx].srcY;
-                float sw = (float)g_game.sprTiles[idx].srcW;
-                float sh = (float)g_game.sprTiles[idx].srcH;
-                Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 1.0f);
+        float px = (p == 0) ? 0.0f : 320.0f;
+
+        int lifeValP = g_game.stats.life[p];
+
+        /* Fórmula subtrativa original Ghidra (array 0x442758):
+         * displayF = clamp(life/LIFE_INITIAL - (1-bpmTiming)*0.05, 0, 1)
+         * bpmTiming cai de 1.0 (inicio do beat) a 0.0 (fim do beat).
+         * Com vida baixa o clamp em 0 impede que o pulse apareca — comportamento original. */
+        static const float bpmTimingArr[60] = {
+            1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f,1.0f, /* 0-9  */
+            0.6f,0.6f,0.6f,0.6f,0.6f,0.6f,0.6f,0.6f,0.6f,0.6f, /* 10-19 */
+            0.3f,0.3f,0.3f,0.3f,0.3f,0.3f,0.3f,0.3f,0.3f,0.3f, /* 20-29 */
+            0.1f,0.1f,0.1f,0.1f,0.1f,0.1f,0.1f,0.1f,0.1f,0.1f, /* 30-39 */
+            0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f, /* 40-49 */
+            0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f,0.0f  /* 50-59 */
+        };
+        float bpmTimingP = 1.0f;
+        if (g_chart && g_songLoaded && (float)g_songTime > 0.1f) {
+            float curBpm = (float)g_chart->segments[0].bpm;
+            double acc = g_chartDelay;
+            for (int s = 0; s < g_chart->segmentCount; s++) {
+                double segDur = g_chart->segments[s].rowCount * getSegmentSpr(s) + getSegmentDelay(s);
+                if (g_songTime < acc + segDur || s == g_chart->segmentCount - 1) {
+                    curBpm = (float)g_chart->segments[s].bpm;
+                    break;
+                }
+                acc += segDur;
+            }
+            if (curBpm > 0.0f) {
+                float beatPeriodSec    = 60.0f / curBpm;
+                float beatPeriodFrames = beatPeriodSec * 60.0f;
+                float frameInBeat      = fmodf((float)g_songTime * 60.0f, beatPeriodFrames);
+                int   beatIdx          = (int)(frameInBeat / beatPeriodFrames * 60.0f);
+                if (beatIdx < 0)  beatIdx = 0;
+                if (beatIdx > 59) beatIdx = 59;
+                bpmTimingP = bpmTimingArr[beatIdx];
             }
         }
-        // 04.SPR life bar fill (g_fontSpr04)
-        if (g_fontSpr04 >= 0) {
-            float px = (p == 0) ? 0.0f : 320.0f;
-            float fillOffX = 0.0f;
-            if (isHalfDouble && g_fontSpr03 >= 0 && sprLifeBord >= 0) {
-                fillOffX = (float)(g_game.sprTiles[sprLifeBord].srcX - g_game.sprTiles[g_fontSpr03].srcX);
+        float displayF = (float)lifeValP / (float)LIFE_INITIAL - (1.0f - bpmTimingP) * 0.05f;
+        if (displayF < 0.0f) displayF = 0.0f;
+        if (displayF > 1.0f) displayF = 1.0f;
+
+        float scaled = displayF * (-256.0f);
+        int rounded = (int)(scaled > 0.0f ? scaled + 0.5f : scaled - 0.5f);
+        int roundedAbs = (rounded >= 0) ? rounded : -rounded;
+        int quotient = roundedAbs / 6;
+        int iVar5 = 253 - quotient * 6;
+        if (iVar5 < 1) iVar5 = 1;
+
+        bool lifeIsFull = (iVar5 < 2);
+        float lifePct = (256.0f - (float)iVar5) / 255.0f;
+
+        /* Half-double: fill via ST02.png — HD04.SPR hipotetico:
+         * seg1: srcX=172 srcY=9 srcW=154 srcH=14  tex(0,144,154,158)
+         * seg2: srcX=325 srcY=9 srcW=145 srcH=14  tex(0,160,145,174)
+         * displayW proporcional a vida (0-299). Texture_DrawUV espera pixels. */
+        if (isHalfDouble && g_fontSpr04 >= 0 && g_fontSpr03 >= 0 && sprLifeBord >= 0) {
+            int texHd = g_game.sprTiles[sprLifeBord].texId;
+            if (texHd >= 0) {
+                int th = Texture_GetHeight(texHd); if (th <= 0) th = 256;
+                float fillOffX = (float)(g_game.sprTiles[sprLifeBord].srcX - g_game.sprTiles[g_fontSpr03].srcX);
+                float fillX = px + fillOffX + (float)g_game.sprTiles[g_fontSpr04].srcX - 2.0f;
+                float fillY = (float)g_game.sprTiles[g_fontSpr04].srcY;
+                int displayW = (int)(displayF * (154.0f + 145.0f) + 0.5f);
+                int seg1w = (displayW > 154) ? 154 : displayW;
+                if (seg1w > 0) {
+                    Texture_DrawUV(texHd, fillX, fillY, (float)seg1w, 14.0f,
+                        0, (float)(th - 1 - 158), (float)seg1w, (float)(th - 1 - 144), 1,1,1,1);
+                }
+                if (displayW > 154) {
+                    int seg2w = displayW - 154;
+                    Texture_DrawUV(texHd, fillX + 153.0f, fillY, (float)seg2w, 14.0f,
+                        0, (float)(th - 1 - 174), (float)seg2w, (float)(th - 1 - 160), 1,1,1,1);
+                }
             }
-            float lifePct = g_game.stats.life[p] / 100.0f;
+        } else if (g_fontSpr04 >= 0) {  /* 04.SPR fill — non-coop */
             int cnt = sprTileCount(g_fontSpr04);
             for (int t = cnt - 1; t >= 0; t--) {
                 int idx = g_fontSpr04 + t;
                 SPRTileDef* tile = &g_game.sprTiles[idx];
-                float sx = px + fillOffX + (float)tile->srcX - (p == 0 ? 2.0f : 0.0f);
+                float sx = px + (float)tile->srcX - (p == 0 ? 2.0f : 0.0f);
                 float sy = (float)tile->srcY;
                 float sw = (float)tile->srcW;
                 float sh = (float)tile->srcH;
@@ -2053,31 +2249,60 @@ void Gameplay_Render(void)
                 float v1 = (float)tile->v1 * (float)th;
                 float u2 = (float)tile->u2 * (float)tw;
                 float v2 = (float)tile->v2 * (float)th;
-                if (p == 0) {
-                    // Inverte horizontalmente no P1
-                    float tmp = u1; u1 = u2; u2 = tmp;
-                }
-                // Mantem centro fixo como Sprite_DrawTileUV faz
-                float cx = sx + sw / 2.0f;
-                float cw = sw * lifePct;
-                Texture_DrawUV(tile->texId, cx - cw / 2.0f, sy, cw, sh,
-                              u1, v1, u2, v2, 1.0f, 1.0f, 1.0f, 1.0f);
+                /* P1: ancora u1 (valor alto = u=1.0 do atlas) na DIREITA — ponta vermelha fica à direita.
+                 * Ghidra P1: right x=256 u=1.0 FIXO; left x=iVar5 u=iVar5/256 (crescente L→R).
+                 * Atlas armazena o sprite espelhado (u1>u2): u1=atlas-right=borda vermelha, u2=atlas-left.
+                 * Para display correto: uLeft de u2 até u1, crescente da esquerda para a direita. */
+                float x_draw = sx + sw * (1.0f - lifePct);
+                float w_draw = sw * lifePct;
+                float uLeft  = u2 + (u1 - u2) * (1.0f - lifePct);
+                if (w_draw <= 0.0f) continue;
+                Texture_DrawUV(tile->texId, x_draw, sy, w_draw, sh,
+                              uLeft, v1, u1, v2, 1.0f, 1.0f, 1.0f, 1.0f);
             }
         }
-        // 05.SPR life bar glow (g_fontSpr05) — Ghidra: pisca em vida critica a cada 3 frames
+        /* 05.SPR glow — Ghidra: MESMO sprite (0x9e0250) para BRANCO e VERMELHO.
+         * g_nP1Connected = frame counter simples (++no fim de GameplayUpdate).
+         * BRANCO: iVar5<2 (barra cheia) && g_nP1Connected%3==0 → a cada 3 frames, cor branca.
+         * VERMELHO: HP<0xb4=180 && (g_nP1Connected&1)==0 → a cada 2 frames, cor vermelha. */
         if (sprLifeGlow >= 0) {
-            float px = (p == 0) ? 0.0f : 320.0f;
-            float lifePct = g_game.stats.life[p] / 100.0f;
-            if (lifePct < 0.25f && (g_game.frameCounter % 6) < 3) {
-                int cnt = sprTileCount(sprLifeGlow);
-                for (int t = cnt - 1; t >= 0; t--) {
-                    int idx = sprLifeGlow + t;
-                    float sx = px + (float)g_game.sprTiles[idx].srcX;
-                    float sy = (float)g_game.sprTiles[idx].srcY;
-                    float sw = (float)g_game.sprTiles[idx].srcW;
-                    float sh = (float)g_game.sprTiles[idx].srcH;
-                    Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 0.8f);
-                }
+            /* Renderizar helper inline para não duplicar código */
+            #define DRAW_GLOW(R, G, B, A) do { \
+                int _cnt = sprTileCount(sprLifeGlow); \
+                for (int _t = _cnt - 1; _t >= 0; _t--) { \
+                    int _idx = sprLifeGlow + _t; \
+                    SPRTileDef* _gt = &g_game.sprTiles[_idx]; \
+                    if (_gt->texId < 0) continue; \
+                    int _tw = Texture_GetWidth(_gt->texId); if (_tw <= 0) _tw = 256; \
+                    int _th = Texture_GetHeight(_gt->texId); if (_th <= 0) _th = 256; \
+                    Texture_DrawUV(_gt->texId, px+(float)_gt->srcX, (float)_gt->srcY, \
+                                   (float)_gt->srcW, (float)_gt->srcH, \
+                                   _gt->u1*(float)_tw, _gt->v1*(float)_th, \
+                                   _gt->u2*(float)_tw, _gt->v2*(float)_th, (R),(G),(B),(A)); \
+                } \
+            } while(0)
+
+            /* Branco: vida cheia (lifePct≈1.0) → flash a cada 3 frames */
+            if (lifeIsFull && (g_game.frameCounter % 3 == 0)) {
+                DRAW_GLOW(1.0f, 1.0f, 1.0f, 0.9f);
+            }
+            /* Vermelho: vida em perigo (HP < LIFE_DANGER=180) → flash a cada 2 frames */
+            if (g_game.stats.life[p] < LIFE_DANGER && (g_game.frameCounter & 1) == 0) {
+                DRAW_GLOW(1.0f, 0.0f, 0.0f, 0.8f);
+            }
+            #undef DRAW_GLOW
+        }
+        /* 03.SPR border — renderizado por último, sobrepõe fill e glow */
+        if (sprLifeBord >= 0) {
+            int cnt = sprTileCount(sprLifeBord);
+            for (int t = cnt - 1; t >= 0; t--) {
+                int idx = sprLifeBord + t;
+                SPRTileDef* bt = &g_game.sprTiles[idx];
+                float bsx = px + (float)bt->srcX;
+                float bsy = (float)bt->srcY;
+                float bsw = (float)bt->srcW;
+                float bsh = (float)bt->srcH;
+                Sprite_DrawTileUV(idx, bsx + bsw / 2.0f, bsy + bsh / 2.0f, bsw, bsh, 1.0f);
             }
         }
         }  // end for p (life bars)

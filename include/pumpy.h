@@ -17,9 +17,9 @@
 #include "song.h"
 #include "step.h"
 
-#define GAME_VERSION "0.8.2"
-#define GAME_BUILD_DATE "Jul 01 2026"
-#define GAME_BUILD_TIME "19:05:00"
+#define GAME_VERSION "0.8.3"
+#define GAME_BUILD_DATE "Jul 11 2026"
+#define GAME_BUILD_TIME "15:36:59"
 #define TARGET_FPS 60
 #define FRAME_TIME_MS (1000 / TARGET_FPS)
 
@@ -227,6 +227,7 @@ typedef struct {
     int badCount[2];
     int missCount[2];
     int missCombo[2];
+    int lifeSpeed[2];  /* multiplicador de ganho de vida (200–1000) */
 } GameplayStats;
 
 typedef struct {
