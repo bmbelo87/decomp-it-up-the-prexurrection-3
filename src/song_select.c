@@ -641,7 +641,7 @@ void Gamestate_RenderSongSelect(void) {
         /* --- CD art (atrás, igual ao glPushMatrix inner do Ghidra) --- */
         if (slot->texId >= 0) {
             float cdScaleX, cdScaleY, cdOffX, cdOffY;
-            if (selectedState && slot->slotIndex == 3) {
+            if (selectedState && slot->slotIndex == 3 && !bgaIsAnimating) {
                 cdScaleX = 1.1f; cdScaleY = 1.1f; cdOffX = 0.0f; cdOffY = -10.0f;
             } else {
                 cdScaleX = 1.00f; cdScaleY = 0.95f; cdOffX = 0.0f; cdOffY = -1.0f;
