@@ -642,7 +642,7 @@ void Gamestate_RenderSongSelect(void) {
         if (slot->texId >= 0) {
             float cdScaleX, cdScaleY, cdOffX, cdOffY;
             if (selectedState && slot->slotIndex == 3 && !bgaIsAnimating) {
-                cdScaleX = 1.1f; cdScaleY = 1.1f; cdOffX = 0.0f; cdOffY = -10.0f;
+                cdScaleX = 1.1f; cdScaleY = 1.1f; cdOffX = 0.0f; cdOffY = -6.0f;
             } else {
                 cdScaleX = 1.00f; cdScaleY = 0.95f; cdOffX = 0.0f; cdOffY = -1.0f;
             }
@@ -656,7 +656,7 @@ void Gamestate_RenderSongSelect(void) {
             Texture_DrawUV(slot->texId,
                 slot->screenX - sw * 0.5f + cdOffX,
                 240.0f - sh * 0.5f - 10.0f + cdOffY,
-                sw, sh * 1.6f,
+                sw, sh * 1.575f,
                 u1, v1, u2, v2,
                 1.0f, 1.0f, 1.0f, slot->balpha);
         }
