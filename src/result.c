@@ -88,8 +88,8 @@ GameState Result_GetNextState(void) {
                        g_game.stats.goodCount[1], g_game.stats.badCount[1],
                        g_game.stats.missCount[1], (int)g_game.stats.maxCombo[1]);
 
-    // Só P1 (P2 desativado)
-    int grade = g1;
+    /* Grade efetivo: P2 sozinho usa g2; caso contrário P1 decide progressão */
+    int grade = (g_game.activePlayerMask == 0x2) ? g2 : g1;
 
     Log_Print("RESULT NEXT: grade=%d g1=%d g2=%d stageCount=%d bonusStage=%d isBonus=%d\n", grade, g1, g2, g_game.stageCount, g_game.bonusStage, g_game.isBonusSong);
 
@@ -203,15 +203,18 @@ void Result_Render(void) {
         g_lastSoundFrame = f;
     }
 
-    // Grade sound (5-1 + rank) quando a nota aparece no frame 0xd2
+    /* Grade sound (5-1 + rank) quando a nota aparece no frame 0xd2.
+     * Para P2 solo usa g_gradeP2; para 2P toca apenas o som do player efetivo
+     * (P1 decide, pois ambas as grades já estão visíveis na tela). */
     if (f >= 0xd2 && !g_gradeSoundPlayed) {
         g_gradeSoundPlayed = true;
+        int effectiveGrade = (g_game.activePlayerMask == 0x2) ? g_gradeP2 : g_gradeP1;
         Audio_Play(g_waveSoundIds[SND_5_1], false);
-        int rankSnd = SND_RANK_A;
-        if (g_gradeP1 == 0 || g_gradeP1 == 1) rankSnd = SND_RANK_A; // S ou A
-        else if (g_gradeP1 == 2) rankSnd = SND_RANK_B;
-        else if (g_gradeP1 == 3) rankSnd = SND_RANK_C;
-        else if (g_gradeP1 == 4) rankSnd = SND_RANK_D;
+        int rankSnd;
+        if (effectiveGrade <= 1) rankSnd = SND_RANK_A;        // S ou A
+        else if (effectiveGrade == 2) rankSnd = SND_RANK_B;
+        else if (effectiveGrade == 3) rankSnd = SND_RANK_C;
+        else if (effectiveGrade == 4) rankSnd = SND_RANK_D;
         else rankSnd = SND_RANK_F;
         Audio_Play(g_waveSoundIds[rankSnd], false);
     }
@@ -236,7 +239,12 @@ void Result_Render(void) {
     }
 
     if (drawNums) {
-        for (int p = 0; p < 1; p++) {
+        /* Itera apenas os players ativos.
+         * P1 (p=0): drawNumP1 no lado esquerdo (x=8).
+         * P2 (p=1): drawNumP2 no lado direito (rx=603). */
+        int pStart = (g_game.activePlayerMask == 0x2) ? 1 : 0;
+        int pEnd   = (g_game.activePlayerMask & 0x2)  ? 2 : 1;
+        for (int p = pStart; p < pEnd; p++) {
             int stats[7] = {
                 g_game.stats.perfectCount[p],
                 g_game.stats.greatCount[p],
@@ -250,7 +258,7 @@ void Result_Render(void) {
                 if (f < g_statDelay[i]) continue;
                 int elap = f - g_statDelay[i];
                 if (p == 0)
-                    drawNumP1(8, g_statY[i], stats[i], g_statDigits[i], elap, offP1);
+                    drawNumP1(8,   g_statY[i], stats[i], g_statDigits[i], elap, offP1);
                 else
                     drawNumP2(603, g_statY[i], stats[i], g_statDigits[i], elap, offP2);
             }
@@ -259,14 +267,26 @@ void Result_Render(void) {
 
     // Grade letter via BGA event layer: frames 211-416
     if (f > 0xd2 && f < 0x1a0) {
-        BGA_SetEventLayer(0, f + 0x348, 44 + g_gradeP1);
-        //BGA_SetEventLayer(0, f + 0x438, 44 + g_gradeP2);  // P2 desativado
+        if (g_game.activePlayerMask & 0x1)
+            BGA_SetEventLayer(0, f + 0x348, 44 + g_gradeP1);
+        if (g_game.activePlayerMask & 0x2)
+            BGA_SetEventLayer(0, f + 0x438, 44 + g_gradeP2);
     }
 
-    // CLEAR/FAIL
+    /* CLEAR/FAIL — P2 solo usa g_gradeP2; em 2P mostra resultado de cada player
+     * no mesmo layer (0x1d=CLEAR, 0x1b=FAIL). Para 2P, o CLEAR/FAIL visual
+     * do binário original usava apenas a tela de P1; mantemos a mesma layer. */
     if (f > 0x1a3) {
-        int clearFail = (g_gradeP1 < 5) ? 0x1d : 0x1b;
-        int cfOff = clearFail == 0x1d ? 0xc1 : 0x175;
+        int activeGrade;
+        if (g_game.activePlayerMask == 0x2)
+            activeGrade = g_gradeP2;          // P2 solo
+        else if (g_game.activePlayerMask == 0x3)
+            activeGrade = (g_gradeP1 < g_gradeP2) ? g_gradeP1 : g_gradeP2; // 2P: melhor nota decide
+        else
+            activeGrade = g_gradeP1;          // P1 solo (padrão)
+
+        int clearFail = (activeGrade < 5) ? 0x1d : 0x1b;
+        int cfOff     = (clearFail == 0x1d) ? 0xc1 : 0x175;
         BGA_SetEventLayer(0, f + cfOff, clearFail);
     }
 

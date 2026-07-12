@@ -2,49 +2,157 @@
 #include <string.h>
 
 /* ── Command detection ──────────────────────────────────────────────────────
- * Sequência confirmada no Ghidra (FUN_00407390 / DAT_00442378):
- *   Byte pattern: 08 10 08 10 04 — no original, UL=0x08, UR=0x10, CN=0x04.
- *   Traduzido para os nossos enum values: UL UR UL UR CN.
- * Cada detecção avança para o próximo estado:
- *   x1 → x2 → x3 → x4 → RV → x1
+ * Buffer5 (5-botões): velocidade e Vanish/NonStep
+ *   Speed:   UL UR UL UR CN → x1→x2→x3→x4→RV→x1
+ *   Vanish:  UL UR DL DR CN → Vanish→NonStep→OFF
+ *
+ * Buffer9 (9-botões): cheats longos
+ *   Random Velocity: UL UR UL UR UL UR UL UR CN
+ *   Mirror:          DR DL UR UL DR DL UR UL CN
+ *   Random Step:     UL UR UL UR DL DR DL DR CN
+ *   Freedom:         UL DL UR DR DR UL UR DL CN  (só som, sem ícone)
+ *   Earthworm:       DR DL UR UL DR UR DL UL CN  (só som, sem ícone)
+ *
+ * Buffer6 (simultâneo): DL+DR × 3 = Reset todos os cheats do player
  */
-#define CMD_BUF_LEN 5
-static PadButton g_cmdBuf[CMD_BUF_LEN];
-static int       g_cmdBufCount = 0;
-static int       g_cmdSpeedIdx = 0; /* índice atual na tabela abaixo */
+#define CMD_BUF_LEN  5
+#define CMD_BUF9_LEN 9
 
+static PadButton g_cmdBuf[2][CMD_BUF_LEN];
+static int       g_cmdBufCount[2]  = {0, 0};
+static int       g_cmdSpeedIdx[2]  = {0, 0};
+
+static PadButton g_cmdBuf9[2][CMD_BUF9_LEN];
+static int       g_cmdBuf9Count[2] = {0, 0};
+
+static int       g_cmdBuf6Count[2] = {0, 0}; /* pares DL+DR detectados por player */
+static int       g_cmdBuf6State[2] = {0, 0}; /* 0=idle, 1=DL recebido aguardando DR */
+
+/* Buffer5 sequências */
 static const PadButton k_speedSeq[CMD_BUF_LEN] = {
     PAD_UL, PAD_UR, PAD_UL, PAD_UR, PAD_C
 };
-/* Ciclo original do Prex3: x1→x2→x3→x4→RV→x1
- * RV usa cmdSpeedMult=1 (velocidade normal) mas inverte a direção das setas. */
-#define CMD_SPEED_COUNT 5
-static const int  k_speedMult[] = {1, 2, 3, 4, 1};   /* multiplicadores (RV=1) */
-static const bool k_speedRV[]   = {false, false, false, false, true}; /* RV flag */
+static const PadButton k_vanishSeq[CMD_BUF_LEN] = {
+    PAD_UL, PAD_UR, PAD_DL, PAD_DR, PAD_C
+};
 
-/* Empurra um botão no buffer circular e verifica a sequência de velocidade.
- * Retorna true se a sequência foi completada e o speed foi avançado. */
-static bool Cmd_Push(PadButton btn) {
-    if (g_cmdBufCount < CMD_BUF_LEN) {
-        g_cmdBuf[g_cmdBufCount++] = btn;
+/* Buffer9 sequências [0=RV, 1=Mirror, 2=RandomStep, 3=Freedom, 4=Earthworm] */
+static const PadButton k_seq9[5][CMD_BUF9_LEN] = {
+    { PAD_UL, PAD_UR, PAD_UL, PAD_UR, PAD_UL, PAD_UR, PAD_UL, PAD_UR, PAD_C }, /* Random Velocity */
+    { PAD_DR, PAD_DL, PAD_UR, PAD_UL, PAD_DR, PAD_DL, PAD_UR, PAD_UL, PAD_C }, /* Mirror          */
+    { PAD_UL, PAD_UR, PAD_UL, PAD_UR, PAD_DL, PAD_DR, PAD_DL, PAD_DR, PAD_C }, /* Random Step     */
+    { PAD_UL, PAD_DL, PAD_UR, PAD_DR, PAD_DR, PAD_UL, PAD_UR, PAD_DL, PAD_C }, /* Freedom         */
+    { PAD_DR, PAD_DL, PAD_UR, PAD_UL, PAD_DR, PAD_UR, PAD_DL, PAD_UL, PAD_C }, /* Earthworm       */
+};
+
+/* Ciclo de velocidade: x1→x2→x3→x4→RV→x1 */
+#define CMD_SPEED_COUNT 5
+static const int  k_speedMult[] = {1, 2, 3, 4, 1};
+static const bool k_speedRV[]   = {false, false, false, false, true};
+
+/* Reseta todos os cheats de um player (Buffer6 trigger) */
+static void Cmd_ResetAllCheats(int player) {
+    g_game.cmdSpeedMult[player]      = 1;
+    g_game.cmdSpeedRV[player]        = false;
+    g_game.cmdMirror[player]         = false;
+    g_game.cmdRandomStep[player]     = false;
+    g_game.cmdRandomVelocity[player] = false;
+    g_game.cmdVanish[player]         = false;
+    g_game.cmdNonStep[player]        = false;
+    g_cmdSpeedIdx[player]            = 0;
+    g_cmdBufCount[player]            = 0;
+    g_cmdBuf9Count[player]           = 0;
+    g_cmdBuf6Count[player]           = 0;
+    g_cmdBuf6State[player]           = 0;
+    Log_Print("CMD P%d: RESET todos os cheats\n", player + 1);
+    Audio_Play(g_waveSoundIds[SND_2_1], false);
+}
+
+/* Empurra um botão nos buffers do player e verifica todas as sequências.
+ * Retorna true se algum cheat foi detectado (para tocar o som de confirmação). */
+static bool Cmd_Push(int player, PadButton btn) {
+    bool cheatFired = false;
+
+    /* ── Buffer5: velocidade + Vanish/NonStep ─────────────────────────── */
+    if (g_cmdBufCount[player] < CMD_BUF_LEN) {
+        g_cmdBuf[player][g_cmdBufCount[player]++] = btn;
     } else {
-        memmove(g_cmdBuf, g_cmdBuf + 1, (CMD_BUF_LEN - 1) * sizeof(PadButton));
-        g_cmdBuf[CMD_BUF_LEN - 1] = btn;
+        memmove(g_cmdBuf[player], g_cmdBuf[player] + 1, (CMD_BUF_LEN - 1) * sizeof(PadButton));
+        g_cmdBuf[player][CMD_BUF_LEN - 1] = btn;
     }
-    if (g_cmdBufCount >= CMD_BUF_LEN &&
-        memcmp(g_cmdBuf, k_speedSeq, CMD_BUF_LEN * sizeof(PadButton)) == 0)
-    {
-        g_cmdBufCount = 0; /* reset buffer para evitar dupla detecção */
-        g_cmdSpeedIdx = (g_cmdSpeedIdx + 1) % CMD_SPEED_COUNT;
-        g_game.cmdSpeedMult = k_speedMult[g_cmdSpeedIdx];
-        g_game.cmdSpeedRV   = k_speedRV[g_cmdSpeedIdx];
-        Log_Print("CMD: Speed -> x%d%s (idx=%d)\n",
-                  g_game.cmdSpeedMult,
-                  g_game.cmdSpeedRV ? " RV" : "",
-                  g_cmdSpeedIdx);
-        return true;
+    if (g_cmdBufCount[player] >= CMD_BUF_LEN) {
+        if (memcmp(g_cmdBuf[player], k_speedSeq, CMD_BUF_LEN * sizeof(PadButton)) == 0) {
+            g_cmdBufCount[player]  = 0;
+            g_cmdBuf9Count[player] = 0;
+            g_cmdSpeedIdx[player]  = (g_cmdSpeedIdx[player] + 1) % CMD_SPEED_COUNT;
+            g_game.cmdSpeedMult[player] = k_speedMult[g_cmdSpeedIdx[player]];
+            g_game.cmdSpeedRV[player]   = k_speedRV[g_cmdSpeedIdx[player]];
+            Log_Print("CMD P%d: Speed -> x%d%s (idx=%d)\n",
+                      player + 1, g_game.cmdSpeedMult[player],
+                      g_game.cmdSpeedRV[player] ? " RV" : "",
+                      g_cmdSpeedIdx[player]);
+            cheatFired = true;
+        } else if (memcmp(g_cmdBuf[player], k_vanishSeq, CMD_BUF_LEN * sizeof(PadButton)) == 0) {
+            g_cmdBufCount[player]  = 0;
+            g_cmdBuf9Count[player] = 0;
+            if (!g_game.cmdVanish[player]) {
+                g_game.cmdVanish[player]   = true;
+                g_game.cmdNonStep[player]  = false;
+                Log_Print("CMD P%d: Vanish ON\n", player + 1);
+            } else if (!g_game.cmdNonStep[player]) {
+                g_game.cmdNonStep[player]  = true;
+                Log_Print("CMD P%d: NonStep ON (Vanish+NonStep)\n", player + 1);
+            } else {
+                g_game.cmdVanish[player]   = false;
+                g_game.cmdNonStep[player]  = false;
+                Log_Print("CMD P%d: Vanish/NonStep OFF\n", player + 1);
+            }
+            cheatFired = true;
+        }
     }
-    return false;
+
+    /* ── Buffer9: cheats de 9 botões ─────────────────────────────────── */
+    if (g_cmdBuf9Count[player] < CMD_BUF9_LEN) {
+        g_cmdBuf9[player][g_cmdBuf9Count[player]++] = btn;
+    } else {
+        memmove(g_cmdBuf9[player], g_cmdBuf9[player] + 1, (CMD_BUF9_LEN - 1) * sizeof(PadButton));
+        g_cmdBuf9[player][CMD_BUF9_LEN - 1] = btn;
+    }
+    if (g_cmdBuf9Count[player] >= CMD_BUF9_LEN) {
+        for (int seq = 0; seq < 5; seq++) {
+            if (memcmp(g_cmdBuf9[player], k_seq9[seq], CMD_BUF9_LEN * sizeof(PadButton)) == 0) {
+                g_cmdBuf9Count[player] = 0;
+                g_cmdBufCount[player]  = 0;
+                switch (seq) {
+                case 0: /* Random Velocity */
+                    g_game.cmdRandomVelocity[player] = !g_game.cmdRandomVelocity[player];
+                    Log_Print("CMD P%d: RandomVelocity %s\n", player+1,
+                              g_game.cmdRandomVelocity[player] ? "ON" : "OFF");
+                    break;
+                case 1: /* Mirror */
+                    g_game.cmdMirror[player] = !g_game.cmdMirror[player];
+                    Log_Print("CMD P%d: Mirror %s\n", player+1,
+                              g_game.cmdMirror[player] ? "ON" : "OFF");
+                    break;
+                case 2: /* Random Step */
+                    g_game.cmdRandomStep[player] = !g_game.cmdRandomStep[player];
+                    Log_Print("CMD P%d: RandomStep %s\n", player+1,
+                              g_game.cmdRandomStep[player] ? "ON" : "OFF");
+                    break;
+                case 3: /* Freedom — só som, sem ícone */
+                    Log_Print("CMD P%d: Freedom ativado\n", player+1);
+                    break;
+                case 4: /* Earthworm — só som, sem ícone */
+                    Log_Print("CMD P%d: Earthworm ativado\n", player+1);
+                    break;
+                }
+                cheatFired = true;
+                break;
+            }
+        }
+    }
+
+    return cheatFired;
 }
 
 static int prevSongId = -1;
@@ -66,12 +174,22 @@ static float g_previewDelay = 0.0f;
 static const int g_slotFrameOffset[7] = { -48, -32, -16, 0, +16, +32, +48 };
 
 // Modos 1 jogador: NORMAL(0), HARD(1), CRAZY(2), HALFDOUBLE(3), DOUBLE(4), NIGHTMARE(5)
-// TODO: quando P2 estiver ativo, substituir HALFDOUBLE/DOUBLE/NIGHTMARE por BATTLE
+// Modos 2 jogadores (P1+P2 juntos): NORMAL(0), HARD(1), CRAZY(2), BATTLE(3)
+// BATTLE usa steps HARD e só aparece quando activePlayerMask == 0x3 (ambos ativos)
 static const char* g_modeNames1P[6] = {"NORMAL","HARD","CRAZY","HALFDOUBLE","DOUBLE","NIGHTMARE"};
-static const int g_modeLayers1P[6] = {31, 32, 30, 27, 28, 8};
-static int g_modeDBIdx[6];      // indices correspondentes no SongDB
-static int g_modeTileIdx[6];    // indices dos primeiros tiles SPR de cada modo
-static int g_modeSongIndex[6];  // última posição de música lembrada por modo
+static const int   g_modeLayers1P[6] = {31, 32, 30, 27, 28, 8};
+static const char* g_modeNames2P[4] = {"NORMAL","HARD","CRAZY","BATTLE"};
+static const int   g_modeLayers2P[4] = {31, 32, 30, -1}; /* -1=BATTLE: layer buscado por nome */
+
+/* Array dinâmico de layer indices — preenchido por rebuildModeList().
+ * Para BATTLE, o layer do BATTLE.SPR é descoberto pelo nome no BGAPicture. */
+static int g_modeLayersDyn[6];
+
+static int g_modeCount = 6;    // número de modos ativos (6 em 1P/P2-solo, 4 em P1+P2)
+static int g_modeDBIdx[6];     // indices correspondentes no SongDB
+static int g_modeTileIdx[6];   // indices dos primeiros tiles SPR de cada modo
+static int g_modeSongIndex[6]; // última posição de música lembrada por modo
+static bool g_isBattleMode = false; // true quando slot selecionado é BATTLE (P1+P2)
 
 static int g_selDispIdx = 0;          // indice de exibicao atual (0-5)
 static bool g_modeAnimActive = false;
@@ -140,14 +258,69 @@ static int findCdForSong(int songId, int* outHalf) {
 static void cacheModeTileIndices(void) {
     if (g_game.bgaPicCount <= 0) return;
     BGAPicture* pic = &g_game.bgaPics[0];
-    for (int m = 0; m < 6; m++) {
-        int layer = g_modeLayers1P[m];
+    for (int m = 0; m < g_modeCount; m++) {
+        int layer = g_modeLayersDyn[m];
         if (layer >= 0 && layer < pic->layerCount) {
             g_modeTileIdx[m] = pic->layers[layer].sprTileStart;
         } else {
             g_modeTileIdx[m] = -1;
         }
     }
+}
+
+/* Encontra o índice de layer de um SPR pelo nome (busca substring, case-insensitive não
+ * disponível em C puro — usa strstr; nomes no BGA são uppercase). Retorna -1 se não achar. */
+static int findLayerByName(const char* keyword) {
+    if (g_game.bgaPicCount <= 0) return -1;
+    BGAPicture* pic = &g_game.bgaPics[0];
+    for (int li = 0; li < pic->layerCount; li++) {
+        if (strstr(pic->layers[li].filename, keyword))
+            return li;
+    }
+    return -1;
+}
+
+/* Reconstrói a lista de modos disponíveis de acordo com activePlayerMask.
+ * BATTLE aparece apenas quando P1+P2 estão ambos ativos (mask == 0x3).
+ * P2 sozinho (0x2) ou P1 sozinho (0x1) = 6 modos normais. */
+static void rebuildModeList(void) {
+    SongDB* db = &g_game.songDB;
+    if (g_game.activePlayerMask == 0x3) {
+        /* P1 + P2 juntos: 4 modos. BATTLE usa steps HARD */
+        g_modeCount = 4;
+        for (int m = 0; m < 4; m++) {
+            const char* dbName = (m == 3) ? "HARD" : g_modeNames2P[m];
+            g_modeDBIdx[m] = Song_FindMode(db, dbName);
+            if (g_modeDBIdx[m] < 0) g_modeDBIdx[m] = 0;
+            /* Layer dinâmico: BATTLE busca BATTLE.SPR pelo nome */
+            if (m == 3) {
+                int bl = findLayerByName("battle"); /* bga.c converte filenames para minúsculo */
+                g_modeLayersDyn[m] = (bl >= 0) ? bl : g_modeLayers2P[1]; /* fallback=HARD */
+            } else {
+                g_modeLayersDyn[m] = g_modeLayers2P[m];
+            }
+        }
+        g_isBattleMode = false; /* atualizado quando slot 3 é selecionado */
+    } else {
+        /* 1P solo (P1 ou P2 separado): 6 modos com HD/Double/Nightmare */
+        g_modeCount = 6;
+        for (int m = 0; m < 6; m++) {
+            g_modeDBIdx[m] = Song_FindMode(db, g_modeNames1P[m]);
+            if (g_modeDBIdx[m] < 0) g_modeDBIdx[m] = 0;
+            g_modeLayersDyn[m] = g_modeLayers1P[m];
+        }
+        g_isBattleMode = false;
+    }
+    /* Se o selDispIdx atual está fora do novo g_modeCount, volta para 0 */
+    if (g_selDispIdx >= g_modeCount) {
+        g_selDispIdx = 0;
+        g_game.selectedModeIndex = g_modeDBIdx[0];
+        g_displayModeDBIdx = g_modeDBIdx[0];
+    } else {
+        g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
+        g_displayModeDBIdx = g_modeDBIdx[g_selDispIdx];
+    }
+    cacheModeTileIndices();
 }
 
 static void loadCdTextures(void) {
@@ -172,23 +345,27 @@ void SongSelect_Reset(void) {
     prevSongId = -1;
     previewState = 0;
     selectedState = 0;
+    g_isBattleMode = false;
+    g_game.isBattleMode = false;
     g_game.selectedSongIndex = 0;
     g_game.songSelectHighlighted = 0;
     g_game.previewSongId = -1;
     memset(g_modeSongIndex, 0, sizeof(g_modeSongIndex));
 
-    // Inicializa indices dos modos no DB
-    for (int m = 0; m < 6; m++) {
-        g_modeDBIdx[m] = Song_FindMode(&g_game.songDB, g_modeNames1P[m]);
-        if (g_modeDBIdx[m] < 0) g_modeDBIdx[m] = 0;
-    }
+    g_cmdBufCount[0]  = 0; g_cmdBufCount[1]  = 0;
+    g_cmdBuf9Count[0] = 0; g_cmdBuf9Count[1] = 0;
+    g_cmdBuf6Count[0] = 0; g_cmdBuf6Count[1] = 0;
+    g_cmdBuf6State[0] = 0; g_cmdBuf6State[1] = 0;
+    g_cmdSpeedIdx[0]  = 0; g_cmdSpeedIdx[1]  = 0;
+
+    /* Inicializa lista de modos de acordo com activePlayerMask */
+    g_modeCount = 6;
     g_selDispIdx = 0;
-    g_game.selectedModeIndex = g_modeDBIdx[0];
-    g_displayModeDBIdx = g_modeDBIdx[0];
     g_displaySongIndex = 0;
     g_modeAnimActive = false;
     g_modeAnimFrame = 0;
     g_modeAnimDir = 0;
+    rebuildModeList();
 
     g_songAnimCounter = 0;
     g_songAnimPos = 0.0f;
@@ -272,83 +449,117 @@ void Gamestate_UpdateSongSelect(float dt) {
 
     SongDB* db = &g_game.songDB;
 
-    /* ── Captura todos os botões para detecção de Commands ──────────────── */
+    /* ── Jogadores entrando (CN de quem não está ativo ainda) ──────────── */
+    if ((g_game.activePlayerMask & 0x2) == 0 && Input_IsPadHit(1, PAD_C)) {
+        g_game.activePlayerMask |= 0x2;
+        Log_Print("SONGSEL: P2 entrou (mask=0x%x)\n", g_game.activePlayerMask);
+        Audio_Play(g_waveSoundIds[SND_3_2], false);
+        rebuildModeList();
+        selectedState = 0;
+        stopPreview();
+    }
+    if ((g_game.activePlayerMask & 0x1) == 0 && Input_IsPadHit(0, PAD_C)) {
+        g_game.activePlayerMask |= 0x1;
+        Log_Print("SONGSEL: P1 entrou (mask=0x%x)\n", g_game.activePlayerMask);
+        Audio_Play(g_waveSoundIds[SND_3_2], false);
+        rebuildModeList();
+        selectedState = 0;
+        stopPreview();
+    }
+
+    /* ── Captura todos os botões para detecção de Commands (por jogador) ── */
     {
         static const PadButton all5[] = {PAD_UL, PAD_UR, PAD_C, PAD_DL, PAD_DR};
-        for (int _ci = 0; _ci < 5; _ci++) {
-            if (Input_IsPadHit(0, all5[_ci])) {
-                if (Cmd_Push(all5[_ci]))
-                    Audio_Play(g_waveSoundIds[SND_2_1], false);
+        for (int _p = 0; _p < 2; _p++) {
+            if (!(g_game.activePlayerMask & (1 << _p))) continue;
+
+            bool dlHit = Input_IsPadHit(_p, PAD_DL);
+            bool drHit = Input_IsPadHit(_p, PAD_DR);
+
+            /* Buffer6: pares DL+DR (simultâneo ou DL→DR sequencial) × 3 = Reset
+             * Máquina de estados por player:
+             *   state 0 (idle) + DL pressed → state 1
+             *   state 1 + DR pressed → par detectado, count++, state 0
+             *   DL+DR no mesmo frame   → par detectado imediatamente, state 0 */
+            if (dlHit && drHit) {
+                /* simultâneo: par imediato */
+                g_cmdBuf6State[_p] = 0;
+                g_cmdBuf6Count[_p]++;
+                Log_Print("CMD P%d: DL+DR par (simult.) #%d\n", _p+1, g_cmdBuf6Count[_p]);
+                if (g_cmdBuf6Count[_p] >= 3) Cmd_ResetAllCheats(_p);
+            } else {
+                if (g_cmdBuf6State[_p] == 0 && dlHit) {
+                    g_cmdBuf6State[_p] = 1; /* DL recebido, aguarda DR */
+                } else if (g_cmdBuf6State[_p] == 1 && drHit) {
+                    g_cmdBuf6State[_p] = 0;
+                    g_cmdBuf6Count[_p]++;
+                    Log_Print("CMD P%d: DL→DR par (seq.) #%d\n", _p+1, g_cmdBuf6Count[_p]);
+                    if (g_cmdBuf6Count[_p] >= 3) Cmd_ResetAllCheats(_p);
+                }
+            }
+
+            /* Buffer5 + Buffer9: todos os 5 botões individualmente */
+            for (int _ci = 0; _ci < 5; _ci++) {
+                if (Input_IsPadHit(_p, all5[_ci])) {
+                    if (Cmd_Push(_p, all5[_ci]))
+                        Audio_Play(g_waveSoundIds[SND_2_1], false);
+                }
             }
         }
     }
 
-    if (Input_IsPadHit(0, PAD_UR)) {
-        /* Interrompe animação de modo em curso: snap para destino e restaura índice */
-        if (g_modeAnimActive) {
-            g_modeSongIndex[g_selDispIdx] = g_game.selectedSongIndex;
-            g_selDispIdx = (g_selDispIdx + g_modeAnimDir + 6) % 6;
-            g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
-            g_game.selectedSongIndex = g_modeSongIndex[g_selDispIdx];
-            g_modeAnimActive = false;
-        }
-        /* Salva índice do modo atual antes de sair */
-        g_modeSongIndex[g_selDispIdx] = g_game.selectedSongIndex;
-        /* Atualiza vars de display imediatamente: CDs já mostram o modo destino */
-        {
-            int nextDispIdx = (g_selDispIdx + 1) % 6;
-            g_displayModeDBIdx = g_modeDBIdx[nextDispIdx];
-            g_displaySongIndex = g_modeSongIndex[nextDispIdx];
-        }
-        loadCdTextures();
-        cacheModeTileIndices();
-        Audio_Play(g_waveSoundIds[SND_3_2], false);
-        selectedState = 0;
-        stopPreview();
-        g_modeAnimActive = true;
-        g_modeAnimFrame = 0;
-        g_modeAnimDir = 1;
-        prevSongId = -1;
-        g_songAnimCounter = 0;
-        g_carrosselIntro = true;
-        g_introFrame = 0;
-        g_carrosselFrame = 588;
-        g_carrosselDir = 0;
-        g_carrosselTarget = 588;
-    }
+    /* Qualquer player ativo pode trocar de modo (UR=próximo, UL=anterior) */
+    {
+        bool urHit = ((g_game.activePlayerMask & 0x1) && Input_IsPadHit(0, PAD_UR))
+                  || ((g_game.activePlayerMask & 0x2) && Input_IsPadHit(1, PAD_UR));
+        bool ulHit = ((g_game.activePlayerMask & 0x1) && Input_IsPadHit(0, PAD_UL))
+                  || ((g_game.activePlayerMask & 0x2) && Input_IsPadHit(1, PAD_UL));
 
-    if (Input_IsPadHit(0, PAD_UL)) {
-        /* Interrompe animação de modo em curso: snap para destino e restaura índice */
-        if (g_modeAnimActive) {
+        if (urHit) {
+            if (g_modeAnimActive) {
+                g_modeSongIndex[g_selDispIdx] = g_game.selectedSongIndex;
+                g_selDispIdx = (g_selDispIdx + g_modeAnimDir + g_modeCount) % g_modeCount;
+                g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
+                g_game.selectedSongIndex = g_modeSongIndex[g_selDispIdx];
+                g_modeAnimActive = false;
+            }
             g_modeSongIndex[g_selDispIdx] = g_game.selectedSongIndex;
-            g_selDispIdx = (g_selDispIdx + g_modeAnimDir + 6) % 6;
-            g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
-            g_game.selectedSongIndex = g_modeSongIndex[g_selDispIdx];
-            g_modeAnimActive = false;
+            {
+                int nextDispIdx = (g_selDispIdx + 1) % g_modeCount;
+                g_displayModeDBIdx = g_modeDBIdx[nextDispIdx];
+                g_displaySongIndex = g_modeSongIndex[nextDispIdx];
+            }
+            loadCdTextures(); cacheModeTileIndices();
+            Audio_Play(g_waveSoundIds[SND_3_2], false);
+            selectedState = 0; stopPreview();
+            g_modeAnimActive = true; g_modeAnimFrame = 0; g_modeAnimDir = 1;
+            prevSongId = -1; g_songAnimCounter = 0;
+            g_carrosselIntro = true; g_introFrame = 0;
+            g_carrosselFrame = 588; g_carrosselDir = 0; g_carrosselTarget = 588;
         }
-        /* Salva índice do modo atual antes de sair */
-        g_modeSongIndex[g_selDispIdx] = g_game.selectedSongIndex;
-        /* Atualiza vars de display imediatamente: CDs já mostram o modo destino */
-        {
-            int nextDispIdx = (g_selDispIdx - 1 + 6) % 6;
-            g_displayModeDBIdx = g_modeDBIdx[nextDispIdx];
-            g_displaySongIndex = g_modeSongIndex[nextDispIdx];
+
+        if (ulHit) {
+            if (g_modeAnimActive) {
+                g_modeSongIndex[g_selDispIdx] = g_game.selectedSongIndex;
+                g_selDispIdx = (g_selDispIdx + g_modeAnimDir + g_modeCount) % g_modeCount;
+                g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
+                g_game.selectedSongIndex = g_modeSongIndex[g_selDispIdx];
+                g_modeAnimActive = false;
+            }
+            g_modeSongIndex[g_selDispIdx] = g_game.selectedSongIndex;
+            {
+                int nextDispIdx = (g_selDispIdx - 1 + g_modeCount) % g_modeCount;
+                g_displayModeDBIdx = g_modeDBIdx[nextDispIdx];
+                g_displaySongIndex = g_modeSongIndex[nextDispIdx];
+            }
+            loadCdTextures(); cacheModeTileIndices();
+            Audio_Play(g_waveSoundIds[SND_3_2], false);
+            selectedState = 0; stopPreview();
+            g_modeAnimActive = true; g_modeAnimFrame = 0; g_modeAnimDir = -1;
+            prevSongId = -1; g_songAnimCounter = 0;
+            g_carrosselIntro = true; g_introFrame = 0;
+            g_carrosselFrame = 588; g_carrosselDir = 0; g_carrosselTarget = 588;
         }
-        loadCdTextures();
-        cacheModeTileIndices();
-        Audio_Play(g_waveSoundIds[SND_3_2], false);
-        selectedState = 0;
-        stopPreview();
-        g_modeAnimActive = true;
-        g_modeAnimFrame = 0;
-        g_modeAnimDir = -1;
-        prevSongId = -1;
-        g_songAnimCounter = 0;
-        g_carrosselIntro = true;
-        g_introFrame = 0;
-        g_carrosselFrame = 588;
-        g_carrosselDir = 0;
-        g_carrosselTarget = 588;
     }
 
     // Atualiza animacao dos modos
@@ -356,7 +567,7 @@ void Gamestate_UpdateSongSelect(float dt) {
         g_modeAnimFrame++;
         if (g_modeAnimFrame >= MODE_ANIM_DURATION) {
             g_modeAnimActive = false;
-            g_selDispIdx = (g_selDispIdx + g_modeAnimDir + 6) % 6;
+            g_selDispIdx = (g_selDispIdx + g_modeAnimDir + g_modeCount) % g_modeCount;
             g_game.selectedModeIndex = g_modeDBIdx[g_selDispIdx];
             /* Restaura última posição de música do modo destino */
             g_game.selectedSongIndex = g_modeSongIndex[g_selDispIdx];
@@ -367,6 +578,8 @@ void Gamestate_UpdateSongSelect(float dt) {
             g_carrosselDir = 0;
             g_carrosselFrame = 588;
             g_carrosselTarget = 588;
+            /* Atualiza flag de BATTLE */
+            g_isBattleMode = (g_game.activePlayerMask == 0x3) && (g_selDispIdx == 3);
         }
     }
 
@@ -382,52 +595,52 @@ void Gamestate_UpdateSongSelect(float dt) {
         /* Não retorna: DL/DR abaixo cancela a intro e move o carrossel normalmente */
     }
 
-    if (Input_IsPadHit(0, PAD_DR)) {
-        Audio_Play(g_waveSoundIds[SND_3_2], false);
-        selectedState = 0;
-        stopPreview();
-        prevSongId = -1;
-        g_carrosselIntro = false;
-        /* Interrompe animação em curso: snap para destino e aplica movimento pendente */
-        if (g_carrosselDir != 0) {
-            g_carrosselFrame = g_carrosselTarget;
-            if (g_pendingMove != 0) {
-                g_game.selectedSongIndex += g_pendingMove;
-                if (g_game.selectedSongIndex >= songCount) g_game.selectedSongIndex = 0;
-                if (g_game.selectedSongIndex < 0) g_game.selectedSongIndex = songCount - 1;
-                g_pendingMove = 0;
-            }
-            g_carrosselFrame = 588;
-            g_carrosselDir = 0;
-        }
-        g_pendingMove = +1;
-        g_carrosselTarget = g_carrosselFrame - 16;
-        g_carrosselDir = -1;
-        g_previewDelay = 1.0f;
-    }
+    /* Qualquer player ativo navega músicas (DR=próxima, DL=anterior) */
+    {
+        bool drHit = ((g_game.activePlayerMask & 0x1) && Input_IsPadHit(0, PAD_DR))
+                  || ((g_game.activePlayerMask & 0x2) && Input_IsPadHit(1, PAD_DR));
+        bool dlHit = ((g_game.activePlayerMask & 0x1) && Input_IsPadHit(0, PAD_DL))
+                  || ((g_game.activePlayerMask & 0x2) && Input_IsPadHit(1, PAD_DL));
 
-    if (Input_IsPadHit(0, PAD_DL)) {
-        Audio_Play(g_waveSoundIds[SND_3_2], false);
-        selectedState = 0;
-        stopPreview();
-        prevSongId = -1;
-        g_carrosselIntro = false;
-        /* Interrompe animação em curso: snap para destino e aplica movimento pendente */
-        if (g_carrosselDir != 0) {
-            g_carrosselFrame = g_carrosselTarget;
-            if (g_pendingMove != 0) {
-                g_game.selectedSongIndex += g_pendingMove;
-                if (g_game.selectedSongIndex >= songCount) g_game.selectedSongIndex = 0;
-                if (g_game.selectedSongIndex < 0) g_game.selectedSongIndex = songCount - 1;
-                g_pendingMove = 0;
+        if (drHit) {
+            Audio_Play(g_waveSoundIds[SND_3_2], false);
+            selectedState = 0; stopPreview(); prevSongId = -1;
+            g_carrosselIntro = false;
+            if (g_carrosselDir != 0) {
+                g_carrosselFrame = g_carrosselTarget;
+                if (g_pendingMove != 0) {
+                    g_game.selectedSongIndex += g_pendingMove;
+                    if (g_game.selectedSongIndex >= songCount) g_game.selectedSongIndex = 0;
+                    if (g_game.selectedSongIndex < 0) g_game.selectedSongIndex = songCount - 1;
+                    g_pendingMove = 0;
+                }
+                g_carrosselFrame = 588; g_carrosselDir = 0;
             }
-            g_carrosselFrame = 588;
-            g_carrosselDir = 0;
+            g_pendingMove = +1;
+            g_carrosselTarget = g_carrosselFrame - 16;
+            g_carrosselDir = -1;
+            g_previewDelay = 1.0f;
         }
-        g_pendingMove = -1;
-        g_carrosselTarget = g_carrosselFrame + 16;
-        g_carrosselDir = +1;
-        g_previewDelay = 1.0f;
+
+        if (dlHit) {
+            Audio_Play(g_waveSoundIds[SND_3_2], false);
+            selectedState = 0; stopPreview(); prevSongId = -1;
+            g_carrosselIntro = false;
+            if (g_carrosselDir != 0) {
+                g_carrosselFrame = g_carrosselTarget;
+                if (g_pendingMove != 0) {
+                    g_game.selectedSongIndex += g_pendingMove;
+                    if (g_game.selectedSongIndex >= songCount) g_game.selectedSongIndex = 0;
+                    if (g_game.selectedSongIndex < 0) g_game.selectedSongIndex = songCount - 1;
+                    g_pendingMove = 0;
+                }
+                g_carrosselFrame = 588; g_carrosselDir = 0;
+            }
+            g_pendingMove = -1;
+            g_carrosselTarget = g_carrosselFrame + 16;
+            g_carrosselDir = +1;
+            g_previewDelay = 1.0f;
+        }
     }
 
     // Avanca o frame do carrossel — velocidade 1 = mais lento
@@ -470,17 +683,23 @@ void Gamestate_UpdateSongSelect(float dt) {
         }
     }
 
-    if (Input_IsPadHit(0, PAD_C)) {
-        if (!selectedState)
-            Audio_Play(g_waveSoundIds[SND_3_2], false);
-        if (selectedState) {
-            Audio_Play(g_waveSoundIds[SND_4_2], false);
-            stopPreview();
-            g_game.selectedDifficulty = mode->difficulties[g_game.selectedSongIndex];
-            selectedState = 0;
-            Loading_Enter(songId);
-        } else {
-            selectedState = 1;
+    /* Confirmação de música: CN de qualquer jogador ativo */
+    {
+        bool cnHit = (Input_IsPadHit(0, PAD_C) && (g_game.activePlayerMask & 0x1)) ||
+                     (Input_IsPadHit(1, PAD_C) && (g_game.activePlayerMask & 0x2));
+        if (cnHit) {
+            if (!selectedState)
+                Audio_Play(g_waveSoundIds[SND_3_2], false);
+            if (selectedState) {
+                Audio_Play(g_waveSoundIds[SND_4_2], false);
+                stopPreview();
+                g_game.selectedDifficulty = mode->difficulties[g_game.selectedSongIndex];
+                selectedState = 0;
+                g_game.isBattleMode = g_isBattleMode; /* propaga flag BATTLE para gameplay */
+                Loading_Enter(songId);
+            } else {
+                selectedState = 1;
+            }
         }
     }
 }
@@ -531,8 +750,9 @@ void Gamestate_RenderSongSelect(void) {
         float introXOff;
         float cdYOff;   /* Y offset por posicao: far=10, mid=5, center=0 */
     } SlotRender;
-    /* Y offset do CD por slot (si): si=1/5→10, si=2/4→5, si=3→0 */
-    static const float s_cdSlotYOff[7] = { 0.0f, 10.0f, 5.0f, 0.0f, 5.0f, 10.0f, 0.0f };
+    /* Y offset proporcional ao bx do slot: max 4px nas posições left-2/right-2 (bx=±175),
+     * interpola continuamente durante animação — sem jump ao final do carrossel. */
+    static const float kCdYOffScale = 4.0f / 175.0f;
 
     SlotRender slots[7];
     int slotCount = 0;
@@ -592,7 +812,7 @@ void Gamestate_RenderSongSelect(void) {
             slots[slotCount].th = 128.0f * bsc;
             slots[slotCount].bgaSlotFrame = bgaSlotFrame;
             slots[slotCount].introXOff = introXOff;
-            slots[slotCount].cdYOff = s_cdSlotYOff[si];
+            slots[slotCount].cdYOff = fabsf(bx) * kCdYOffScale;
             slotCount++;
         }
     }
@@ -657,7 +877,7 @@ void Gamestate_RenderSongSelect(void) {
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             Texture_DrawUV(slot->texId,
                 slot->screenX - sw * 0.5f + cdOffX,
-                240.0f - sh * 0.5f - 10.0f + cdOffY,
+                240.0f - sh * 0.5f - 10.0f + cdOffY + slot->cdYOff,
                 sw, sh * 1.575f,
                 u1, v1, u2, v2,
                 1.0f, 1.0f, 1.0f, slot->balpha);
@@ -700,44 +920,34 @@ void Gamestate_RenderSongSelect(void) {
     }
 
     // Desenha os sprites dos modos (esquerda, centro, direita)
+    // g_modeLayersDyn já contém os layer indices corretos (incl. BATTLE.SPR para slot 3)
     if (g_game.bgaPicCount > 0) {
-        int leftIdx  = (g_selDispIdx - 1 + 6) % 6;
+        int leftIdx  = (g_selDispIdx - 1 + g_modeCount) % g_modeCount;
         int centIdx  = g_selDispIdx;
-        int rightIdx = (g_selDispIdx + 1) % 6;
+        int rightIdx = (g_selDispIdx + 1) % g_modeCount;
 
         if (g_modeAnimActive) {
             float t = g_modeAnimFrame / (float)MODE_ANIM_DURATION;
-            int oldLeft   = (g_selDispIdx - 1 + 6) % 6;
+            int oldLeft   = (g_selDispIdx - 1 + g_modeCount) % g_modeCount;
             int oldCenter = g_selDispIdx;
-            int oldRight  = (g_selDispIdx + 1) % 6;
+            int oldRight  = (g_selDispIdx + 1) % g_modeCount;
             if (g_modeAnimDir == 1) {
-                // UR: oldCenter→LEFT, oldRight→CENTER, newRight enters from OFF
-                int newRight = (g_selDispIdx + 2) % 6;
-                // oldLeft:  LEFT→OFF  (Event 14→15, frame 420→434, direto s/ passar por C/R)
-                BGA_SetEventLayer(0, (int)Math_Lerp(420.0f, 434.0f, t), g_modeLayers1P[oldLeft]);
-                // oldCenter: CENTER→LEFT (Event 3→2, frame 74→60, reverso de L→C)
-                BGA_SetEventLayer(0, (int)Math_Lerp(74.0f, 60.0f, t), g_modeLayers1P[oldCenter]);
-                // oldRight:  RIGHT→CENTER (Event 5→4, frame 134→120, reverso de C→R)
-                BGA_SetEventLayer(0, (int)Math_Lerp(134.0f, 120.0f, t), g_modeLayers1P[oldRight]);
-                // newRight:  OFF→RIGHT  (Event 7→6, frame 194→180, reverso de R→O)
-                BGA_SetEventLayer(0, (int)Math_Lerp(194.0f, 180.0f, t), g_modeLayers1P[newRight]);
+                int newRight = (g_selDispIdx + 2) % g_modeCount;
+                BGA_SetEventLayer(0, (int)Math_Lerp(420.0f, 434.0f, t), g_modeLayersDyn[oldLeft]);
+                BGA_SetEventLayer(0, (int)Math_Lerp(74.0f, 60.0f, t),   g_modeLayersDyn[oldCenter]);
+                BGA_SetEventLayer(0, (int)Math_Lerp(134.0f, 120.0f, t), g_modeLayersDyn[oldRight]);
+                BGA_SetEventLayer(0, (int)Math_Lerp(194.0f, 180.0f, t), g_modeLayersDyn[newRight]);
             } else {
-                // UL: oldCenter→RIGHT, oldLeft→CENTER, newLeft enters from OFF
-                int newLeft = (g_selDispIdx - 2 + 6) % 6;
-                // oldRight: RIGHT→OFF  (Event 6→7, frame 180→194)
-                BGA_SetEventLayer(0, (int)Math_Lerp(180.0f, 194.0f, t), g_modeLayers1P[oldRight]);
-                // oldCenter: CENTER→RIGHT (Event 4→5, frame 120→134)
-                BGA_SetEventLayer(0, (int)Math_Lerp(120.0f, 134.0f, t), g_modeLayers1P[oldCenter]);
-                // oldLeft:  LEFT→CENTER (Event 2→3, frame 60→74)
-                BGA_SetEventLayer(0, (int)Math_Lerp(60.0f, 74.0f, t), g_modeLayers1P[oldLeft]);
-                // newLeft:  OFF→LEFT   (Event 15→14, frame 434→420, reverso de L→O)
-                BGA_SetEventLayer(0, (int)Math_Lerp(434.0f, 420.0f, t), g_modeLayers1P[newLeft]);
+                int newLeft = (g_selDispIdx - 2 + g_modeCount) % g_modeCount;
+                BGA_SetEventLayer(0, (int)Math_Lerp(180.0f, 194.0f, t), g_modeLayersDyn[oldRight]);
+                BGA_SetEventLayer(0, (int)Math_Lerp(120.0f, 134.0f, t), g_modeLayersDyn[oldCenter]);
+                BGA_SetEventLayer(0, (int)Math_Lerp(60.0f, 74.0f, t),   g_modeLayersDyn[oldLeft]);
+                BGA_SetEventLayer(0, (int)Math_Lerp(434.0f, 420.0f, t), g_modeLayersDyn[newLeft]);
             }
         } else {
-            // Estatico: BGA_SetEventLayer com frame fixo de cada posicao
-            BGA_SetEventLayer(0, FRAME_LEFT,   g_modeLayers1P[leftIdx]);
-            BGA_SetEventLayer(0, FRAME_CENTER, g_modeLayers1P[centIdx]);
-            BGA_SetEventLayer(0, FRAME_RIGHT,  g_modeLayers1P[rightIdx]);
+            BGA_SetEventLayer(0, FRAME_LEFT,   g_modeLayersDyn[leftIdx]);
+            BGA_SetEventLayer(0, FRAME_CENTER, g_modeLayersDyn[centIdx]);
+            BGA_SetEventLayer(0, FRAME_RIGHT,  g_modeLayersDyn[rightIdx]);
         }
     }
 
@@ -767,33 +977,60 @@ void Gamestate_RenderSongSelect(void) {
         Font_DrawStringCentered(320, 380, "SELECTED", 0.0f, 1.0f, 0.0f, 1.0f);
     }
 
-    /* ── Ícones de Command na HUD do SongSelect ─────────────────────────────
-     * Mesma posição e sprites da Gameplay, mas sem o ícone de modo (EZ/HD/CZ).
-     * X (velocidade): accel1=36, accel2=7, accel3=8, accel4=9 — do ARROW541.SP2.
-     * R/M/V/NS: offsets 34/35/37/38 (sempre no estado "desabilitado" por ora).
+    /* ── Ícones de Command na HUD do SongSelect ────────────────────────────
+     * Velocidade (Y=184):
+     *   accel1=36, accel2=7, accel3=8, accel4=9, raccel(RV)=12  (ARROW541.SP2)
+     *   Quando Random Velocity ativo: exibe raccel(12) independente do speedMult.
+     * Modificadores (Y=216,248,280,312): RandomStep, Mirror, Vanish, NonStep
+     *   Inativo: _randm=34, _mirrr=35, _vanis=37, _nnstp=38
+     *   Ativo:    random=10,  mirror=11,  vanish=13,  nonstp=14
+     * P1 lado esquerdo (hx = 18 + sw/2), P2 lado direito (hx = 640-18-sw/2).
      */
     if (g_fontArrow541 >= 0) {
-        int speedOff = 36; /* accel1 (x1 ou RV) */
-        if (!g_game.cmdSpeedRV) {
-            if      (g_game.cmdSpeedMult >= 4) speedOff = 9;
-            else if (g_game.cmdSpeedMult >= 3) speedOff = 8;
-            else if (g_game.cmdSpeedMult >= 2) speedOff = 7;
-        }
-        int speedIdx = g_fontArrow541 + speedOff;
-        if (speedIdx < g_game.sprTileCount) {
-            float sw = (float)g_game.sprTiles[speedIdx].srcW;
-            float sh = (float)g_game.sprTiles[speedIdx].srcH;
-            Sprite_DrawTileUV(speedIdx, 18 + sw/2, 184 + sh/2, sw, sh, 1.0f);
-        }
-        /* R (Random), M (Mirror), V (Vanish), NS (Non-Step) */
-        static const int   kModOff[4] = { 34, 35, 37, 38 };
-        static const float kModY[4]   = { 216.0f, 248.0f, 280.0f, 312.0f };
-        for (int di = 0; di < 4; di++) {
-            int didx = g_fontArrow541 + kModOff[di];
-            if (didx < g_game.sprTileCount) {
-                float sw = (float)g_game.sprTiles[didx].srcW;
-                float sh = (float)g_game.sprTiles[didx].srcH;
-                Sprite_DrawTileUV(didx, 18 + sw/2, kModY[di] + sh/2, sw, sh, 1.0f);
+        /* Tabela de offsets: OFF e ON para [RandomStep, Mirror, Vanish, NonStep] */
+        static const int   kModOff_OFF[4] = { 34, 35, 37, 38 }; /* _randm,_mirrr,_vanis,_nnstp */
+        static const int   kModOff_ON[4]  = { 10, 11, 13, 14 }; /* random,mirror,vanish,nonstp  */
+        static const float kModY[4]       = { 216.0f, 248.0f, 280.0f, 312.0f };
+
+        for (int _p = 0; _p < 2; _p++) {
+            if (!(g_game.activePlayerMask & (1 << _p))) continue;
+
+            /* ── Velocidade ──────────────────────────────────────────────── */
+            int speedOff;
+            if (g_game.cmdRandomVelocity[_p]) {
+                speedOff = 12; /* raccel: Random Velocity ativo */
+            } else {
+                speedOff = 36; /* accel1 (x1 ou RV) */
+                if (!g_game.cmdSpeedRV[_p]) {
+                    if      (g_game.cmdSpeedMult[_p] >= 4) speedOff = 9;
+                    else if (g_game.cmdSpeedMult[_p] >= 3) speedOff = 8;
+                    else if (g_game.cmdSpeedMult[_p] >= 2) speedOff = 7;
+                }
+            }
+            int speedIdx = g_fontArrow541 + speedOff;
+            if (speedIdx < g_game.sprTileCount) {
+                float sw = (float)g_game.sprTiles[speedIdx].srcW;
+                float sh = (float)g_game.sprTiles[speedIdx].srcH;
+                float hx = (_p == 0) ? (18.0f + sw/2.0f) : (640.0f - 18.0f - sw/2.0f);
+                Sprite_DrawTileUV(speedIdx, hx, 184.0f + sh/2.0f, sw, sh, 1.0f);
+            }
+
+            /* ── Modificadores: R, M, V, NS ──────────────────────────────── */
+            bool modActive[4] = {
+                g_game.cmdRandomStep[_p],
+                g_game.cmdMirror[_p],
+                g_game.cmdVanish[_p],
+                g_game.cmdNonStep[_p]
+            };
+            for (int di = 0; di < 4; di++) {
+                int tileOff = modActive[di] ? kModOff_ON[di] : kModOff_OFF[di];
+                int didx = g_fontArrow541 + tileOff;
+                if (didx < g_game.sprTileCount) {
+                    float sw = (float)g_game.sprTiles[didx].srcW;
+                    float sh = (float)g_game.sprTiles[didx].srcH;
+                    float hx = (_p == 0) ? (18.0f + sw/2.0f) : (640.0f - 18.0f - sw/2.0f);
+                    Sprite_DrawTileUV(didx, hx, kModY[di] + sh/2.0f, sw, sh, 1.0f);
+                }
             }
         }
     }

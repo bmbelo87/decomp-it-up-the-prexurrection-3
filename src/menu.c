@@ -3,10 +3,13 @@
 
 static int g_menuOption = 0;
 int g_menuSelection = 0; // 0=none, 1=UL(Start), 2=UR(Options), 3=DL(Credits), 4=DR(Exit)
+static int g_p2MenuSel = 0; // seleção de P2: 0=nenhuma, 1=UL(Start)
 
 void Menu_ResetState(void) {
     g_menuOption = 0;
     g_menuSelection = 0;
+    g_p2MenuSel = 0;
+    g_game.activePlayerMask = 0x1; /* reset: P1 ativo por padrão */
     g_game.stageCount = 3;
     g_game.bonusStage = true;
     g_game.isBonusSong = false;
@@ -49,6 +52,34 @@ void Gamestate_UpdateMenu(float dt) {
             }
             return;
         }
+        /* ── P2 input: navega igual P1; UL×2 confirma Start como P2-only ──── */
+        {
+            int p2btn = -1; /* -1=nenhum, 0=UL, 1=UR, 2=DL, 3=DR */
+            int p2sel = 0;
+            if (padHit(1, PAD_UL)) { p2btn = PAD_UL; p2sel = 1; }
+            else if (padHit(1, PAD_UR)) { p2btn = PAD_UR; p2sel = 2; }
+            else if (padHit(1, PAD_DL)) { p2btn = PAD_DL; p2sel = 3; }
+            else if (padHit(1, PAD_DR)) { p2btn = PAD_DR; p2sel = 4; }
+
+            if (p2btn >= 0) {
+                /* P2 UL×2 (quando já está em UL): confirma Start como P2-only */
+                if (p2btn == PAD_UL && g_p2MenuSel == 1) {
+                    Audio_Play(g_waveSoundIds[SND_2_1], false);
+                    Log_Print("MENU: P2 confirm UL -> P2-only\n");
+                    g_game.activePlayerMask = 0x2;
+                    g_game.confirmActive = true; g_game.confirmTimer = 0;
+                    g_game.fadeTarget = STATE_SONG_SELECT;
+                    return;
+                }
+                /* Navegação: atualiza seleção visual (mesma animação que P1) */
+                Audio_Play(g_waveSoundIds[SND_3_2], false);
+                g_p2MenuSel   = p2sel;
+                g_menuSelection = p2sel;
+                Log_Print("MENU: P2 sel %d\n", p2sel);
+                return;
+            }
+        }
+
         if (g_menuSelection == 0) {
             if (padHit(0, PAD_UL)) { Audio_Play(g_waveSoundIds[SND_3_2], false); Log_Print("MENU: sel UL->1\n"); g_menuSelection = 1; return; }
             if (padHit(0, PAD_UR)) { Audio_Play(g_waveSoundIds[SND_3_2], false); Log_Print("MENU: sel UR->2\n"); g_menuSelection = 2; return; }
@@ -56,7 +87,7 @@ void Gamestate_UpdateMenu(float dt) {
             if (padHit(0, PAD_DR)) { Audio_Play(g_waveSoundIds[SND_3_2], false); Log_Print("MENU: sel DR->4\n"); g_menuSelection = 4; return; }
         } else {
             if (padHit(0, PAD_UL)) {
-                if (g_menuSelection == 1) { Audio_Play(g_waveSoundIds[SND_2_1], false); Log_Print("MENU: confirm UL\n"); g_game.confirmActive = true; g_game.confirmTimer = 0; g_game.fadeTarget = STATE_SONG_SELECT; return; }
+                if (g_menuSelection == 1) { g_game.activePlayerMask = 0x1; Audio_Play(g_waveSoundIds[SND_2_1], false); Log_Print("MENU: confirm UL\n"); g_game.confirmActive = true; g_game.confirmTimer = 0; g_game.fadeTarget = STATE_SONG_SELECT; return; }
                 Audio_Play(g_waveSoundIds[SND_3_2], false); Log_Print("MENU: change UL->1\n"); g_menuSelection = 1; return;
             }
             if (padHit(0, PAD_UR)) {

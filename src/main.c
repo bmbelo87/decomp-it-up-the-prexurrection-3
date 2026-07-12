@@ -146,8 +146,12 @@ void Game_Init(HINSTANCE hInstance) {
     g_game.showDebug = true;
     g_game.stageBreak = 1;
     g_game.showHelp = 0;
-    g_game.cmdSpeedMult = 1;     /* Command: velocidade padrão x1 */
-    g_game.cmdSpeedRV   = false; /* Command: RV desativado por padrão */
+    g_game.cmdSpeedMult[0] = 1;    /* Command P1: velocidade padrão x1 */
+    g_game.cmdSpeedMult[1] = 1;    /* Command P2: velocidade padrão x1 */
+    g_game.cmdSpeedRV[0]   = false;
+    g_game.cmdSpeedRV[1]   = false;
+    g_game.activePlayerMask = 0x1; /* P1 ativo por padrão */
+    g_game.isBattleMode = false;   /* BATTLE só ativo quando selecionado no song_select */
     Render_SetGlobalColor(0, 0, 0, 0);
     GetCurrentDirectoryA(MAX_PATH, g_game.currentDirectory);
     InitSystems();
@@ -203,6 +207,10 @@ void Game_Shutdown(void) {
 void Game_Update(float dt) {
     Input_Update();
     if (Input_IsKeyHit(VK_F11)) g_game.showDebug = !g_game.showDebug;
+
+    /* Alt+F4: encerra o jogo imediatamente de qualquer tela */
+    if (Input_IsKeyHit(VK_F4) && (GetKeyState(VK_MENU) & 0x8000))
+        PostQuitMessage(0);
 
     if (Input_IsKeyHit(VK_ESCAPE)) {
         GameState s = g_game.state;

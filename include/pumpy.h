@@ -17,9 +17,9 @@
 #include "song.h"
 #include "step.h"
 
-#define GAME_VERSION "0.8.5"
-#define GAME_BUILD_DATE "Jul 11 2026"
-#define GAME_BUILD_TIME "16:50"
+#define GAME_VERSION "0.9.0"
+#define GAME_BUILD_DATE "Jul 12 2026"
+#define GAME_BUILD_TIME "00:38"
 #define TARGET_FPS 60
 #define FRAME_TIME_MS (1000 / TARGET_FPS)
 
@@ -322,8 +322,15 @@ typedef struct {
      *   Freedom  – receptor invisível
      *   Earthworm– setas sobem em movimento senoidal (vai e volta)
      */
-    int  cmdSpeedMult;  /* multiplicador de velocidade: 1, 2, 3 ou 4. Default=1 */
-    bool cmdSpeedRV;    /* true = RV (Reverse): setas descem em vez de subir. Default=false */
+    int  cmdSpeedMult[2];        /* multiplicador de velocidade por jogador: 1..4. Default=1 */
+    bool cmdSpeedRV[2];          /* RV por jogador. Default=false */
+    bool cmdMirror[2];           /* Mirror ativo por jogador */
+    bool cmdRandomStep[2];       /* Random Step ativo por jogador */
+    bool cmdRandomVelocity[2];   /* Random Velocity ativo por jogador */
+    bool cmdVanish[2];           /* Vanish ativo por jogador */
+    bool cmdNonStep[2];          /* Non-Step ativo por jogador */
+    int  activePlayerMask; /* 0x1=P1 ativo, 0x2=P2 ativo (ambos=0x3). Default=0x1 */
+    bool isBattleMode;    /* true quando BATTLE selecionado (P1+P2, HARD steps em half1 duplicado em half2) */
     bool isVSL;           // true when current song uses 3D VSL instead of BGA
     
     bool showDebug;

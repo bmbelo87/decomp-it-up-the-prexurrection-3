@@ -369,8 +369,10 @@ static bool loadChartForSong(int songId, int diffTier, const char* modeName)
     }
     g_autoplay = g_game.input.autoplay;
 
-    /* Aplica multiplicador de velocidade do Command (padrão = 1 se não configurado) */
-    float initSpeed = (g_game.cmdSpeedMult >= 1) ? (float)g_game.cmdSpeedMult : 1.0f;
+    /* Aplica multiplicador de velocidade do Command.
+     * P2-only: usa cmdSpeedMult[1]; caso contrário usa cmdSpeedMult[0]. */
+    int _speedPlayer = (g_game.activePlayerMask == 0x2) ? 1 : 0;
+    float initSpeed = (g_game.cmdSpeedMult[_speedPlayer] >= 1) ? (float)g_game.cmdSpeedMult[_speedPlayer] : 1.0f;
     g_scrollSpeedX      = initSpeed;
     g_scrollSpeedTarget = initSpeed;
 
@@ -573,8 +575,10 @@ static void processRowJudgment(int player, int row, JudgeType jt) {
             }
             g_lastPerfectRow[player][pan] = row;
         }
-        if (!hdCheck && !dnJdg)
-            memset(r, 0, sizeof(StepRow));
+        /* clearPanel já zerou os painéis do player atual.
+         * memset destruiria half do outro player em modo 2P. */
+        /* if (!hdCheck && !dnJdg)
+            memset(r, 0, sizeof(StepRow)); */
     }
     g_judgeDisplayType[player] = jt;
     g_judgeDisplayTimer[player] = 0.6f;
@@ -831,8 +835,10 @@ static void processInput(int player)
                                 else if (isDN) clearDNPanel(&g_chart->rows[bestRow], pan);
                                 else clearPanel(&g_chart->rows[bestRow], pan, player);
                             }
-                        if (!isHD && !isDN)
-                        memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
+                        /* clearPanel já zerou cada painel do player atual (half1 ou half2).
+                         * memset destruiria dados do outro player em modo 2P. */
+                        /* if (!isHD && !isDN)
+                        memset(&g_chart->rows[bestRow], 0, sizeof(StepRow)); */
                     }
                     g_judgeDisplayType[player] = pjt;
                     g_judgeDisplayTimer[player] = 0.6f;
@@ -893,8 +899,10 @@ static void processInput(int player)
                     else if (isDN) clearDNPanel(&g_chart->rows[bestRow], pan);
                     else clearPanel(&g_chart->rows[bestRow], pan, player);
                 }
-            if (!isHD && !isDN)
-                memset(&g_chart->rows[bestRow], 0, sizeof(StepRow));
+            /* clearPanel já zerou cada painel do player atual (half1 ou half2).
+             * memset destruiria dados do outro player em modo 2P. */
+            /* if (!isHD && !isDN)
+                memset(&g_chart->rows[bestRow], 0, sizeof(StepRow)); */
         }
         g_judgeDisplayType[player] = jt;
         g_judgeDisplayTimer[player] = 0.6f;
@@ -961,7 +969,9 @@ static void processAutoplay(void)
     bool dnAP = isDNMode();
     int panCount = isHD ? 6 : (dnAP ? 10 : 5);
 
-    for (int p = 0; p < 1; p++)
+    int _ap0 = (isHD || dnAP) ? 0 : ((g_game.activePlayerMask == 0x2) ? 1 : 0);
+    int _ap1 = (isHD || dnAP) ? 1 : ((g_game.activePlayerMask == 0x3) ? 2 : _ap0 + 1);
+    for (int p = _ap0; p < _ap1; p++)
     {
         int hitRows[10], hitCount = 0;
         for (int panel = 0; panel < panCount; panel++)
@@ -1035,7 +1045,10 @@ static void processHolds(void)
     bool isHD = isHDMode();
     bool dnAP = isDNMode();
     int panCount = isHD ? 6 : (dnAP ? 10 : 5);
-    for (int p = 0; p < 1; p++)
+    /* Itera players ativos: P1 (0) e/ou P2 (1). HD/DN usam sempre p=0. */
+    int _hp0 = (isHD || dnAP) ? 0 : ((g_game.activePlayerMask == 0x2) ? 1 : 0);
+    int _hp1 = (isHD || dnAP) ? 1 : ((g_game.activePlayerMask == 0x3) ? 2 : _hp0 + 1);
+    for (int p = _hp0; p < _hp1; p++)
     {
         for (int panel = 0; panel < panCount; panel++)
         {
@@ -1049,7 +1062,7 @@ static void processHolds(void)
                 holdBtn = dnPanelBtn(panel);
             } else {
                 static const PadButton panelToBtn[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
-                holdPly = 0;
+                holdPly = p;  /* era 0 (hardcoded P1) — corrigido para p (player atual) */
                 holdBtn = panelToBtn[panel];
             }
             bool held = g_autoPanel[panel] ? true : Input_IsPadDown(holdPly, holdBtn);
@@ -1162,7 +1175,10 @@ static void processMisses(void)
     int panCount = isHD ? 6 : (dnAP ? 10 : 5);
 
     double missThreshold = g_songTime - JUDGE_BAD;
-    for (int p = 0; p < 1; p++)
+    /* Itera players ativos. HD/DN usam p=0; single usa p=0, p=1, ou ambos. */
+    int _mp0 = (isHD || dnAP) ? 0 : ((g_game.activePlayerMask == 0x2) ? 1 : 0);
+    int _mp1 = (isHD || dnAP) ? 1 : ((g_game.activePlayerMask == 0x3) ? 2 : _mp0 + 1);
+    for (int p = _mp0; p < _mp1; p++)
     {
         int missedRows[256], missCount = 0;
         for (int panel = 0; panel < panCount; panel++)
@@ -1177,7 +1193,7 @@ static void processMisses(void)
                 missBtn = dnPanelBtn(panel);
             } else {
                 static const PadButton btnMap[5] = { PAD_DL, PAD_UL, PAD_C, PAD_UR, PAD_DR };
-                missPly = 0;
+                missPly = p;  /* era 0 (hardcoded P1) — corrigido para p (player atual) */
                 missBtn = btnMap[panel];
             }
             for (int ri = g_nextNoteRow[p][panel]; ri < (int)g_chart->rowCount; ri++)
@@ -1271,6 +1287,15 @@ void Gameplay_Start(int songId)
     int diffTier = g_game.selectedDifficulty;
     loadChartForSong(songId, diffTier, mode->name);
 
+    /* 2P: duplicar half1 → half2 para que P2 veja os mesmos padrões de P1.
+     * Aplicado a TODOS os modos quando ambos P1+P2 estão ativos (incluindo BATTLE).
+     * P1 lê half1, P2 lê half2 (= cópia de half1). */
+    if (g_game.activePlayerMask == 0x3 && g_songLoaded && g_chart) {
+        for (int ri = 0; ri < (int)g_chart->rowCount; ri++)
+            g_chart->rows[ri].half2 = g_chart->rows[ri].half1;
+        Log_Print("GP: 2P mode — duplicated half1 -> half2 (%d rows)\n", g_chart->rowCount);
+    }
+
     Log_Print("Gameplay: started song %d\n", songId);
 }
 
@@ -1357,8 +1382,9 @@ void Gameplay_Update(float dt)
     }
 
     processInput(0);
+    if (g_game.activePlayerMask & 0x2) processInput(1);
     processPendingRows(0);
-    //processPendingRows(1);
+    if (g_game.activePlayerMask & 0x2) processPendingRows(1);
     processAutoplay();
     processHolds();
     processMisses();
@@ -1545,28 +1571,52 @@ void Gameplay_Render(void)
     for (int j = 0; j < 4; j++)
         jZoneHalf[j] = jWindows[j] * currentPixelsPerSec;
 
-    int panelCount = isHalfDouble ? 6 : (isDoubleOrNightmare ? 10 : 5);
-    float posX[10];
-    int pW[10];
-    if (isHalfDouble) {
-        for (int i = 0; i < 6; i++) {
-            posX[i] = 171.0f + i * 48.0f + (i >= 3 ? 7.0f : 0.0f);
-            pW[i] = 54;
-        }
-    } else if (isDoubleOrNightmare) {
-        for (int i = 0; i < 10; i++) pW[i] = 54;
-        for (int i = 0; i < 5; i++) posX[i] = 74.0f + i * 48.0f;     // P1 side
-        for (int i = 5; i < 10; i++) posX[i] = 323.0f + (i-5) * 48.0f; // P2 side
-    } else {
-        for (int i = 0; i < 5; i++) pW[i] = 54;
-        posX[0] = 38.0f;
-        for (int i = 1; i < 5; i++) posX[i] = posX[0] + i * 48.0f;
-    }
+    /* Para HD/DN: sempre p=0, layout especial.
+     * Para modos single (Normal/Hard/Crazy/Battle com 2P): loop pelos players ativos.
+     *   P1 sozinho  (0x1): p=0
+     *   P2 sozinho  (0x2): p=1
+     *   P1+P2       (0x3): p=0 e p=1
+     * Posições: P1 solo → centro; P1 com P2 → esquerda; P2 → direita. */
+    bool twoPlayers = (g_game.activePlayerMask == 0x3) && !isHalfDouble && !isDoubleOrNightmare;
+    int pRend0 = (isHalfDouble || isDoubleOrNightmare) ? 0 :
+                 ((g_game.activePlayerMask == 0x2) ? 1 : 0);
+    int pRend1 = (isHalfDouble || isDoubleOrNightmare) ? 1 :
+                 (twoPlayers ? 2 : pRend0 + 1);
 
-    int centerX = isHalfDouble ? 320 : (isDoubleOrNightmare ? 320 : P1_CENTER_X);
-
-    for (int p = 0; p < 1; p++)
+    for (int p = pRend0; p < pRend1; p++)
     {
+        /* Posições e contagem de painéis para este player/iteração */
+        float posX[10];
+        int pW[10];
+        int panelCount;
+        int centerX;
+
+        if (isHalfDouble) {
+            panelCount = 6;
+            for (int i = 0; i < 6; i++) { posX[i] = 171.0f + i * 48.0f + (i >= 3 ? 7.0f : 0.0f); pW[i] = 54; }
+            centerX = 320;
+        } else if (isDoubleOrNightmare) {
+            panelCount = 10;
+            for (int i = 0; i < 10; i++) pW[i] = 54;
+            for (int i = 0; i < 5; i++) posX[i] = 74.0f + i * 48.0f;
+            for (int i = 5; i < 10; i++) posX[i] = 323.0f + (i-5) * 48.0f;
+            centerX = 320;
+        } else {
+            panelCount = 5;
+            for (int i = 0; i < 5; i++) pW[i] = 54;
+            if (p == 1) {
+                /* P2 (sozinho ou com P1): lado direito, espelhado de P1.
+                 * P1 centro=161, P2 centro=479 (simetrico em 640px).
+                 * P2[0]=356, ..., P2[4]=548. Gap entre P1(284) e P2(356) = 72px. */
+                for (int i = 0; i < 5; i++) posX[i] = 358.0f + i * 48.0f;
+                centerX = P2_CENTER_X;
+            } else {
+                /* P1 (sozinho ou com P2): posição padrão esquerda (mesma do solo) */
+                posX[0] = 38.0f;
+                for (int i = 1; i < 5; i++) posX[i] = 38.0f + i * 48.0f;
+                centerX = P1_CENTER_X;
+            }
+        }
 
         /* // Zonas de acerto (julgamento) - desativadas, 01.SPR substitui
         {
@@ -1638,31 +1688,35 @@ void Gameplay_Render(void)
         */
 
         // 01.SPR receptor (g_fontSpr01) — renderiza ANTES das notas (abaixo delas)
-        if (sprReceptor >= 0) {
-            int cnt = sprTileCount(sprReceptor);
-            for (int t = cnt - 1; t >= 0; t--) {
-                int idx = sprReceptor + t;
-                float sx = (float)g_game.sprTiles[idx].srcX;
-                float sy = (float)g_game.sprTiles[idx].srcY;
-                float sw = (float)g_game.sprTiles[idx].srcW;
-                float sh = (float)g_game.sprTiles[idx].srcH;
-                Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 1.0f);
+        // Para single (não HD/DN): srcX baked para P1-solo (base=38). Offset por player.
+        {
+            float recOffX = (isHalfDouble || isDoubleOrNightmare) ? 0.0f : (posX[0] - 38.0f);
+            if (sprReceptor >= 0) {
+                int cnt = sprTileCount(sprReceptor);
+                for (int t = cnt - 1; t >= 0; t--) {
+                    int idx = sprReceptor + t;
+                    float sx = (float)g_game.sprTiles[idx].srcX + recOffX;
+                    float sy = (float)g_game.sprTiles[idx].srcY;
+                    float sw = (float)g_game.sprTiles[idx].srcW;
+                    float sh = (float)g_game.sprTiles[idx].srcH;
+                    Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 1.0f);
+                }
             }
-        }
-        // 02.SPR blind (g_fontSpr02) — também antes das notas
-        if (sprBlind >= 0 && g_blindTimer[p] > 0) {
-            float blindA = (float)g_blindTimer[p] / 10.0f;
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-            int cnt = sprTileCount(sprBlind);
-            for (int t = cnt - 1; t >= 0; t--) {
-                int idx = sprBlind + t;
-                float sx = (float)g_game.sprTiles[idx].srcX;
-                float sy = (float)g_game.sprTiles[idx].srcY;
-                float sw = (float)g_game.sprTiles[idx].srcW;
-                float sh = (float)g_game.sprTiles[idx].srcH;
-                Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, blindA);
+            // 02.SPR blind (g_fontSpr02) — também antes das notas
+            if (sprBlind >= 0 && g_blindTimer[p] > 0) {
+                float blindA = (float)g_blindTimer[p] / 10.0f;
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                int cnt = sprTileCount(sprBlind);
+                for (int t = cnt - 1; t >= 0; t--) {
+                    int idx = sprBlind + t;
+                    float sx = (float)g_game.sprTiles[idx].srcX + recOffX;
+                    float sy = (float)g_game.sprTiles[idx].srcY;
+                    float sw = (float)g_game.sprTiles[idx].srcW;
+                    float sh = (float)g_game.sprTiles[idx].srcH;
+                    Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, blindA);
+                }
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             }
-            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         }
 
         /* Tile "p1" do ARROW54X.SP2 — borda branca/cinza da seta.
@@ -1833,8 +1887,10 @@ void Gameplay_Render(void)
     int receptorY = 38; // Same as in rendering loop
 
 
-        // Mode/Modifier sprites do ARROW541.SP2
+        /* Mode/Modifier sprites do ARROW541.SP2.
+         * P2 sozinho (HD/DN/qualquer modo) → lado direito; caso contrário → esquerdo. */
         if (g_fontArrow541 >= 0) {
+            bool hudRight = (g_game.activePlayerMask == 0x2);
             const char* modeName = (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount) ? g_game.songDB.modes[g_game.selectedModeIndex].name : "EASY";
             int modeOff = 31; // modeez (default)
             if (strcmp(modeName, "HARD") == 0) modeOff = 32;
@@ -1843,7 +1899,8 @@ void Gameplay_Render(void)
             if (modeIdx < g_game.sprTileCount) {
                 float sw = (float)g_game.sprTiles[modeIdx].srcW;
                 float sh = (float)g_game.sprTiles[modeIdx].srcH;
-                Sprite_DrawTileUV(modeIdx, 18 + sw/2, 152 + sh/2, sw, sh, 1.0f);
+                float hx = hudRight ? (640.0f - 18.0f - sw/2.0f) : (18.0f + sw/2.0f);
+                Sprite_DrawTileUV(modeIdx, hx, 152 + sh/2, sw, sh, 1.0f);
             }
             int speedOff = 36; // accel1
             if (g_scrollSpeedTarget >= 4.0f) speedOff = 9; // accel4
@@ -1853,7 +1910,8 @@ void Gameplay_Render(void)
             if (speedIdx < g_game.sprTileCount) {
                 float sw = (float)g_game.sprTiles[speedIdx].srcW;
                 float sh = (float)g_game.sprTiles[speedIdx].srcH;
-                Sprite_DrawTileUV(speedIdx, 18 + sw/2, 184 + sh/2, sw, sh, 1.0f);
+                float hx = hudRight ? (640.0f - 18.0f - sw/2.0f) : (18.0f + sw/2.0f);
+                Sprite_DrawTileUV(speedIdx, hx, 184 + sh/2, sw, sh, 1.0f);
             }
             int disOffsets[4] = { 34, 35, 37, 38 };
             float disY[4] = { 216, 248, 280, 312 };
@@ -1862,7 +1920,8 @@ void Gameplay_Render(void)
                 if (didx < g_game.sprTileCount) {
                     float sw = (float)g_game.sprTiles[didx].srcW;
                     float sh = (float)g_game.sprTiles[didx].srcH;
-                    Sprite_DrawTileUV(didx, 18 + sw/2, (float)(disY[di] + sh/2), sw, sh, 1.0f);
+                    float hx = hudRight ? (640.0f - 18.0f - sw/2.0f) : (18.0f + sw/2.0f);
+                    Sprite_DrawTileUV(didx, hx, (float)(disY[di] + sh/2), sw, sh, 1.0f);
                 }
             }
         }
@@ -2037,7 +2096,7 @@ void Gameplay_Render(void)
         for (int i = 0; i < MAX_POPUPS; i++) {
             if (!g_popups[i].active || g_popups[i].player != p) continue;
             char buf[32];
-            int popCenterX = isDoubleOrNightmare ? 320 : ((p == 0) ? 160 : 480);
+            int popCenterX = centerX;
             snprintf(buf, sizeof(buf), "+%d", g_popups[i].score);
             Font_DrawStringCenteredScaled(popCenterX, (int)g_popups[i].y, buf, 1,1,0, g_popups[i].alpha, 1.2f);
             if (g_popups[i].combo > 1) {
@@ -2174,7 +2233,7 @@ void Gameplay_Render(void)
             }
         }
     } else {
-    for (int p = 0; p < 1; p++) {
+    for (int p = pRend0; p < pRend1; p++) {
         float px = (p == 0) ? 0.0f : 320.0f;
 
         int lifeValP = g_game.stats.life[p];
@@ -2328,18 +2387,24 @@ void Gameplay_Render(void)
     }
 
     // Explosao: seta congelada + ARROWF (depois de tudo, sobrepoe tudo)
-    float expPosX[10];
-    int expPanels = isHalfDouble ? 6 : (isDoubleOrNightmare ? 10 : 5);
-    if (isHalfDouble) {
-        for (int i = 0; i < 6; i++) expPosX[i] = 171.0f + i * 48.0f + (i >= 3 ? 7.0f : 0.0f);
-    } else if (isDoubleOrNightmare) {
-        for (int i = 0; i < 5; i++) expPosX[i] = 74.0f + i * 48.0f;
-        for (int i = 5; i < 10; i++) expPosX[i] = 323.0f + (i-5) * 48.0f;
-    } else {
-        expPosX[0] = 38.0f;
-        for (int i = 1; i < 5; i++) expPosX[i] = expPosX[0] + i * 48.0f;
-    }
-    for (int pe = 0; pe < 1; pe++) {
+    for (int pe = pRend0; pe < pRend1; pe++) {
+        float expPosX[10];
+        int expPanels;
+        if (isHalfDouble) {
+            expPanels = 6;
+            for (int i = 0; i < 6; i++) expPosX[i] = 171.0f + i * 48.0f + (i >= 3 ? 7.0f : 0.0f);
+        } else if (isDoubleOrNightmare) {
+            expPanels = 10;
+            for (int i = 0; i < 5; i++) expPosX[i] = 74.0f + i * 48.0f;
+            for (int i = 5; i < 10; i++) expPosX[i] = 323.0f + (i-5) * 48.0f;
+        } else {
+            expPanels = 5;
+            if (pe == 1) {
+                for (int i = 0; i < 5; i++) expPosX[i] = 358.0f + i * 48.0f;
+            } else {
+                for (int i = 0; i < 5; i++) expPosX[i] = 38.0f + i * 48.0f;
+            }
+        }
         float erY = 38.0f + 28.0f;
         static const float expOffXReg[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
         static const float expOffXHD[6]  = {-5.0f, -6.0f, -7.0f, -7.0f, -6.0f, -5.0f};
@@ -2391,36 +2456,33 @@ void Gameplay_Render(void)
                 }
             }
         }
-    }
 
-    /* ARROWF.SPR — brilho circular aditivo em PERFECT/GREAT.
-     * Original: SPR_RenderP2Offset → arrowf.spr com GL_ONE quando timer ativo após hit. */
-    if (g_fontArrowF >= 0) {
-        int fCnt = sprTileCount(g_fontArrowF);
-        if (fCnt > 0) {
-            float erY = 38.0f + 28.0f;
-            int glowPanels = isHalfDouble ? 6 : (isDoubleOrNightmare ? 10 : 5);
-            for (int pan = 0; pan < glowPanels; pan++) {
-                int ht = g_glowTimer[0][pan];  /* P1: glow ativo apenas após PERFECT/GREAT */
-                if (ht <= 0) continue;
-                /* Alpha: pleno no início, fade nos últimos 4 frames */
-                float alpha2 = (ht <= 4) ? (float)ht / 4.0f : 1.0f;
-                int arrowType;
-                if (isHalfDouble) {
-                    arrowType = (pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1;
-                } else if (isDoubleOrNightmare) {
-                    arrowType = pan % 5;
-                } else {
-                    arrowType = pan;
+        /* ARROWF.SPR — brilho circular aditivo em PERFECT/GREAT (por player). */
+        if (g_fontArrowF >= 0) {
+            int fCnt = sprTileCount(g_fontArrowF);
+            if (fCnt > 0) {
+                float erY = 38.0f + 28.0f;
+                for (int pan = 0; pan < expPanels; pan++) {
+                    int ht = g_glowTimer[pe][pan];
+                    if (ht <= 0) continue;
+                    float alpha2 = (ht <= 4) ? (float)ht / 4.0f : 1.0f;
+                    int arrowType;
+                    if (isHalfDouble) {
+                        arrowType = (pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1;
+                    } else if (isDoubleOrNightmare) {
+                        arrowType = pan % 5;
+                    } else {
+                        arrowType = pan;
+                    }
+                    int fIdx = arrowType < fCnt ? arrowType : 0;
+                    int fSpr = g_fontArrowF + fIdx;
+                    if (fSpr >= g_game.sprTileCount) continue;
+                    float fw = (float)g_game.sprTiles[fSpr].srcW;
+                    float fh = (float)g_game.sprTiles[fSpr].srcH;
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+                    Sprite_DrawTileUV(fSpr, expPosX[pan] + fw / 2.0f, erY, fw, fh, alpha2);
+                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 }
-                int fIdx = arrowType < fCnt ? arrowType : 0;
-                int fSpr = g_fontArrowF + fIdx;
-                if (fSpr >= g_game.sprTileCount) continue;
-                float fw = (float)g_game.sprTiles[fSpr].srcW;
-                float fh = (float)g_game.sprTiles[fSpr].srcH;
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                Sprite_DrawTileUV(fSpr, expPosX[pan] + fw / 2.0f, erY, fw, fh, alpha2);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             }
         }
     }
