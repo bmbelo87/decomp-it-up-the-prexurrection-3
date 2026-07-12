@@ -444,6 +444,7 @@ typedef enum {
     SND_RANK_C,
     SND_RANK_D,
     SND_RANK_F,
+    SND_10_2,   /* 10-2.WAV: som do auto-scroll DL/DR hold */
     SND_COUNT
 } SoundID;
 

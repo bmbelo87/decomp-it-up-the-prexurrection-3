@@ -28,6 +28,19 @@ static int       g_cmdBuf9Count[2] = {0, 0};
 static int       g_cmdBuf6Count[2] = {0, 0}; /* pares DL+DR detectados por player */
 static int       g_cmdBuf6State[2] = {0, 0}; /* 0=idle, 1=DL recebido aguardando DR */
 
+/* Auto-scroll DL/DR (hold): replicado de SongSelect_UpdateRender @ 00409720
+ *   g_holdAnimTimer : frames desde o último scroll (reseta em cada scroll automático)
+ *   g_holdCarouselPos: acumula enquanto segura; > 0xb4 (180) → timer soma 2/frame (rápido)
+ *   g_holdDir        : direção atual: +1=DR(próxima), -1=DL(anterior), 0=nenhuma
+ * Thresholds do Ghidra:
+ *   0x14 (20 frames @ 60 fps ≈ 333 ms) = tempo entre repetições
+ *   0x3c (60)  = carouselPos inicial ao primeiro press
+ *   0xb4 (180) = carouselPos que ativa o modo rápido (≈ 2 s de hold)
+ */
+static int g_holdAnimTimer   = 0;
+static int g_holdCarouselPos = 0;
+static int g_holdDir         = 0;
+
 /* Buffer5 sequências */
 static const PadButton k_speedSeq[CMD_BUF_LEN] = {
     PAD_UL, PAD_UR, PAD_UL, PAD_UR, PAD_C
@@ -595,52 +608,72 @@ void Gamestate_UpdateSongSelect(float dt) {
         /* Não retorna: DL/DR abaixo cancela a intro e move o carrossel normalmente */
     }
 
-    /* Qualquer player ativo navega músicas (DR=próxima, DL=anterior) */
+    /* Qualquer player ativo navega músicas (DR=próxima, DL=anterior).
+     * Auto-scroll ao segurar: replicado de SongSelect_UpdateRender @ 00409720.
+     * - Press: scroll imediato + SND_3_2
+     * - Hold 333 ms (20 frames): scroll automático + SND_10_2 a cada repetição
+     * - Hold ~2 s (carouselPos > 180): timer avança 2×/frame → repetição em ~167 ms */
     {
         bool drHit = ((g_game.activePlayerMask & 0x1) && Input_IsPadHit(0, PAD_DR))
                   || ((g_game.activePlayerMask & 0x2) && Input_IsPadHit(1, PAD_DR));
         bool dlHit = ((g_game.activePlayerMask & 0x1) && Input_IsPadHit(0, PAD_DL))
                   || ((g_game.activePlayerMask & 0x2) && Input_IsPadHit(1, PAD_DL));
+        bool drDown = ((g_game.activePlayerMask & 0x1) && Input_IsPadDown(0, PAD_DR))
+                   || ((g_game.activePlayerMask & 0x2) && Input_IsPadDown(1, PAD_DR));
+        bool dlDown = ((g_game.activePlayerMask & 0x1) && Input_IsPadDown(0, PAD_DL))
+                   || ((g_game.activePlayerMask & 0x2) && Input_IsPadDown(1, PAD_DL));
 
+/* Aplica um passo de navegação de carrossel (sem tocar som — quem chama decide o som). */
+#define DO_SONG_NAV(dir_) do {                                                      \
+    selectedState = 0; stopPreview(); prevSongId = -1;                             \
+    g_carrosselIntro = false;                                                       \
+    if (g_carrosselDir != 0) {                                                      \
+        g_carrosselFrame = g_carrosselTarget;                                       \
+        if (g_pendingMove != 0) {                                                   \
+            g_game.selectedSongIndex += g_pendingMove;                              \
+            if (g_game.selectedSongIndex >= songCount) g_game.selectedSongIndex = 0;\
+            if (g_game.selectedSongIndex < 0) g_game.selectedSongIndex = songCount - 1; \
+            g_pendingMove = 0;                                                      \
+        }                                                                           \
+        g_carrosselFrame = 588; g_carrosselDir = 0;                                 \
+    }                                                                               \
+    g_pendingMove         = (dir_);                                                 \
+    g_carrosselTarget     = g_carrosselFrame - (dir_) * 16;                        \
+    g_carrosselDir        = -(dir_);                                                \
+    g_previewDelay        = 1.0f;                                                   \
+} while (0)
+
+        /* Press inicial: scroll imediato + SND_3_2 + inicializa hold state */
         if (drHit) {
             Audio_Play(g_waveSoundIds[SND_3_2], false);
-            selectedState = 0; stopPreview(); prevSongId = -1;
-            g_carrosselIntro = false;
-            if (g_carrosselDir != 0) {
-                g_carrosselFrame = g_carrosselTarget;
-                if (g_pendingMove != 0) {
-                    g_game.selectedSongIndex += g_pendingMove;
-                    if (g_game.selectedSongIndex >= songCount) g_game.selectedSongIndex = 0;
-                    if (g_game.selectedSongIndex < 0) g_game.selectedSongIndex = songCount - 1;
-                    g_pendingMove = 0;
-                }
-                g_carrosselFrame = 588; g_carrosselDir = 0;
-            }
-            g_pendingMove = +1;
-            g_carrosselTarget = g_carrosselFrame - 16;
-            g_carrosselDir = -1;
-            g_previewDelay = 1.0f;
+            DO_SONG_NAV(+1);
+            g_holdDir = +1; g_holdAnimTimer = 0; g_holdCarouselPos = 0x3c;
         }
-
         if (dlHit) {
             Audio_Play(g_waveSoundIds[SND_3_2], false);
-            selectedState = 0; stopPreview(); prevSongId = -1;
-            g_carrosselIntro = false;
-            if (g_carrosselDir != 0) {
-                g_carrosselFrame = g_carrosselTarget;
-                if (g_pendingMove != 0) {
-                    g_game.selectedSongIndex += g_pendingMove;
-                    if (g_game.selectedSongIndex >= songCount) g_game.selectedSongIndex = 0;
-                    if (g_game.selectedSongIndex < 0) g_game.selectedSongIndex = songCount - 1;
-                    g_pendingMove = 0;
-                }
-                g_carrosselFrame = 588; g_carrosselDir = 0;
-            }
-            g_pendingMove = -1;
-            g_carrosselTarget = g_carrosselFrame + 16;
-            g_carrosselDir = +1;
-            g_previewDelay = 1.0f;
+            DO_SONG_NAV(-1);
+            g_holdDir = -1; g_holdAnimTimer = 0; g_holdCarouselPos = 0x3c;
         }
+
+        /* Hold-scroll: enquanto nenhum press novo, incrementa timer e dispara auto-scroll */
+        if (!drHit && !dlHit) {
+            if (!drDown && !dlDown) {
+                /* Solto — zera estado */
+                g_holdDir = 0; g_holdAnimTimer = 0; g_holdCarouselPos = 0;
+            } else if (!g_modeAnimActive && g_holdDir != 0) {
+                /* Mantido pressionado — avança timer (2× se carouselPos > 0xb4) */
+                g_holdCarouselPos++;
+                g_holdAnimTimer += (g_holdCarouselPos > 0xb4) ? 2 : 1;
+
+                if (g_holdAnimTimer > 0x14) {  /* 20 frames ≈ 333 ms → próximo scroll */
+                    g_holdAnimTimer = 0;
+                    DO_SONG_NAV(g_holdDir);
+                    Audio_Play(g_waveSoundIds[SND_10_2], false);
+                }
+            }
+        }
+
+#undef DO_SONG_NAV
     }
 
     // Avanca o frame do carrossel — velocidade 1 = mais lento

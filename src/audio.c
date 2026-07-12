@@ -244,7 +244,8 @@ static const char* g_waveFiles[SND_COUNT] = {
     "RANK_B.wav", // SND_RANK_B
     "RANK_C.wav", // SND_RANK_C
     "RANK_D.wav", // SND_RANK_D
-    "REMIX_F.wav" // SND_RANK_F
+    "RANK_F.wav", // SND_RANK_F
+    "10-2.wav"     // SND_10_2
 };
 
 int g_waveSoundIds[SND_COUNT];
