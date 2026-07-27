@@ -47,6 +47,9 @@ void Gamestate_UpdateMenu(float dt) {
                     g_game.state = STATE_EXIT;
                     g_game.stateFrame = 0;
                 } else {
+                    /* Show Help: se toggle2=ON e indo para SongSelect, passa pelo How To Play */
+                    if (target == STATE_SONG_SELECT && g_game.optionToggle2)
+                        target = STATE_HOWTOPLAY;
                     Game_ChangeState(target);
                 }
             }

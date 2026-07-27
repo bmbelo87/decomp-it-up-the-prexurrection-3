@@ -1,0 +1,37 @@
+#pragma once
+
+#define IDR_WAVE_01_1	100
+#define IDR_WAVE_01_11	101
+#define IDR_WAVE_10_1	102
+#define IDR_WAVE_10_2	103
+#define IDR_WAVE_12_1	104
+#define IDR_WAVE_13_1	105
+#define IDR_WAVE_14	106
+#define IDR_WAVE_171	107
+#define IDR_WAVE_173	108
+#define IDR_WAVE_2_1	109
+#define IDR_WAVE_3_2	110
+#define IDR_WAVE_4_2	111
+#define IDR_WAVE_5_1	112
+#define IDR_WAVE_6_2	113
+#define IDR_WAVE_7_1	114
+#define IDR_WAVE_8_1	115
+#define IDR_WAVE_9_5	116
+#define IDR_WAVE_9_A	117
+#define IDR_WAVE_9_B	118
+#define IDR_WAVE_9_C	119
+#define IDR_WAVE_9_D	120
+#define IDR_WAVE_9_F	121
+#define IDR_WAVE_COIN2	122
+#define IDR_WAVE_GOODJOB1	123
+#define IDR_WAVE_GOODJOB2	124
+#define IDR_WAVE_GOODJOB3	125
+#define IDR_WAVE_NOTGOOD1	126
+#define IDR_WAVE_NOTGOOD2	127
+#define IDR_WAVE_NOTGOOD3	128
+#define IDR_WAVE_NOTGOOD4	129
+#define IDR_WAVE_RANK_A	130
+#define IDR_WAVE_RANK_B	131
+#define IDR_WAVE_RANK_C	132
+#define IDR_WAVE_RANK_D	133
+#define IDR_WAVE_RANK_F	134

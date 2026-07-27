@@ -71,4 +71,21 @@ bool Step_LoadSong(const char* path, StepSong* song);
 void Step_FreeSong(StepSong* song);
 int Step_SelectChart(const char* modeName, int fallbackSection);
 
+/* Random Step: embaralha painéis do chart no load time.
+ *
+ * panelMode:
+ *   0 = Single (5 painéis): P1 → half1, P2 → half2, permutações independentes
+ *   1 = Double/Nightmare (10 painéis): 1 player, embaralha half1+half2 juntos
+ *   2 = Half Double (6 painéis): 1 player, embaralha as 6 posições HD específicas
+ *
+ * Gera permutação via 4 swaps aleatórios (fiel ao original) e aplica
+ * uniformemente a todos os rows — hold continuity garantida. */
+void Step_ApplyRandomShuffle(StepChart* chart, int panelMode, bool shuffleP1, bool shuffleP2);
+
+/* Mirror: espelha paineis com permutacao fixa (load time, hold-safe).
+ * Single:  Z<->E, Q<->C, S fica       perm5=[3,4,2,0,1]
+ * HD:      S<->5, E<->1, C<->7        perm6=[5,3,4,1,2,0]
+ * DN:      Z<->9, Q<->3, S<->5, E<->1, C<->7  perm10=[8,9,7,5,6,3,4,2,0,1] */
+void Step_ApplyMirror(StepChart* chart, int panelMode, bool mirrorP1, bool mirrorP2);
+
 #endif

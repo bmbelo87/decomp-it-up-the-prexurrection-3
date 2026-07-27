@@ -17,9 +17,9 @@
 #include "song.h"
 #include "step.h"
 
-#define GAME_VERSION "0.9.0"
-#define GAME_BUILD_DATE "Jul 12 2026"
-#define GAME_BUILD_TIME "00:38"
+#define GAME_VERSION "0.9.5"
+#define GAME_BUILD_DATE "Jul 27 2026"
+#define GAME_BUILD_TIME "15:44"
 #define TARGET_FPS 60
 #define FRAME_TIME_MS (1000 / TARGET_FPS)
 
@@ -67,9 +67,11 @@ typedef enum {
     STATE_STAFF_ENTER     = 0x23,
     STATE_STAFF           = 0x24,
     STATE_STAFF_END       = 0x25,
+    STATE_STAGE_BREAK     = 0x26, /* 083.dat + 7-1.WAV → GameOver */
 
     // Our custom additions (high range to avoid conflicts)
     STATE_LOGO_SKIP       = 0x80,
+    STATE_HOWTOPLAY       = 0x86, /* Show Help: 03.DAT + 03.AUD antes da SongSelect */
     STATE_SONG_SELECT     = 0x81,
     STATE_SONG_SELECT_B   = 0x82,
     STATE_SONG_TITLE      = 0x83,
@@ -296,11 +298,14 @@ typedef struct {
     uint32_t confirmTimer;
 
     int optionDifficulty; // 0=Easy, 1=Normal, 2=Hard
-    int optionToggle1;    // opcao toggle 1
-    int optionToggle2;    // opcao toggle 2
+    int optionToggle1;    // opcao toggle 1 (Stage Break)
+    int optionToggle2;    // opcao toggle 2 (Show Help)
     int optionCurrentItem; // 0-4
     int stageBreak;       // Stage Break global (0=OFF, 1=ON)
     int showHelp;         // Show Help global (0=OFF, 1=ON)
+    int audioOffsetMs;    /* Offset de áudio em ms (default=80). Positivo = adianta o receptor/timing.
+                             Equivalente a ajuste de latência: bgmPos/1000 - audioOffsetMs/1000.
+                             Salvo em PUMPY.INI como AudioOffset=X. */
 
     /* ── Commands (códigos inseridos na SongSelect) ──────────────────────────
      * Sequência confirmada no Ghidra (DAT_00442378, byte pattern 08 10 08 10 04):
@@ -327,6 +332,8 @@ typedef struct {
     bool cmdMirror[2];           /* Mirror ativo por jogador */
     bool cmdRandomStep[2];       /* Random Step ativo por jogador */
     bool cmdRandomVelocity[2];   /* Random Velocity ativo por jogador */
+    bool cmdEarthworm[2];        /* Earthworm ativo por jogador */
+    bool cmdFreedom[2];          /* Freedom ativo por jogador (oculta receptor) */
     bool cmdVanish[2];           /* Vanish ativo por jogador */
     bool cmdNonStep[2];          /* Non-Step ativo por jogador */
     int  activePlayerMask; /* 0x1=P1 ativo, 0x2=P2 ativo (ambos=0x3). Default=0x1 */
@@ -445,6 +452,7 @@ typedef enum {
     SND_RANK_D,
     SND_RANK_F,
     SND_10_2,   /* 10-2.WAV: som do auto-scroll DL/DR hold */
+    SND_7_1,    /* 7-1.WAV:  som do Stage Break (antes do Game Over) */
     SND_COUNT
 } SoundID;
 
@@ -457,6 +465,7 @@ extern int g_waveSoundIds[SND_COUNT];
 void Audio_Play(int id, bool loop);
 void Audio_Stop(int id);
 void Audio_StopAll(void);
+bool Audio_IsPlaying(int id);
 void Audio_SetVolume(int id, long volume);
 void Audio_Shutdown(void);
 
@@ -531,6 +540,8 @@ void FUN_004119d0(int digit);           // Individual digit rendering
 void Gamestate_UpdateGameOption(float dt);
 void Gamestate_RenderGameOption(void);
 void Gamestate_InitGameOption(void);
+void GameOption_Load(void);   /* lê PUMPY.INI; chama-se na inicialização do jogo */
+void GameOption_Save(void);   /* escreve PUMPY.INI; chama-se em cada alteração */
 
 void Render_Clear(uint8_t r, uint8_t g, uint8_t b);
 void Render_SetOrtho(int width, int height);

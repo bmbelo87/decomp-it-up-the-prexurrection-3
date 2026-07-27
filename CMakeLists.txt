@@ -10,6 +10,7 @@ if(MSVC)
 endif()
 
 add_executable(Pumpy WIN32
+    src/resources.rc
     src/main.c
     src/window.c
     src/warning.c

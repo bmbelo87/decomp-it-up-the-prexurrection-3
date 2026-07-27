@@ -65,8 +65,10 @@ static void LoadBGAForState(GameState state) {
             bgaName = "lt01";
         break;
     case STATE_GAMEOVER_ENTER:   bgaName = "84"; break;
+    case STATE_STAGE_BREAK:           bgaName = "083"; break; /* 083.DAT + 7-1.WAV pré-GameOver */
     case STATE_DANCE_GRADE_ENTER:
     case STATE_DANCE_GRADE_DISPLAY: bgaName = "83"; break;
+    case STATE_HOWTOPLAY: bgaName = ""; break; /* limpa BGA do menu imediatamente; 03.DAT carrega no stateFrame==1 */
     default: break;
     }
 
@@ -121,6 +123,22 @@ static void LoadBGAForState(GameState state) {
     }
 }
 
+/* Reseta todos os cheats de todos os players (ESC e Game Over). */
+void Game_ResetAllCheats(void) {
+    for (int _p = 0; _p < 2; _p++) {
+        g_game.cmdSpeedMult[_p]      = 1;
+        g_game.cmdSpeedRV[_p]        = false;
+        g_game.cmdMirror[_p]         = false;
+        g_game.cmdRandomStep[_p]     = false;
+        g_game.cmdRandomVelocity[_p] = false;
+        g_game.cmdEarthworm[_p]      = false;
+        g_game.cmdFreedom[_p]        = false;
+        g_game.cmdVanish[_p]         = false;
+        g_game.cmdNonStep[_p]        = false;
+    }
+    Log_Print("CHEATS: reset global (ESC/GameOver)\n");
+}
+
 void Game_ChangeState(GameState newState) {
     Log_Print("State: %s -> %s\n",
               State_ToString(g_game.state), State_ToString(newState));
@@ -144,7 +162,7 @@ void Game_Init(HINSTANCE hInstance) {
     g_game.globalScaleY = 1.0f;
     g_game.globalAlpha = 1.0f;
     g_game.showDebug = true;
-    g_game.stageBreak = 1;
+    /* g_game.stageBreak = 1; */ /* DISABLED: controlado por optionToggle1 no GameOption */
     g_game.showHelp = 0;
     g_game.cmdSpeedMult[0] = 1;    /* Command P1: velocidade padrão x1 */
     g_game.cmdSpeedMult[1] = 1;    /* Command P2: velocidade padrão x1 */
@@ -154,6 +172,7 @@ void Game_Init(HINSTANCE hInstance) {
     g_game.isBattleMode = false;   /* BATTLE só ativo quando selecionado no song_select */
     Render_SetGlobalColor(0, 0, 0, 0);
     GetCurrentDirectoryA(MAX_PATH, g_game.currentDirectory);
+    GameOption_Load(); /* lê PUMPY.INI — antes de qualquer sistema, para que o restante já veja os valores corretos */
     InitSystems();
     Audio_Init();
     Font_Init();
@@ -232,6 +251,7 @@ void Game_Update(float dt) {
         SongSelect_ResetCreditIndices();
 
         if (s == STATE_GAMEPLAY || s == STATE_GAME_INIT) {
+            Game_ResetAllCheats(); /* ESC durante gameplay: zera todos os cheats */
             Resource_ClearBGA();
             Game_ChangeState(STATE_MENU_ENTER);
             return;
@@ -336,9 +356,20 @@ void Game_Update(float dt) {
             }
         }
         break;
+    case STATE_STAGE_BREAK:
+        /* 083.DAT aparece enquanto 7-1.WAV toca; quando termina → GameOver */
+        if (g_game.stateFrame == 1) {
+            Game_ResetAllCheats();
+            Audio_Play(g_waveSoundIds[SND_7_1], false);
+        }
+        if (g_game.stateFrame > 2 && !Audio_IsPlaying(g_waveSoundIds[SND_7_1])) {
+            Game_ChangeState(STATE_GAMEOVER_ENTER);
+        }
+        break;
     case STATE_GAMEOVER_ENTER:
         if (g_game.stateFrame == 1) {
             BGM_Stop();
+            Game_ResetAllCheats(); /* Game Over: zera todos os cheats (centralizado) */
             Render_SetGlobalColor(0, 0, 0, 0);
         }
         if (g_game.stateFrame >= 120) {
@@ -366,6 +397,31 @@ void Game_Update(float dt) {
     case STATE_GAMEOPTION:
     case STATE_GAMEOPTION_EXIT:
         Gamestate_UpdateGameOption(dt);
+        break;
+    case STATE_HOWTOPLAY:
+        /* Frame 1: carrega 03.DAT e inicia 003.AUD (igual ao padrão GAMEOPTION_ENTER) */
+        if (g_game.stateFrame == 1) {
+            Resource_SwitchBGA("03");
+            g_game.bgaFrame = 0;
+            g_game.bgaLoop  = false;
+            {
+                char path[MAX_PATH];
+                snprintf(path, sizeof(path), "%s\\AUDIO\\003.AUD", g_game.currentDirectory);
+                BGM_Stop();
+                if (BGM_LoadAUDDirect(path)) BGM_Play(true); /* loop=true: igual demais AUDs do jogo */
+            }
+        }
+        /* Sai para SongSelect: CN do player ativo OU BGA terminou */
+        if (g_game.stateFrame > 30) {
+            bool skipCN = false;
+            if (g_game.activePlayerMask & 0x1) skipCN |= Input_IsPadHit(0, PAD_C);
+            if (g_game.activePlayerMask & 0x2) skipCN |= Input_IsPadHit(1, PAD_C);
+            bool bgaEnded = (g_game.bgaMaxFrame > 0 && g_game.bgaFrame >= g_game.bgaMaxFrame);
+            if (skipCN || bgaEnded) {
+                BGM_Stop();
+                Game_ChangeState(STATE_SONG_SELECT);
+            }
+        }
         break;
     case STATE_RESET_WARNING:
     Game_ChangeState(STATE_LOGO_ENTER);

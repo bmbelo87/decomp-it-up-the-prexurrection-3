@@ -13,7 +13,7 @@
  *   Freedom:         UL DL UR DR DR UL UR DL CN  (só som, sem ícone)
  *   Earthworm:       DR DL UR UL DR UR DL UL CN  (só som, sem ícone)
  *
- * Buffer6 (simultâneo): DL+DR × 3 = Reset todos os cheats do player
+ * Buffer6 (sequencial): DL DR × 3 = Reset todos os cheats do player
  */
 #define CMD_BUF_LEN  5
 #define CMD_BUF9_LEN 9
@@ -70,6 +70,8 @@ static void Cmd_ResetAllCheats(int player) {
     g_game.cmdMirror[player]         = false;
     g_game.cmdRandomStep[player]     = false;
     g_game.cmdRandomVelocity[player] = false;
+    g_game.cmdEarthworm[player]      = false;
+    g_game.cmdFreedom[player]        = false;
     g_game.cmdVanish[player]         = false;
     g_game.cmdNonStep[player]        = false;
     g_cmdSpeedIdx[player]            = 0;
@@ -82,24 +84,87 @@ static void Cmd_ResetAllCheats(int player) {
 }
 
 /* Empurra um botão nos buffers do player e verifica todas as sequências.
- * Retorna true se algum cheat foi detectado (para tocar o som de confirmação). */
+ * Retorna true se algum cheat foi detectado (para tocar o som de confirmação).
+ *
+ * ORDEM DE PRIORIDADE: Buffer9 checa ANTES do Buffer5.
+ * Motivo: a sequência RV do Buffer9 (UL UR UL UR UL UR UL UR CN) termina com
+ * (UL UR UL UR CN) que é exatamente k_speedSeq — se Buffer5 checasse primeiro,
+ * ele dispararia no 9º botão e resetaria buf9Count=0, impedindo Buffer9 de
+ * reconhecer a sequência completa. */
 static bool Cmd_Push(int player, PadButton btn) {
     bool cheatFired = false;
 
-    /* ── Buffer5: velocidade + Vanish/NonStep ─────────────────────────── */
+    /* ── Alimentar ambos os buffers (sliding window independente) ──────── */
     if (g_cmdBufCount[player] < CMD_BUF_LEN) {
         g_cmdBuf[player][g_cmdBufCount[player]++] = btn;
     } else {
         memmove(g_cmdBuf[player], g_cmdBuf[player] + 1, (CMD_BUF_LEN - 1) * sizeof(PadButton));
         g_cmdBuf[player][CMD_BUF_LEN - 1] = btn;
     }
-    if (g_cmdBufCount[player] >= CMD_BUF_LEN) {
+    if (g_cmdBuf9Count[player] < CMD_BUF9_LEN) {
+        g_cmdBuf9[player][g_cmdBuf9Count[player]++] = btn;
+    } else {
+        memmove(g_cmdBuf9[player], g_cmdBuf9[player] + 1, (CMD_BUF9_LEN - 1) * sizeof(PadButton));
+        g_cmdBuf9[player][CMD_BUF9_LEN - 1] = btn;
+    }
+
+    /* ── Buffer9: cheats de 9 botões — PRIORIDADE ALTA ────────────────── */
+    if (g_cmdBuf9Count[player] >= CMD_BUF9_LEN) {
+        for (int seq = 0; seq < 5; seq++) {
+            if (memcmp(g_cmdBuf9[player], k_seq9[seq], CMD_BUF9_LEN * sizeof(PadButton)) == 0) {
+                g_cmdBuf9Count[player] = 0;
+                g_cmdBufCount[player]  = 0;
+                switch (seq) {
+                case 0: /* Random Velocity */
+                    g_game.cmdRandomVelocity[player] = !g_game.cmdRandomVelocity[player];
+                    g_game.cmdEarthworm[player]      = false; /* accel effect remove Earthworm */
+                    Log_Print("CMD P%d: RandomVelocity %s\n", player+1,
+                              g_game.cmdRandomVelocity[player] ? "ON" : "OFF");
+                    break;
+                case 1: /* Mirror */
+                    g_game.cmdMirror[player] = !g_game.cmdMirror[player];
+                    Log_Print("CMD P%d: Mirror %s\n", player+1,
+                              g_game.cmdMirror[player] ? "ON" : "OFF");
+                    break;
+                case 2: /* Random Step */
+                    g_game.cmdRandomStep[player] = !g_game.cmdRandomStep[player];
+                    Log_Print("CMD P%d: RandomStep %s\n", player+1,
+                              g_game.cmdRandomStep[player] ? "ON" : "OFF");
+                    break;
+                case 3: /* Freedom — oculta receptor */
+                    g_game.cmdFreedom[player] = !g_game.cmdFreedom[player];
+                    Log_Print("CMD P%d: Freedom %s\n", player+1,
+                              g_game.cmdFreedom[player] ? "ON" : "OFF");
+                    break;
+                case 4: /* Earthworm */
+                    g_game.cmdEarthworm[player] = !g_game.cmdEarthworm[player];
+                    if (g_game.cmdEarthworm[player]) {
+                        /* Earthworm cancela multiplicador e RV — HUD volta a exibir 1X */
+                        g_game.cmdSpeedMult[player]      = 1;
+                        g_game.cmdSpeedRV[player]        = false;
+                        g_cmdSpeedIdx[player]            = 0;
+                        g_game.cmdRandomVelocity[player] = false;
+                    }
+                    Log_Print("CMD P%d: Earthworm %s\n", player+1,
+                              g_game.cmdEarthworm[player] ? "ON" : "OFF");
+                    break;
+                }
+                cheatFired = true;
+                break;
+            }
+        }
+    }
+
+    /* ── Buffer5: velocidade + Vanish/NonStep (só se Buffer9 não disparou) */
+    if (!cheatFired && g_cmdBufCount[player] >= CMD_BUF_LEN) {
         if (memcmp(g_cmdBuf[player], k_speedSeq, CMD_BUF_LEN * sizeof(PadButton)) == 0) {
             g_cmdBufCount[player]  = 0;
             g_cmdBuf9Count[player] = 0;
             g_cmdSpeedIdx[player]  = (g_cmdSpeedIdx[player] + 1) % CMD_SPEED_COUNT;
-            g_game.cmdSpeedMult[player] = k_speedMult[g_cmdSpeedIdx[player]];
-            g_game.cmdSpeedRV[player]   = k_speedRV[g_cmdSpeedIdx[player]];
+            g_game.cmdSpeedMult[player]      = k_speedMult[g_cmdSpeedIdx[player]];
+            g_game.cmdSpeedRV[player]        = k_speedRV[g_cmdSpeedIdx[player]];
+            g_game.cmdRandomVelocity[player] = false; /* Buffer5 cancela RV do Buffer9 */
+            g_game.cmdEarthworm[player]      = false; /* accel effect remove Earthworm */
             Log_Print("CMD P%d: Speed -> x%d%s (idx=%d)\n",
                       player + 1, g_game.cmdSpeedMult[player],
                       g_game.cmdSpeedRV[player] ? " RV" : "",
@@ -121,47 +186,6 @@ static bool Cmd_Push(int player, PadButton btn) {
                 Log_Print("CMD P%d: Vanish/NonStep OFF\n", player + 1);
             }
             cheatFired = true;
-        }
-    }
-
-    /* ── Buffer9: cheats de 9 botões ─────────────────────────────────── */
-    if (g_cmdBuf9Count[player] < CMD_BUF9_LEN) {
-        g_cmdBuf9[player][g_cmdBuf9Count[player]++] = btn;
-    } else {
-        memmove(g_cmdBuf9[player], g_cmdBuf9[player] + 1, (CMD_BUF9_LEN - 1) * sizeof(PadButton));
-        g_cmdBuf9[player][CMD_BUF9_LEN - 1] = btn;
-    }
-    if (g_cmdBuf9Count[player] >= CMD_BUF9_LEN) {
-        for (int seq = 0; seq < 5; seq++) {
-            if (memcmp(g_cmdBuf9[player], k_seq9[seq], CMD_BUF9_LEN * sizeof(PadButton)) == 0) {
-                g_cmdBuf9Count[player] = 0;
-                g_cmdBufCount[player]  = 0;
-                switch (seq) {
-                case 0: /* Random Velocity */
-                    g_game.cmdRandomVelocity[player] = !g_game.cmdRandomVelocity[player];
-                    Log_Print("CMD P%d: RandomVelocity %s\n", player+1,
-                              g_game.cmdRandomVelocity[player] ? "ON" : "OFF");
-                    break;
-                case 1: /* Mirror */
-                    g_game.cmdMirror[player] = !g_game.cmdMirror[player];
-                    Log_Print("CMD P%d: Mirror %s\n", player+1,
-                              g_game.cmdMirror[player] ? "ON" : "OFF");
-                    break;
-                case 2: /* Random Step */
-                    g_game.cmdRandomStep[player] = !g_game.cmdRandomStep[player];
-                    Log_Print("CMD P%d: RandomStep %s\n", player+1,
-                              g_game.cmdRandomStep[player] ? "ON" : "OFF");
-                    break;
-                case 3: /* Freedom — só som, sem ícone */
-                    Log_Print("CMD P%d: Freedom ativado\n", player+1);
-                    break;
-                case 4: /* Earthworm — só som, sem ícone */
-                    Log_Print("CMD P%d: Earthworm ativado\n", player+1);
-                    break;
-                }
-                cheatFired = true;
-                break;
-            }
         }
     }
 
@@ -489,25 +513,38 @@ void Gamestate_UpdateSongSelect(float dt) {
             bool dlHit = Input_IsPadHit(_p, PAD_DL);
             bool drHit = Input_IsPadHit(_p, PAD_DR);
 
-            /* Buffer6: pares DL+DR (simultâneo ou DL→DR sequencial) × 3 = Reset
-             * Máquina de estados por player:
-             *   state 0 (idle) + DL pressed → state 1
-             *   state 1 + DR pressed → par detectado, count++, state 0
-             *   DL+DR no mesmo frame   → par detectado imediatamente, state 0 */
-            if (dlHit && drHit) {
+            /* Buffer6: 3 pares DL+DR CONSECUTIVOS sem outros botões no meio = Reset
+             * Qualquer UL/UR/CN interrompendo a sequência reseta estado e contador,
+             * garantindo que Buffer9/Buffer5 com DL ou DR não disparem o reset. */
+            bool ulHit = Input_IsPadHit(_p, PAD_UL);
+            bool urHit = Input_IsPadHit(_p, PAD_UR);
+            bool  cHit = Input_IsPadHit(_p, PAD_C);
+            if (ulHit || urHit || cHit) {
+                /* botão fora da sequência DL DR → quebra a cadeia */
+                g_cmdBuf6State[_p] = 0;
+                g_cmdBuf6Count[_p] = 0;
+            } else if (dlHit && drHit) {
                 /* simultâneo: par imediato */
                 g_cmdBuf6State[_p] = 0;
                 g_cmdBuf6Count[_p]++;
                 Log_Print("CMD P%d: DL+DR par (simult.) #%d\n", _p+1, g_cmdBuf6Count[_p]);
                 if (g_cmdBuf6Count[_p] >= 3) Cmd_ResetAllCheats(_p);
-            } else {
-                if (g_cmdBuf6State[_p] == 0 && dlHit) {
-                    g_cmdBuf6State[_p] = 1; /* DL recebido, aguarda DR */
-                } else if (g_cmdBuf6State[_p] == 1 && drHit) {
+            } else if (dlHit) {
+                if (g_cmdBuf6State[_p] == 1) {
+                    /* DL repetido sem DR: reinicia par (reseta contador) */
+                    g_cmdBuf6Count[_p] = 0;
+                }
+                g_cmdBuf6State[_p] = 1; /* aguarda DR */
+            } else if (drHit) {
+                if (g_cmdBuf6State[_p] == 1) {
+                    /* DL→DR completo */
                     g_cmdBuf6State[_p] = 0;
                     g_cmdBuf6Count[_p]++;
                     Log_Print("CMD P%d: DL→DR par (seq.) #%d\n", _p+1, g_cmdBuf6Count[_p]);
                     if (g_cmdBuf6Count[_p] >= 3) Cmd_ResetAllCheats(_p);
+                } else {
+                    /* DR sem DL precedente: reseta */
+                    g_cmdBuf6Count[_p] = 0;
                 }
             }
 
@@ -1030,15 +1067,13 @@ void Gamestate_RenderSongSelect(void) {
 
             /* ── Velocidade ──────────────────────────────────────────────── */
             int speedOff;
-            if (g_game.cmdRandomVelocity[_p]) {
-                speedOff = 12; /* raccel: Random Velocity ativo */
+            if (g_game.cmdRandomVelocity[_p] || g_game.cmdSpeedRV[_p]) {
+                speedOff = 12; /* raccel — RV do ciclo (após x4) ou Random Velocity (Buffer9) */
             } else {
-                speedOff = 36; /* accel1 (x1 ou RV) */
-                if (!g_game.cmdSpeedRV[_p]) {
-                    if      (g_game.cmdSpeedMult[_p] >= 4) speedOff = 9;
-                    else if (g_game.cmdSpeedMult[_p] >= 3) speedOff = 8;
-                    else if (g_game.cmdSpeedMult[_p] >= 2) speedOff = 7;
-                }
+                speedOff = 36; /* accel1 */
+                if      (g_game.cmdSpeedMult[_p] >= 4) speedOff = 9;
+                else if (g_game.cmdSpeedMult[_p] >= 3) speedOff = 8;
+                else if (g_game.cmdSpeedMult[_p] >= 2) speedOff = 7;
             }
             int speedIdx = g_fontArrow541 + speedOff;
             if (speedIdx < g_game.sprTileCount) {

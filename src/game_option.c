@@ -1,13 +1,62 @@
 #include "pumpy.h"
+#include <stdio.h>
 
 static int go_counter;
 static int go_animCounter;
 
+/* ---------- persistência em PUMPY.INI ---------- */
+
+void GameOption_Save(void)
+{
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s\\PUMPY.INI", g_game.currentDirectory);
+    FILE* f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "[GameOption]\n");
+    fprintf(f, "Difficulty=%d\n",    g_game.optionDifficulty);
+    fprintf(f, "StageBreak=%d\n",    g_game.optionToggle1);
+    fprintf(f, "ShowHelp=%d\n",      g_game.optionToggle2);
+    fprintf(f, "AudioOffset=%d\n",   g_game.audioOffsetMs);
+    fclose(f);
+    Log_Print("GameOption: saved (diff=%d sb=%d help=%d audio=%dms)\n",
+              g_game.optionDifficulty, g_game.optionToggle1, g_game.optionToggle2,
+              g_game.audioOffsetMs);
+}
+
+void GameOption_Load(void)
+{
+    /* Defaults */
+    g_game.optionDifficulty = 1;   /* Normal */
+    g_game.optionToggle1    = 1;   /* Stage Break On */
+    g_game.optionToggle2    = 0;   /* Show Help Off */
+    g_game.audioOffsetMs    = 80;  /* 80ms — latência típica de áudio moderna */
+
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s\\PUMPY.INI", g_game.currentDirectory);
+    FILE* f = fopen(path, "r");
+    if (!f) {
+        Log_Print("GameOption: PUMPY.INI not found, using defaults\n");
+        return;
+    }
+    char line[128];
+    while (fgets(line, sizeof(line), f)) {
+        int v;
+        if (sscanf(line, "Difficulty=%d",  &v) == 1) g_game.optionDifficulty = v;
+        if (sscanf(line, "StageBreak=%d",  &v) == 1) g_game.optionToggle1    = v;
+        if (sscanf(line, "ShowHelp=%d",    &v) == 1) g_game.optionToggle2    = v;
+        if (sscanf(line, "AudioOffset=%d", &v) == 1) g_game.audioOffsetMs    = v;
+    }
+    fclose(f);
+    Log_Print("GameOption: loaded (diff=%d sb=%d help=%d audio=%dms)\n",
+              g_game.optionDifficulty, g_game.optionToggle1, g_game.optionToggle2,
+              g_game.audioOffsetMs);
+}
+
+/* ---------- init / update / render ---------- */
+
 void Gamestate_InitGameOption(void)
 {
-    g_game.optionDifficulty = 1;
-    g_game.optionToggle1 = 1;
-    g_game.optionToggle2 = 0;
+    /* Nao sobrescreve os valores — ja foram carregados por GameOption_Load() na inicializacao */
     go_counter = 0;
     go_animCounter = 0;
 }
@@ -99,17 +148,21 @@ void Gamestate_UpdateGameOption(float dt)
                     g_game.optionDifficulty = 0;
                 else
                     g_game.optionDifficulty++;
+                GameOption_Save();
                 break;
             case 1:
                 g_game.optionToggle1 = !g_game.optionToggle1;
+                GameOption_Save();
                 break;
             case 2:
                 g_game.optionToggle2 = !g_game.optionToggle2;
+                GameOption_Save();
                 break;
             case 3:
                 g_game.optionDifficulty = 1;
                 g_game.optionToggle1 = 1;
                 g_game.optionToggle2 = 0;
+                GameOption_Save();
                 break;
             case 4:
                 Audio_Play(g_waveSoundIds[SND_2_1], false);

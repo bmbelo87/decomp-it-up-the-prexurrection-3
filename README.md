@@ -6,7 +6,7 @@ A faithful C reconstruction of **PUMPY.EXE**, the arcade executable for **Pump I
 
 This project reverse-engineers the original x86 binary and reproduces its gameplay, rendering, audio, and state machine as closely as possible — no emulation, no wrappers. Native Windows executable built with OpenGL and DirectSound.
 
-## Status — v0.9
+## Status — v0.9.5
 
 | Feature                                      | Status                  |
 | -------------------------------------------- | ----------------------- |

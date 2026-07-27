@@ -1,4 +1,5 @@
 #include "pumpy.h"
+#include "resource_ids.h"
 
 #define DR_MP3_IMPLEMENTATION
 #include "dr_mp3.h"
@@ -206,12 +207,15 @@ int Audio_LoadWAV(const char* name, const uint8_t* data, DWORD size) {
 
 int Audio_LoadFromResource(const char* name, int resId) {
     HRSRC hRes = FindResourceA(g_game.hInstance, MAKEINTRESOURCEA(resId), "WAVE");
-    if (!hRes) return -1;
+    if (!hRes) { Log_Print("Audio: FindResource failed for %s (id=%d), err=%lu\n", name, resId, GetLastError()); return -1; }
     HGLOBAL hGlob = LoadResource(g_game.hInstance, hRes);
-    if (!hGlob) return -1;
+    if (!hGlob) { Log_Print("Audio: LoadResource failed for %s\n", name); return -1; }
     const uint8_t* data = (const uint8_t*)LockResource(hGlob);
     DWORD size = SizeofResource(g_game.hInstance, hRes);
-    return Audio_LoadWAV(name, data, size);
+    Log_Print("Audio: loaded '%s' from resource (id=%d, size=%lu)\n", name, resId, size);
+    int idx = Audio_LoadWAV(name, data, size);
+    Log_Print("Audio: '%s' -> slot %d\n", name, idx);
+    return idx;
 }
 
 int Audio_LoadWaveFile(const char* filename) {
@@ -245,14 +249,30 @@ static const char* g_waveFiles[SND_COUNT] = {
     "RANK_C.wav", // SND_RANK_C
     "RANK_D.wav", // SND_RANK_D
     "RANK_F.wav", // SND_RANK_F
-    "10-2.wav"     // SND_10_2
+    "10-2.wav",    // SND_10_2
+    "7-1.wav"      // SND_7_1
+};
+
+static const int g_waveResIds[SND_COUNT] = {
+    IDR_WAVE_3_2,     /* SND_3_2 */
+    IDR_WAVE_2_1,     /* SND_2_1 */
+    IDR_WAVE_4_2,     /* SND_4_2 */
+    IDR_WAVE_8_1,     /* SND_8_1 */
+    IDR_WAVE_5_1,     /* SND_5_1 */
+    IDR_WAVE_RANK_A,  /* SND_RANK_A */
+    IDR_WAVE_RANK_B,  /* SND_RANK_B */
+    IDR_WAVE_RANK_C,  /* SND_RANK_C */
+    IDR_WAVE_RANK_D,  /* SND_RANK_D */
+    IDR_WAVE_RANK_F,  /* SND_RANK_F */
+    IDR_WAVE_10_2,    /* SND_10_2 */
+    IDR_WAVE_7_1      /* SND_7_1 */
 };
 
 int g_waveSoundIds[SND_COUNT];
 
 void Audio_LoadAllWaves(void) {
     for (int i = 0; i < SND_COUNT; i++)
-        g_waveSoundIds[i] = Audio_LoadWaveFile(g_waveFiles[i]);
+        g_waveSoundIds[i] = Audio_LoadFromResource(g_waveFiles[i], g_waveResIds[i]);
 }
 
 void Audio_Play(int id, bool loop) {
@@ -265,6 +285,13 @@ void Audio_Stop(int id) {
     if (id < 0 || id >= MAX_SOUNDS || !g_game.sounds[id].inUse) return;
     IDirectSoundBuffer_Stop(g_game.sounds[id].buffer);
     IDirectSoundBuffer_SetCurrentPosition(g_game.sounds[id].buffer, 0);
+}
+
+bool Audio_IsPlaying(int id) {
+    if (id < 0 || id >= MAX_SOUNDS || !g_game.sounds[id].inUse) return false;
+    DWORD status = 0;
+    IDirectSoundBuffer_GetStatus(g_game.sounds[id].buffer, &status);
+    return (status & DSBSTATUS_PLAYING) != 0;
 }
 
 void Audio_StopAll(void) {

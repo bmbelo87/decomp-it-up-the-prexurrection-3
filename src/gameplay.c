@@ -1,6 +1,9 @@
 #include "pumpy.h"
 #include "vsl.h"
 
+/* Declarado em main.c — reseta todos os cheats (ESC / Game Over) */
+void Game_ResetAllCheats(void);
+
 #define MAX_PANELS 10
 #define PANEL_SIZE 30
 #define P1_CENTER_X 160
@@ -8,10 +11,31 @@
 
 #define MISS_WINDOW 0.25f
 
+/* Mantidos apenas para código de auto-play e range-checks de holds */
 #define JUDGE_PERFECT  0.055f
 #define JUDGE_GREAT    0.110f
 #define JUDGE_GOOD     0.165f
 #define JUDGE_BAD      0.220f
+
+/* ── Janelas de timing assimétricas por Game Level (Ghidra GameInit @0x00410cf0) ────────────
+ * Formato: k_judgeEarly[nível][janela] = tolerância p/ cedo (em segundos, valor positivo)
+ *          k_judgeLate [nível][janela] = tolerância p/ tarde
+ *   janela 0=Perfect, 1=Great, 2=Good, 3=Bad
+ * Constantes originais (multiplicadores × base_mult onde base_mult = songValue/120):
+ *   Easy  (0): (-12,+7) (-17,+12) (-22,+17) (-27,+22)  ≈ 8ms/unidade @ BPM nominal
+ *   Normal(1): (-10,+5) (-15,+10) (-20,+15) (-25,+20)
+ *   Hard  (2): ( -8,+3) (-13, +8) (-18,+13) (-23,+18)
+ */
+static const float k_judgeEarly[3][4] = {
+    /* Easy   */ { 0.096f, 0.136f, 0.176f, 0.216f },
+    /* Normal */ { 0.080f, 0.120f, 0.160f, 0.200f },
+    /* Hard   */ { 0.064f, 0.104f, 0.144f, 0.184f },
+};
+static const float k_judgeLate[3][4] = {
+    /* Easy   */ { 0.056f, 0.096f, 0.136f, 0.176f },
+    /* Normal */ { 0.040f, 0.080f, 0.120f, 0.160f },
+    /* Hard   */ { 0.024f, 0.064f, 0.104f, 0.144f },
+};
 
 /* ── Lifebar — valores exatos do GameInit (Ghidra) ───────────────────────
  * DAT_00da2324 = 500    (vida inicial P1)
@@ -81,8 +105,10 @@ static int g_lastNoteRow;
 static bool g_hasAudio;
 static bool g_autoplay;
 static bool g_autoPanel[10]; // per-panel autoplay: 0-4 P1, 5-9 P2
-static float g_scrollSpeedX; // current (interpolated) speed
-static float g_scrollSpeedTarget; // target speed from keypress
+static float g_scrollSpeedX[2];      // velocidade atual por player
+static float g_scrollSpeedTarget[2]; // target por player
+static int   g_rvLastMeasure[2];     // última medida onde RV disparou, por player
+static float g_stageBreakFreezeTimer = -1.0f; // >0: travado antes de ir p/ STATE_STAGE_BREAK
 
 /* Aplica variação de vida para o julgamento dado (fórmulas exatas do Ghidra). */
 static void applyLife(int player, JudgeType jt)
@@ -369,12 +395,13 @@ static bool loadChartForSong(int songId, int diffTier, const char* modeName)
     }
     g_autoplay = g_game.input.autoplay;
 
-    /* Aplica multiplicador de velocidade do Command.
-     * P2-only: usa cmdSpeedMult[1]; caso contrário usa cmdSpeedMult[0]. */
-    int _speedPlayer = (g_game.activePlayerMask == 0x2) ? 1 : 0;
-    float initSpeed = (g_game.cmdSpeedMult[_speedPlayer] >= 1) ? (float)g_game.cmdSpeedMult[_speedPlayer] : 1.0f;
-    g_scrollSpeedX      = initSpeed;
-    g_scrollSpeedTarget = initSpeed;
+    /* Aplica multiplicador de velocidade do Command — por player. */
+    for (int _ip = 0; _ip < 2; _ip++) {
+        float spd = (g_game.cmdSpeedMult[_ip] >= 1) ? (float)g_game.cmdSpeedMult[_ip] : 1.0f;
+        g_scrollSpeedX[_ip]      = spd;
+        g_scrollSpeedTarget[_ip] = spd;
+        g_rvLastMeasure[_ip]     = 0; /* igual ao DAT_00da24bc original: inicia em 0 → pula row 0 */
+    }
 
     memset(g_noteHits, 0, sizeof(g_noteHits));
     memset(g_noteHitCount, 0, sizeof(g_noteHitCount));
@@ -429,11 +456,14 @@ static void loadChart(void)
 
 static JudgeType evaluateTiming(double diff)
 {
-    double ad = diff < 0 ? -diff : diff;
-    if (ad <= JUDGE_PERFECT) return JT_PERFECT;
-    if (ad <= JUDGE_GREAT)   return JT_GREAT;
-    if (ad <= JUDGE_GOOD)    return JT_GOOD;
-    if (ad <= JUDGE_BAD)     return JT_BAD;
+    /* diff < 0: pressionou cedo; diff > 0: pressionou tarde */
+    int lvl = g_game.optionDifficulty;
+    if (lvl < 0) lvl = 0;
+    if (lvl > 2) lvl = 2;
+    if (diff > -(double)k_judgeEarly[lvl][0] && diff < (double)k_judgeLate[lvl][0]) return JT_PERFECT;
+    if (diff > -(double)k_judgeEarly[lvl][1] && diff < (double)k_judgeLate[lvl][1]) return JT_GREAT;
+    if (diff > -(double)k_judgeEarly[lvl][2] && diff < (double)k_judgeLate[lvl][2]) return JT_GOOD;
+    if (diff > -(double)k_judgeEarly[lvl][3] && diff < (double)k_judgeLate[lvl][3]) return JT_BAD;
     return JT_MISS;
 }
 
@@ -741,7 +771,8 @@ static void processInput(int player)
         g_hitTimer[player][panel] = 17;
         g_p1FlashTimer[player][panel] = 15; // inicia zoom+fade do tile p1
 
-        double bestDiff = 999;
+        double bestAbsDiff = 999;  /* usado só para achar o candidato mais próximo */
+        double bestDiff    = 999;  /* diff com sinal: negativo=early, positivo=late */
         int bestRow = -1;
 
         for (int ri = g_nextNoteRow[player][panel]; ri < (int)g_chart->rowCount; ri++)
@@ -755,7 +786,7 @@ static void processInput(int player)
             if (diff > JUDGE_BAD) { g_nextNoteRow[player][panel] = ri + 1; continue; }
 
             double ad = diff < 0 ? -diff : diff;
-            if (ad < bestDiff) { bestDiff = ad; bestRow = ri; }
+            if (ad < bestAbsDiff) { bestAbsDiff = ad; bestDiff = diff; bestRow = ri; }
         }
 
         if (bestRow < 0) continue;
@@ -781,6 +812,7 @@ static void processInput(int player)
                     g_pending[slot].deadline = g_songTime + JUDGE_BAD;
                     g_pending[slot].totalMask = 0;
                     g_pending[slot].hitMask = 0;
+                    g_pending[slot].worstDiff = 0.0;  /* sinal preservado; inicia em 0 */
                     for (int pan = 0; pan < panCount; pan++) {
                         uint8_t pv = isHD ? getNoteHD(&g_chart->rows[bestRow], pan) : (isDN ? getDNPanelValue(&g_chart->rows[bestRow], pan) : getPanelValue(&g_chart->rows[bestRow], pan, player));
                         if (pv && pv < NT_HOLD_H)
@@ -789,7 +821,12 @@ static void processInput(int player)
                     g_pendingCount++;
                 }
                 g_pending[slot].hitMask |= (1 << panel);
-                g_pending[slot].worstDiff = bestDiff;
+                /* worstDiff: mantém o diff de maior magnitude (com sinal) para evaluateTiming */
+                {
+                    double newAbs = bestDiff < 0 ? -bestDiff : bestDiff;
+                    double curAbs = g_pending[slot].worstDiff < 0 ? -g_pending[slot].worstDiff : g_pending[slot].worstDiff;
+                    if (newAbs > curAbs) g_pending[slot].worstDiff = bestDiff;
+                }
 
                 if ((g_pending[slot].hitMask & g_pending[slot].totalMask) == g_pending[slot].totalMask) {
                     g_pending[slot].active = false;
@@ -830,7 +867,7 @@ static void processInput(int player)
                                 g_noteState[player][pan] = 1;
                                 g_noteExplodeRow[player][pan] = bestRow;
                                 g_noteExplodeFrame[player][pan] = 0;
-                                g_glowTimer[player][pan] = 17; // glow aditivo P/G
+                                g_glowTimer[player][pan] = 24; /* glow aditivo P/G — 24 frames (0x18), igual original */
                                 if (isHD) clearHDPanel(&g_chart->rows[bestRow], pan);
                                 else if (isDN) clearDNPanel(&g_chart->rows[bestRow], pan);
                                 else clearPanel(&g_chart->rows[bestRow], pan, player);
@@ -894,7 +931,7 @@ static void processInput(int player)
                     g_noteState[player][pan] = 1;
                     g_noteExplodeRow[player][pan] = bestRow;
                     g_noteExplodeFrame[player][pan] = 0;
-                    g_glowTimer[player][pan] = 17; // glow aditivo P/G
+                    g_glowTimer[player][pan] = 24; /* glow aditivo P/G — 24 frames (0x18), igual original */
                     if (isHD) clearHDPanel(&g_chart->rows[bestRow], pan);
                     else if (isDN) clearDNPanel(&g_chart->rows[bestRow], pan);
                     else clearPanel(&g_chart->rows[bestRow], pan, player);
@@ -1085,6 +1122,7 @@ static void processHolds(void)
                         g_noteState[p][panel] = 1;
                         g_noteExplodeRow[p][panel] = ri;
                         g_noteExplodeFrame[p][panel] = 0;
+                        g_glowTimer[p][panel] = 24;
                         int hasTap = 0;
                         for (int pan = 0; pan < panCount; pan++)
                             if (pan != panel && (isHD ? getNoteHD(&g_chart->rows[ri], pan) : (dnAP ? getDNPanelValue(&g_chart->rows[ri], pan) : getPanelValue(&g_chart->rows[ri], pan, p)))) { hasTap = 1; break; }
@@ -1140,6 +1178,7 @@ static void processHolds(void)
                     g_noteState[p][panel] = 1;
                     g_noteExplodeRow[p][panel] = ri;
                     g_noteExplodeFrame[p][panel] = 0;
+                    g_glowTimer[p][panel] = 24;
                     if (!hasUnjudgedTap) {
                         g_game.stats.combo[p]++;
                     g_game.stats.missCombo[p] = 0;
@@ -1249,6 +1288,7 @@ static void processMisses(void)
 
 void Gameplay_Start(int songId)
 {
+    g_stageBreakFreezeTimer = -1.0f;
     memset(&g_game.stats, 0, sizeof(g_game.stats));
     g_game.stats.life[0]      = 224; /* baseline visual: 11+2/3 de 26 retangulos ao inicio da musica. */
     g_game.stats.life[1]      = 224;
@@ -1287,13 +1327,32 @@ void Gameplay_Start(int songId)
     int diffTier = g_game.selectedDifficulty;
     loadChartForSong(songId, diffTier, mode->name);
 
-    /* 2P: duplicar half1 → half2 para que P2 veja os mesmos padrões de P1.
-     * Aplicado a TODOS os modos quando ambos P1+P2 estão ativos (incluindo BATTLE).
-     * P1 lê half1, P2 lê half2 (= cópia de half1). */
-    if (g_game.activePlayerMask == 0x3 && g_songLoaded && g_chart) {
+    /* 2P Single: duplicar half1 → half2 para que P2 veja os mesmos padrões de P1.
+     * NUNCA fazer em DN/HD: esses modos já têm ambos os halves populados pelo chart
+     * original — sobrescrever half2 destruiria os dados do pad direito. */
+    if (g_game.activePlayerMask == 0x3 && g_songLoaded && g_chart
+        && !isDNMode() && !isHDMode()) {
         for (int ri = 0; ri < (int)g_chart->rowCount; ri++)
             g_chart->rows[ri].half2 = g_chart->rows[ri].half1;
-        Log_Print("GP: 2P mode — duplicated half1 -> half2 (%d rows)\n", g_chart->rowCount);
+        Log_Print("GP: 2P single — duplicated half1 -> half2 (%d rows)\n", g_chart->rowCount);
+    }
+
+    /* Modificadores de chart aplicados no load time (apos duplicacao 2P).
+     * Ordem: Mirror primeiro, depois Random Step (RS sobre mirror se ambos ativos). */
+    if (g_songLoaded && g_chart) {
+        int chartMode = isHDMode() ? 2 : (isDNMode() ? 1 : 0);
+
+        /* Mirror: permutacao fixa por modo (Z<->E etc) */
+        bool mP1 = (g_game.activePlayerMask & 0x1) && g_game.cmdMirror[0];
+        bool mP2 = (g_game.activePlayerMask & 0x2) && g_game.cmdMirror[1];
+        if (mP1 || mP2)
+            Step_ApplyMirror(g_chart, chartMode, mP1, mP2);
+
+        /* Random Step: permutacao aleatoria por row */
+        bool rsP1 = (g_game.activePlayerMask & 0x1) && g_game.cmdRandomStep[0];
+        bool rsP2 = (g_game.activePlayerMask & 0x2) && g_game.cmdRandomStep[1];
+        if (rsP1 || rsP2)
+            Step_ApplyRandomShuffle(g_chart, chartMode, rsP1, rsP2);
     }
 
     Log_Print("Gameplay: started song %d\n", songId);
@@ -1320,6 +1379,16 @@ void Gameplay_Update(float dt)
     if (!g_songLoaded) return;
     if (dt > 0.05f) dt = 0.05f;
 
+    /* Stage Break: freeze de 0.5s depois do trigger, antes de mostrar 083.DAT */
+    if (g_stageBreakFreezeTimer >= 0.0f) {
+        g_stageBreakFreezeTimer -= dt;
+        if (g_stageBreakFreezeTimer < 0.0f) {
+            g_stageBreakFreezeTimer = -1.0f;
+            Game_ChangeState(STATE_STAGE_BREAK);
+        }
+        return;
+    }
+
     {
         bool hdAP = (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&
                      strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "HALFDOUBLE") == 0);
@@ -1341,27 +1410,72 @@ void Gameplay_Update(float dt)
             if (!g_autoPanel[a]) { g_autoplay = false; break; }
     }
 
-    // Scroll speed adjustment (number keys 1-8, smooth animation)
+    // Scroll speed adjustment (number keys 1-8, smooth animation) — debug only
     for (int k = '1'; k <= '8'; k++)
     {
         if (Input_IsKeyHit(k))
         {
-            g_scrollSpeedTarget = (float)(k - '0');
-            Log_Print("GP: speed target %.0fX\n", g_scrollSpeedTarget);
+            float spd = (float)(k - '0');
+            for (int _dp = 0; _dp < 2; _dp++) {
+                if (!(g_game.activePlayerMask & (1 << _dp))) continue;
+                g_scrollSpeedTarget[_dp]    = spd;
+                g_game.cmdEarthworm[_dp]    = false; /* accel remove Earthworm */
+            }
+            Log_Print("GP: speed target %.0fX\n", spd);
         }
     }
 
-    // Smooth interpolation toward target
-    float speedDiff = g_scrollSpeedTarget - g_scrollSpeedX;
-    if (fabsf(speedDiff) > 0.01f)
-        g_scrollSpeedX += speedDiff * dt * 5.0f;
-    else
-        g_scrollSpeedX = g_scrollSpeedTarget;
+    // ── Velocidade por player: RV, Earthworm, interpolação ──────────────
+    {
+        double _rowF   = getRowAtTimeFloat(g_songTime);
+        int currentRow = (int)_rowF;
+        float ewRow    = (float)_rowF; /* float preciso — não truncar p/ Earthworm ser suave */
+
+        for (int _p = 0; _p < 2; _p++)
+        {
+            if (!(g_game.activePlayerMask & (1 << _p))) continue;
+
+            /* RV (Random Velocity): muda velocidade a cada 48 rows (1 compasso).
+             * Original (Ghidra): DAT_00da24b4 % 0x30 == 0 && != DAT_00da24bc.
+             * g_rvLastMeasure[p] inicia em 0 (pula row 0). */
+            if (g_game.cmdRandomVelocity[_p])
+            {
+                if (currentRow > 0 && currentRow % 48 == 0 && currentRow != g_rvLastMeasure[_p])
+                {
+                    g_rvLastMeasure[_p] = currentRow;
+                    int prevSpd = (int)(g_scrollSpeedTarget[_p] + 0.5f);
+                    if (prevSpd < 1) prevSpd = 1;
+                    if (prevSpd > 4) prevSpd = 4;
+                    int opts[3]; int oc = 0;
+                    for (int _s = 1; _s <= 4; _s++)
+                        if (_s != prevSpd) opts[oc++] = _s;
+                    g_scrollSpeedTarget[_p] = (float)opts[rand() % 3];
+                }
+            }
+
+            /* Earthworm: onda senoidal — oscila entre x1.0 e x2.0 (centro x1.5).
+             * 1 ciclo completo a cada 8 rows. Bypassa a interpolação abaixo. */
+            if (g_game.cmdEarthworm[_p])
+            {
+                float ewPhase = fmodf(ewRow, 8.0f) / 8.0f;
+                float ewSpeed = 1.5f + 0.5f * sinf(ewPhase * 6.2831853f);
+                g_scrollSpeedX[_p]      = ewSpeed;
+                g_scrollSpeedTarget[_p] = ewSpeed;
+            }
+
+            /* Smooth interpolation toward target (não afeta Earthworm) */
+            float speedDiff = g_scrollSpeedTarget[_p] - g_scrollSpeedX[_p];
+            if (fabsf(speedDiff) > 0.01f)
+                g_scrollSpeedX[_p] += speedDiff * dt * 5.0f;
+            else
+                g_scrollSpeedX[_p] = g_scrollSpeedTarget[_p];
+        }
+    }
 
     if (BGM_IsDSActive()) {
         uint32_t posMs = BGM_GetPositionMs();
         if (posMs > 100) // ignore first 100ms (startup)
-            g_songTime = posMs / 1000.0 - 0.150; // compensate audio buffer
+            g_songTime = posMs / 1000.0 - (g_game.audioOffsetMs / 1000.0); /* offset configuravel em PUMPY.INI (AudioOffset=X ms) */
         else
             g_songTime += dt;
     } else {
@@ -1389,12 +1503,45 @@ void Gameplay_Update(float dt)
     processHolds();
     processMisses();
 
-    /* Stage Break: missCombo consecutivo > 50 → game over imediato (original) */
-    if (g_game.stats.missCombo[0] > STAGE_BREAK_MISSES) {
-        Log_Print("GP: stage break (missCombo=%d)\n", g_game.stats.missCombo[0]);
-        BGM_Stop();
-        Game_ChangeState(STATE_GAMEOVER_ENTER);
-        return;
+    /* Stage Break: 51 miss consecutivos OU lifebar == 0 (se opção ativa) */
+    {
+        bool sbTrigger = false;
+        bool twoP = (g_game.activePlayerMask == 0x3);
+
+        if (g_game.optionToggle1) {
+            /* Stage Break ON: lifebar == 0 dispara
+             *   2P: AMBOS os players devem estar com vida zero
+             *   1P: player ativo com vida zero */
+            if (twoP) {
+                if (g_game.stats.life[0] == 0 && g_game.stats.life[1] == 0) {
+                    Log_Print("GP: stage break 2P ambas vidas=0\n");
+                    sbTrigger = true;
+                }
+            } else {
+                for (int _p = 0; _p < 2; _p++) {
+                    if (!(g_game.activePlayerMask & (1 << _p))) continue;
+                    if (g_game.stats.life[_p] == 0) {
+                        Log_Print("GP: stage break P%d life=0\n", _p+1);
+                        sbTrigger = true;
+                    }
+                }
+            }
+        } else {
+            /* Stage Break OFF: somente 51 miss consecutivos dispara (lifebar ignora) */
+            for (int _p = 0; _p < 2; _p++) {
+                if (!(g_game.activePlayerMask & (1 << _p))) continue;
+                if (g_game.stats.missCombo[_p] > STAGE_BREAK_MISSES) {
+                    Log_Print("GP: stage break P%d missCombo=%d (StgBrk OFF)\n", _p+1, g_game.stats.missCombo[_p]);
+                    sbTrigger = true;
+                }
+            }
+        }
+
+        if (sbTrigger) {
+            BGM_Stop();
+            g_stageBreakFreezeTimer = 0.5f; /* trava 0.5s antes de mostrar 083.DAT */
+            return;
+        }
     }
 
     for (int p = 0; p < 2; p++)
@@ -1412,8 +1559,15 @@ void Gameplay_Update(float dt)
                 g_p1FlashTimer[p][pan]--;
             if (g_noteState[p][pan] == 1) { // EXPLODING
                 g_noteExplodeFrame[p][pan]++;
-                if (g_noteExplodeFrame[p][pan] >= 25)
-                    g_noteState[p][pan] = 0; // reseta estado
+                if (g_noteExplodeFrame[p][pan] >= 25) {
+                    if (g_holdRows[p][pan] >= 0) {
+                        /* Hold ainda ativo: reinicia animação sem esperar nova row */
+                        g_noteExplodeFrame[p][pan] = 0;
+                        g_glowTimer[p][pan] = 24;
+                    } else {
+                        g_noteState[p][pan] = 0;
+                    }
+                }
             }
         }
     }
@@ -1505,7 +1659,7 @@ void Gameplay_Render(void)
                                (strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "DOUBLE") == 0 ||
                                 strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "NIGHTMARE") == 0));
     int sprReceptor = isHalfDouble ? g_fontSprHD01 : (isDoubleOrNightmare ? g_fontSprW01 : g_fontSpr01);
-    int sprBlind    = isHalfDouble ? g_fontSprHD02 : (isDoubleOrNightmare ? g_fontSprW02 : g_fontSpr02);
+    int sprBrilho   = isHalfDouble ? g_fontSprHD02 : (isDoubleOrNightmare ? g_fontSprW02 : g_fontSpr02); /* 02.SPR — receptor com brilho (BPM) */
     int sprLifeBord = isHalfDouble ? g_fontSprHD03 : (isDoubleOrNightmare ? g_fontSprW03 : g_fontSpr03);
     int sprLifeGlow = isHalfDouble ? g_fontSprHD05 : (isDoubleOrNightmare ? g_fontSprW05 : g_fontSpr05);
     int scrollBottom = 480;
@@ -1527,7 +1681,10 @@ void Gameplay_Render(void)
     // Visual scroll row: BPM-based, beatSplit-normalized for constant visual speed
     // Espaçamento original: 60.0 / beatSplit px/row × speedMult (confirmado Ghidra).
     float g_baseRowSpacing = (g_baseBeatSplit > 0) ? (60.0f / (float)g_baseBeatSplit) : 15.0f;
-    float pixelsPerRow = g_baseRowSpacing * g_scrollSpeedX;
+    /* Para startRow/endRow usa a velocidade mínima (mais rows visíveis = conservador) */
+    float _spMin = g_scrollSpeedX[0];
+    if (g_scrollSpeedX[1] < _spMin) _spMin = g_scrollSpeedX[1];
+    float pixelsPerRow = g_baseRowSpacing * _spMin;
     double visualScrollRow = 0;
     if (g_visualRow && g_visualRowCount > 0) {
         int vr = (int)actualScrollRow;
@@ -1566,10 +1723,20 @@ void Gameplay_Render(void)
     if (endRow >= (int)g_chart->rowCount) endRow = g_chart->rowCount - 1;
 
     // Compute judgment zone half-heights using current BPM-based scroll speed
+    // Usa média (early+late)/2 das janelas do nível atual para visualização centrada no receptor
     float jZoneHalf[4];
-    float jWindows[4] = { JUDGE_BAD, JUDGE_GOOD, JUDGE_GREAT, JUDGE_PERFECT };
-    for (int j = 0; j < 4; j++)
-        jZoneHalf[j] = jWindows[j] * currentPixelsPerSec;
+    {
+        int _lvl = g_game.optionDifficulty;
+        if (_lvl < 0) _lvl = 0; if (_lvl > 2) _lvl = 2;
+        float jWindows[4] = {
+            (k_judgeEarly[_lvl][3] + k_judgeLate[_lvl][3]) * 0.5f,  /* Bad  */
+            (k_judgeEarly[_lvl][2] + k_judgeLate[_lvl][2]) * 0.5f,  /* Good */
+            (k_judgeEarly[_lvl][1] + k_judgeLate[_lvl][1]) * 0.5f,  /* Great*/
+            (k_judgeEarly[_lvl][0] + k_judgeLate[_lvl][0]) * 0.5f,  /* Perf */
+        };
+        for (int j = 0; j < 4; j++)
+            jZoneHalf[j] = jWindows[j] * currentPixelsPerSec;
+    }
 
     /* Para HD/DN: sempre p=0, layout especial.
      * Para modos single (Normal/Hard/Crazy/Battle com 2P): loop pelos players ativos.
@@ -1585,6 +1752,9 @@ void Gameplay_Render(void)
 
     for (int p = pRend0; p < pRend1; p++)
     {
+        /* Velocidade de scroll deste player (para posição Y das notas) */
+        float pPixelsPerRow = g_baseRowSpacing * g_scrollSpeedX[p];
+
         /* Posições e contagem de painéis para este player/iteração */
         float posX[10];
         int pW[10];
@@ -1688,10 +1858,11 @@ void Gameplay_Render(void)
         */
 
         // 01.SPR receptor (g_fontSpr01) — renderiza ANTES das notas (abaixo delas)
+        // Freedom: oculta o receptor completamente (sprites não são desenhados)
         // Para single (não HD/DN): srcX baked para P1-solo (base=38). Offset por player.
         {
             float recOffX = (isHalfDouble || isDoubleOrNightmare) ? 0.0f : (posX[0] - 38.0f);
-            if (sprReceptor >= 0) {
+            if (sprReceptor >= 0 && !g_game.cmdFreedom[p]) {
                 int cnt = sprTileCount(sprReceptor);
                 for (int t = cnt - 1; t >= 0; t--) {
                     int idx = sprReceptor + t;
@@ -1702,13 +1873,14 @@ void Gameplay_Render(void)
                     Sprite_DrawTileUV(idx, sx + sw / 2.0f, sy + sh / 2.0f, sw, sh, 1.0f);
                 }
             }
-            // 02.SPR blind (g_fontSpr02) — também antes das notas
-            if (sprBlind >= 0 && g_blindTimer[p] > 0) {
+            // 02.SPR — Receptor com brilho (pisca com BPM)
+            // Freedom: oculta junto com 01.SPR
+            if (sprBrilho >= 0 && g_blindTimer[p] > 0 && !g_game.cmdFreedom[p]) {
                 float blindA = (float)g_blindTimer[p] / 10.0f;
                 glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                int cnt = sprTileCount(sprBlind);
+                int cnt = sprTileCount(sprBrilho);
                 for (int t = cnt - 1; t >= 0; t--) {
-                    int idx = sprBlind + t;
+                    int idx = sprBrilho + t;
                     float sx = (float)g_game.sprTiles[idx].srcX + recOffX;
                     float sy = (float)g_game.sprTiles[idx].srcY;
                     float sw = (float)g_game.sprTiles[idx].srcW;
@@ -1792,16 +1964,62 @@ void Gameplay_Render(void)
 
                     float vri = (ri < g_visualRowCount && g_visualRow) ? (float)g_visualRow[ri] : (float)ri;
                     float vendRi = (endRi < g_visualRowCount && g_visualRow) ? (float)g_visualRow[endRi] : (float)endRi;
-                    float y1 = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pixelsPerRow);
-                    float y2 = (float)(receptorY + rh2 / 2 + (vendRi - visualScrollRow) * pixelsPerRow);
+                    float y1 = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pPixelsPerRow);
+                    float y2 = (float)(receptorY + rh2 / 2 + (vendRi - visualScrollRow) * pPixelsPerRow);
                     if (y2 < y1) { float t = y1; y1 = y2; y2 = t; }
+
+                    if (g_holdRows[p][panel] >= 0) {
+                        /* HOLD SEGURADO (PERFECT): body começa exatamente na linha do receptor.
+                         * Independe de velocidade ou de rows processadas — sem gap. */
+                        y1 = (float)(receptorY + rh2 / 2);
+                    } else {
+                        /* MISS / não segurado: ancora topo do body no centro do HoldHead (ri-1)
+                         * para eliminar o buraco visual entre head e body. */
+                        int headRi = ri - 1;
+                        if (headRi >= 0) {
+                            uint8_t hv = isHalfDouble ? getNoteHD(&g_chart->rows[headRi], panel)
+                                       : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[headRi], panel)
+                                       : getPanelValue(&g_chart->rows[headRi], panel, p));
+                            if (hv == NT_HOLD_H) {
+                                float vhRi = (headRi < g_visualRowCount && g_visualRow) ? (float)g_visualRow[headRi] : (float)headRi;
+                                float headY = (float)(receptorY + rh2 / 2 + (vhRi - visualScrollRow) * pPixelsPerRow);
+                                if (headY < y1) y1 = headY;
+                                else if (headY > y2) y2 = headY;
+                            }
+                        }
+                    }
+
                     float totalH = y2 - y1;
                     if (totalH <= 0) { ri = endRi - 1; continue; }
 
-                    int idx = g_fontArrowETC + (isHalfDouble ? kHDBodyTile[panel] : kBodyTile[arrowIdx]);
-                    float sw = (float)g_game.sprTiles[idx].srcW;
-                    float offX = isHalfDouble ? kHDBodyOffX[panel] : kBodyOffX[arrowIdx];
-                    Sprite_DrawTileUV(idx, posX[panel] + sw / 2.0f + offX, y1 + totalH / 2.0f, sw, totalH, 1.0f);
+                    if (!g_game.cmdNonStep[p]) {
+                        int idx = g_fontArrowETC + (isHalfDouble ? kHDBodyTile[panel] : kBodyTile[arrowIdx]);
+                        float sw   = (float)g_game.sprTiles[idx].srcW;
+                        float sprH = (float)g_game.sprTiles[idx].srcH;
+                        float offX = isHalfDouble ? kHDBodyOffX[panel] : kBodyOffX[arrowIdx];
+                        float bodyAlpha = 1.0f;
+                        if (g_game.cmdVanish[p]) {
+                            /* Thresholds derivados do PUMPY.EXE (Ghidra):
+                             * _DAT_004349ac=196, _DAT_00434934=256, ref=316
+                             * → fade zone 62%-81% da área de play a partir do receptor */
+                            float fade = ((y1 + totalH / 2.0f) - 122.0f) / 84.0f;
+                            bodyAlpha = fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade);
+                        }
+                        float cx = posX[panel] + sw / 2.0f + offX;
+                        /* Estica apenas a faixa CENTRAL do UV do sprite (25%-75% vertical).
+                         * Evita o gradiente alpha das bordas do sprite e elimina linhas de corte. */
+                        {
+                            SPRTileDef* bt = &g_game.sprTiles[idx];
+                            int btW = Texture_GetWidth(bt->texId); if (btW <= 0) btW = 256;
+                            int btH = Texture_GetHeight(bt->texId); if (btH <= 0) btH = 256;
+                            float u1px = bt->u1 * (float)btW;
+                            float u2px = bt->u2 * (float)btW;
+                            float vC1 = (bt->v1 + (bt->v2 - bt->v1) * 0.25f) * (float)btH;
+                            float vC2 = (bt->v1 + (bt->v2 - bt->v1) * 0.75f) * (float)btH;
+                            Texture_DrawUV(bt->texId, cx - sw / 2.0f, y1, sw, totalH,
+                                           u1px, vC1, u2px, vC2, 1.0f, 1.0f, 1.0f, bodyAlpha);
+                        }
+                    }
                     ri = endRi - 1;
                 }
             }
@@ -1812,7 +2030,7 @@ void Gameplay_Render(void)
         {
             if (g_fontArrowETC < 0) break;
                 float vri = (ri < g_visualRowCount && g_visualRow) ? (float)g_visualRow[ri] : (float)ri;
-            float y = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pixelsPerRow);
+            float y = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pPixelsPerRow);
             if (y < receptorY - rh2 / 2 - 50 || y > scrollBottom + PANEL_SIZE) continue;
             for (int rio = 0; rio < panelCount; rio++)
             {
@@ -1831,17 +2049,23 @@ void Gameplay_Render(void)
                 }
                 uint8_t val = isHalfDouble ? getNoteHD(&g_chart->rows[ri], panel) : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[ri], panel) : getPanelValue(&g_chart->rows[ri], panel, p));
                 if (val != NT_HOLD_T) continue;
+                if (g_game.cmdNonStep[p]) continue;
                 int idx = g_fontArrowETC + (isHalfDouble ? kHDTailTile[panel] : kTailTile[arrowIdx]);
                 float sw = (float)g_game.sprTiles[idx].srcW;
                 float sh = (float)g_game.sprTiles[idx].srcH;
-                Sprite_DrawTileUV(idx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                float tailAlpha = 1.0f;
+                if (g_game.cmdVanish[p]) {
+                    float fade = (y - 122.0f) / 84.0f;
+                    tailAlpha = fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade);
+                }
+                Sprite_DrawTileUV(idx, posX[panel] + sw / 2.0f, y, sw, sh, tailAlpha);
             }
         }
         // Pass 2: Taps/HoldHeads
         for (int ri = startRow; ri <= endRow; ri++)
         {
             float vri = (ri < g_visualRowCount && g_visualRow) ? (float)g_visualRow[ri] : (float)ri;
-            float y = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pixelsPerRow);
+            float y = (float)(receptorY + rh2 / 2 + (vri - visualScrollRow) * pPixelsPerRow);
             if (y < receptorY - rh2 / 2 - 50 || y > scrollBottom + PANEL_SIZE) continue;
             for (int rio = 0; rio < panelCount; rio++)
             {
@@ -1873,12 +2097,17 @@ void Gameplay_Render(void)
                                (arrowGroup == 2) ? g_fontArrow545 :
                                (arrowGroup == 3) ? g_fontArrow543 :
                                (arrowGroup == 4) ? g_fontArrow544 : -1;
-                if (arrowSpr >= 0) {
+                if (arrowSpr >= 0 && !g_game.cmdNonStep[p]) {
                     int af = (g_game.frameCounter / 3) % 6;
                     int aidx = arrowSpr + af;
                     float sw = (float)g_game.sprTiles[aidx].srcW;
                     float sh = (float)g_game.sprTiles[aidx].srcH;
-                    Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, 1.0f);
+                    float noteAlpha = 1.0f;
+                    if (g_game.cmdVanish[p]) {
+                        float fade = (y - 122.0f) / 84.0f;
+                        noteAlpha = fade < 0.0f ? 0.0f : (fade > 1.0f ? 1.0f : fade);
+                    }
+                    Sprite_DrawTileUV(aidx, posX[panel] + sw / 2.0f, y, sw, sh, noteAlpha);
                 }
             }
         }
@@ -1887,12 +2116,12 @@ void Gameplay_Render(void)
     int receptorY = 38; // Same as in rendering loop
 
 
-        /* Mode/Modifier sprites do ARROW541.SP2.
-         * P2 sozinho (HD/DN/qualquer modo) → lado direito; caso contrário → esquerdo. */
+        /* Mode/Modifier sprites do ARROW541.SP2 — idêntico ao song_select.
+         * P1 → lado esquerdo, P2 → lado direito (usa `p` da iteração atual). */
         if (g_fontArrow541 >= 0) {
-            bool hudRight = (g_game.activePlayerMask == 0x2);
+            bool hudRight = (p == 1); /* P2 sempre vai pra direita */
             const char* modeName = (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount) ? g_game.songDB.modes[g_game.selectedModeIndex].name : "EASY";
-            int modeOff = 31; // modeez (default)
+            int modeOff = 31; /* modeez (default) */
             if (strcmp(modeName, "HARD") == 0) modeOff = 32;
             else if (strcmp(modeName, "CRAZY") == 0) modeOff = 33;
             int modeIdx = g_fontArrow541 + modeOff;
@@ -1900,28 +2129,47 @@ void Gameplay_Render(void)
                 float sw = (float)g_game.sprTiles[modeIdx].srcW;
                 float sh = (float)g_game.sprTiles[modeIdx].srcH;
                 float hx = hudRight ? (640.0f - 18.0f - sw/2.0f) : (18.0f + sw/2.0f);
-                Sprite_DrawTileUV(modeIdx, hx, 152 + sh/2, sw, sh, 1.0f);
+                Sprite_DrawTileUV(modeIdx, hx, 152.0f + sh/2.0f, sw, sh, 1.0f);
             }
-            int speedOff = 36; // accel1
-            if (g_scrollSpeedTarget >= 4.0f) speedOff = 9; // accel4
-            else if (g_scrollSpeedTarget >= 3.0f) speedOff = 8; // accel3
-            else if (g_scrollSpeedTarget >= 2.0f) speedOff = 7; // accel2
+
+            /* Velocidade: raccel(12) quando RV ativo, senão accel1/2/3/4 */
+            int speedOff;
+            if (g_game.cmdRandomVelocity[p] || g_game.cmdSpeedRV[p]) {
+                speedOff = 12; /* raccel */
+            } else {
+                speedOff = 36; /* accel1 */
+                if      (g_game.cmdSpeedMult[p] >= 4) speedOff = 9;
+                else if (g_game.cmdSpeedMult[p] >= 3) speedOff = 8;
+                else if (g_game.cmdSpeedMult[p] >= 2) speedOff = 7;
+            }
             int speedIdx = g_fontArrow541 + speedOff;
             if (speedIdx < g_game.sprTileCount) {
                 float sw = (float)g_game.sprTiles[speedIdx].srcW;
                 float sh = (float)g_game.sprTiles[speedIdx].srcH;
                 float hx = hudRight ? (640.0f - 18.0f - sw/2.0f) : (18.0f + sw/2.0f);
-                Sprite_DrawTileUV(speedIdx, hx, 184 + sh/2, sw, sh, 1.0f);
+                Sprite_DrawTileUV(speedIdx, hx, 184.0f + sh/2.0f, sw, sh, 1.0f);
             }
-            int disOffsets[4] = { 34, 35, 37, 38 };
-            float disY[4] = { 216, 248, 280, 312 };
+
+            /* Modificadores: RandomStep(R), Mirror(M), Vanish(V), NonStep(NS)
+             * OFF: _randm=34, _mirrr=35, _vanis=37, _nnstp=38
+             * ON:   random=10,  mirror=11,  vanish=13,  nonstp=14 */
+            static const int   kModOff_OFF[4] = { 34, 35, 37, 38 };
+            static const int   kModOff_ON[4]  = { 10, 11, 13, 14 };
+            static const float kModY[4]       = { 216.0f, 248.0f, 280.0f, 312.0f };
+            bool modActive[4] = {
+                g_game.cmdRandomStep[p],
+                g_game.cmdMirror[p],
+                g_game.cmdVanish[p],
+                g_game.cmdNonStep[p]
+            };
             for (int di = 0; di < 4; di++) {
-                int didx = g_fontArrow541 + disOffsets[di];
+                int tileOff = modActive[di] ? kModOff_ON[di] : kModOff_OFF[di];
+                int didx = g_fontArrow541 + tileOff;
                 if (didx < g_game.sprTileCount) {
                     float sw = (float)g_game.sprTiles[didx].srcW;
                     float sh = (float)g_game.sprTiles[didx].srcH;
                     float hx = hudRight ? (640.0f - 18.0f - sw/2.0f) : (18.0f + sw/2.0f);
-                    Sprite_DrawTileUV(didx, hx, (float)(disY[di] + sh/2), sw, sh, 1.0f);
+                    Sprite_DrawTileUV(didx, hx, kModY[di] + sh/2.0f, sw, sh, 1.0f);
                 }
             }
         }
@@ -2405,7 +2653,7 @@ void Gameplay_Render(void)
                 for (int i = 0; i < 5; i++) expPosX[i] = 38.0f + i * 48.0f;
             }
         }
-        float erY = 38.0f + 28.0f;
+        float erY = 38.0f + 28.0f + 1.0f; /* +1px ajuste fino de posição */
         static const float expOffXReg[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
         static const float expOffXHD[6]  = {-5.0f, -6.0f, -7.0f, -7.0f, -6.0f, -5.0f};
         for (int pan = 0; pan < expPanels; pan++) {
@@ -2428,59 +2676,56 @@ void Gameplay_Render(void)
             }
             if (base < 0) continue;
             float ef = (float)g_noteExplodeFrame[pe][pan];
-            float eAlpha = ef < 20.0f ? 1.0f : 1.0f - (ef - 19.0f) / 5.0f;
+            float eAlpha = 1.0f - ef / 24.0f; /* fade suave do frame 0 ao 24 */
             int af = (g_game.frameCounter / 3) % 6;
             int aSpr = base + af;
             float sw = (float)g_game.sprTiles[aSpr].srcW;
             float sh = (float)g_game.sprTiles[aSpr].srcH;
-            Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, eAlpha);
-            if (g_fontArrowF >= 0) {
-                int fCnt = sprTileCount(g_fontArrowF);
-                if (fCnt > 0) {
-                    int fArrow;
-                    if (isHalfDouble) {
-                        fArrow = (pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1;
-                    } else if (isDoubleOrNightmare) {
-                        fArrow = pan % 5;
-                    } else {
-                        fArrow = pan;
-                    }
-                    int fIdx = fArrow < fCnt ? fArrow : 0;
-                    int fSpr = g_fontArrowF + fIdx;
-                    float fw = (float)g_game.sprTiles[fSpr].srcW;
-                    float fh = (float)g_game.sprTiles[fSpr].srcH;
-                    float esc = 0.8f + ef * 0.02f;
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                    Sprite_DrawTileUV(fSpr, expPosX[pan] + expOffXReg[fArrow] + fw / 2.0f, erY, fw * esc, fh * esc, eAlpha);
-                    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-                }
-            }
-        }
 
-        /* ARROWF.SPR — brilho circular aditivo em PERFECT/GREAT (por player). */
-        if (g_fontArrowF >= 0) {
-            int fCnt = sprTileCount(g_fontArrowF);
-            if (fCnt > 0) {
-                float erY = 38.0f + 28.0f;
-                for (int pan = 0; pan < expPanels; pan++) {
-                    int ht = g_glowTimer[pe][pan];
-                    if (ht <= 0) continue;
-                    float alpha2 = (ht <= 4) ? (float)ht / 4.0f : 1.0f;
-                    int arrowType;
-                    if (isHalfDouble) {
-                        arrowType = (pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1;
-                    } else if (isDoubleOrNightmare) {
-                        arrowType = pan % 5;
-                    } else {
-                        arrowType = pan;
-                    }
-                    int fIdx = arrowType < fCnt ? arrowType : 0;
-                    int fSpr = g_fontArrowF + fIdx;
-                    if (fSpr >= g_game.sprTileCount) continue;
-                    float fw = (float)g_game.sprTiles[fSpr].srcW;
-                    float fh = (float)g_game.sprTiles[fSpr].srcH;
+            /* Camada 1: seta colorida */
+            Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, eAlpha);
+
+            /* Camada 2 + 3: glow em PERFECT/GREAT */
+            {
+                int ht = g_glowTimer[pe][pan];
+                if (ht > 0) {
+                    float ga = (float)ht / 24.0f;
+
+                    /* Camada 2: mesma seta aditiva 3x — acumula para ficar bem branca */
                     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
-                    Sprite_DrawTileUV(fSpr, expPosX[pan] + fw / 2.0f, erY, fw, fh, alpha2);
+                    Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, ga);
+                    Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, ga);
+                    Sprite_DrawTileUV(aSpr, expPosX[pan] + sw / 2.0f, erY, sw, sh, ga);
+
+                    /* Camada 3: arrowf.spr aditivo — mesma proporção inicial do HitKey (0.8x), sem crescer.
+                     * Posição usa o mesmo offset p1OffX do HitKey (centralizado no receptor). */
+                    if (g_fontArrowF >= 0) {
+                        int fCnt = sprTileCount(g_fontArrowF);
+                        int arrowType;
+                        if (isHalfDouble) {
+                            arrowType = (pan == 0 || pan == 5) ? 2 : (pan == 1) ? 3 : (pan == 2) ? 4 : (pan == 3) ? 0 : 1;
+                        } else if (isDoubleOrNightmare) {
+                            arrowType = pan % 5;
+                        } else {
+                            arrowType = pan;
+                        }
+                        int fIdx = (fCnt > 0 && arrowType < fCnt) ? arrowType : 0;
+                        int fSpr = g_fontArrowF + fIdx;
+                        if (fSpr < g_game.sprTileCount) {
+                            float fw = (float)g_game.sprTiles[fSpr].srcW;
+                            float fh = (float)g_game.sprTiles[fSpr].srcH;
+                            /* Mesmo offset de posição do HitKey (p1OffX) */
+                            static const float afOffXReg[5] = {-7.0f, -6.0f, -5.0f, -6.0f, -7.0f};
+                            static const float afOffXHD[5]  = {-5.0f, -6.0f, -7.0f, -6.0f, -5.0f};
+                            const float* afOffX = (isHalfDouble || isDoubleOrNightmare) ? afOffXHD : afOffXReg;
+                            int afPan = isDoubleOrNightmare ? (pan % 5) : (isHalfDouble ? arrowType : pan);
+                            float cx = expPosX[pan] + afOffX[afPan] + fw / 2.0f;
+                            /* Escala 1.0f — tamanho natural do sprite, sem crescer */
+                            float gsc = 1.0f;
+                            Sprite_DrawTileUV(fSpr, cx, erY, fw * gsc, fh * gsc, ga);
+                        }
+                    }
+
                     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
                 }
             }

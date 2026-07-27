@@ -391,10 +391,253 @@ int Step_SelectChart(const char* modeName, int fallbackSection)
     if (_stricmp(modeName, "HARD") == 0) return 2;
     if (_stricmp(modeName, "NIGHTMARE") == 0) return 3;
     if (_stricmp(modeName, "CRAZY") == 0) return 4;
+    if (_stricmp(modeName, "DOUBLE") == 0) return 5;
     if (_stricmp(modeName, "FULLDOUBLE") == 0) return 5;
     if (_stricmp(modeName, "HALFDOUBLE") == 0) return 6;
     if (_stricmp(modeName, "DIVISION") == 0) return 7;
     if (_stricmp(modeName, "LIGHTMAP") == 0) return 8;
 
     return fallbackSection;
+}
+
+/* ── Helpers de permutacao (usados pelo Mirror) ─────────────────────────────
+ * Aplicam uma permutacao fixa a um StepHalf, StepRow DN ou StepRow HD.
+ * nota em panel[i] vai para panel[perm[i]]. */
+
+static void applyPermToHalf(StepHalf* h, const int perm[5])
+{
+    uint8_t v[5] = { h->dl, h->ul, h->cn, h->ur, h->dr };
+    uint8_t o[5] = { 0 };
+    for (int i = 0; i < 5; i++) o[perm[i]] = v[i];
+    h->dl = o[0]; h->ul = o[1]; h->cn = o[2]; h->ur = o[3]; h->dr = o[4];
+}
+
+static void applyPermToDN(StepRow* row, const int perm[10])
+{
+    uint8_t v[10] = {
+        row->half1.dl, row->half1.ul, row->half1.cn, row->half1.ur, row->half1.dr,
+        row->half2.dl, row->half2.ul, row->half2.cn, row->half2.ur, row->half2.dr
+    };
+    uint8_t o[10] = { 0 };
+    for (int i = 0; i < 10; i++) o[perm[i]] = v[i];
+    row->half1.dl=o[0]; row->half1.ul=o[1]; row->half1.cn=o[2]; row->half1.ur=o[3]; row->half1.dr=o[4];
+    row->half2.dl=o[5]; row->half2.ul=o[6]; row->half2.cn=o[7]; row->half2.ur=o[8]; row->half2.dr=o[9];
+}
+
+static void applyPermToHD(StepRow* row, const int perm[6])
+{
+    /* Layout HD: [0]=h1.cn [1]=h1.ur [2]=h1.dr [3]=h2.dl [4]=h2.ul [5]=h2.cn */
+    uint8_t v[6] = {
+        row->half1.cn, row->half1.ur, row->half1.dr,
+        row->half2.dl, row->half2.ul, row->half2.cn
+    };
+    uint8_t o[6] = { 0 };
+    for (int i = 0; i < 6; i++) o[perm[i]] = v[i];
+    row->half1.cn=o[0]; row->half1.ur=o[1]; row->half1.dr=o[2];
+    row->half2.dl=o[3]; row->half2.ul=o[4]; row->half2.cn=o[5];
+}
+
+/* ── Mirror — permutacao fixa, aplicada a todos os rows (hold-safe) ─────────
+ *
+ * Permutacoes (nota em panel[i] vai para panel[perm[i]]):
+ *   Single5: Z<->E, Q<->C, S fica     → [3,4,2,0,1]
+ *   HD6:     S<->5, E<->1, C<->7      → [5,3,4,1,2,0]
+ *   DN10:    Z<->9, Q<->3, S<->5,
+ *            E<->1, C<->7             → [8,9,7,5,6,3,4,2,0,1]
+ *
+ * Como a permutacao e a mesma em todos os rows, holds ficam consistentes. */
+void Step_ApplyMirror(StepChart* chart, int panelMode, bool mirrorP1, bool mirrorP2)
+{
+    if (!chart || !chart->rows || chart->rowCount == 0) return;
+
+    if (panelMode == 1) {
+        /* DN: Z<->9, Q<->3, S<->5, E<->1, C<->7
+         * pan [0 1 2 3 4 5 6 7 8 9] -> [8 9 7 5 6 3 4 2 0 1] */
+        static const int dnPerm[10] = { 8, 9, 7, 5, 6, 3, 4, 2, 0, 1 };
+        for (uint32_t ri = 0; ri < chart->rowCount; ri++)
+            applyPermToDN(&chart->rows[ri], dnPerm);
+        Log_Print("MIRROR DN rows=%u\n", chart->rowCount);
+    }
+    else if (panelMode == 2) {
+        /* HD: S<->5, E<->1, C<->7
+         * pos [0 1 2 3 4 5] -> [5 3 4 1 2 0] */
+        static const int hdPerm[6] = { 5, 3, 4, 1, 2, 0 };
+        for (uint32_t ri = 0; ri < chart->rowCount; ri++)
+            applyPermToHD(&chart->rows[ri], hdPerm);
+        Log_Print("MIRROR HD rows=%u\n", chart->rowCount);
+    }
+    else {
+        /* Single: Z<->E(DL<->UR), Q<->C(UL<->DR), S fica
+         * [0 1 2 3 4] -> [3 4 2 0 1] */
+        static const int singlePerm[5] = { 3, 4, 2, 0, 1 };
+        for (uint32_t ri = 0; ri < chart->rowCount; ri++) {
+            if (mirrorP1) applyPermToHalf(&chart->rows[ri].half1, singlePerm);
+            if (mirrorP2) applyPermToHalf(&chart->rows[ri].half2, singlePerm);
+        }
+        Log_Print("MIRROR Single P1=%d P2=%d rows=%u\n", mirrorP1, mirrorP2, chart->rowCount);
+    }
+}
+
+/* ── Random Step shuffle — por row ──────────────────────────────────────────
+ * Cada row recebe permutacao independente → resultado verdadeiramente caótico.
+ * Hold continuity: bodies/tails seguem o head (rastreado via holdDest[]).
+ *
+ * Algoritmo por row:
+ *  1. Panels com HOLD_B/T → colocados no destino do head correspondente
+ *  2. Panels livres (TAP/HOLD_H) → shuffled aleatoriamente nos slots livres
+ *  3. HOLD_H atualiza holdDest para as rows seguintes
+ *
+ * panelMode: 0=Single(5p) 1=Double/NM(10p) 2=HalfDouble(6p)
+ */
+
+/* Shuffle in-place de um array de inteiros (Fisher-Yates) */
+static void shuffleIntArr(int* arr, int n)
+{
+    for (int i = n - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        int t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+    }
+}
+
+/* Single: embaralha half1 (playerHalf=0) ou half2 (playerHalf=1) por row */
+static void rsShuffleSingle(StepChart* chart, int playerHalf)
+{
+    int holdDest[5];
+    for (int i = 0; i < 5; i++) holdDest[i] = -1;
+
+    for (uint32_t ri = 0; ri < chart->rowCount; ri++) {
+        StepHalf* h = (playerHalf == 0) ? &chart->rows[ri].half1 : &chart->rows[ri].half2;
+        uint8_t v[5] = { h->dl, h->ul, h->cn, h->ur, h->dr };
+        uint8_t o[5] = { 0 };
+        bool occ[5] = { false, false, false, false, false };
+
+        /* Passo 1: bodies/tails vao para holdDest */
+        for (int i = 0; i < 5; i++) {
+            if (v[i] == NT_HOLD_B || v[i] == NT_HOLD_T) {
+                int d = holdDest[i];
+                if (d >= 0 && d < 5) { o[d] = v[i]; occ[d] = true; }
+                if (v[i] == NT_HOLD_T) holdDest[i] = -1;
+            }
+        }
+
+        /* Passo 2: coleta paineis livres (src) e slots livres (dst) */
+        int src[5]; int sc = 0;
+        int dst[5]; int dc = 0;
+        for (int i = 0; i < 5; i++) {
+            if (v[i] != 0 && v[i] != NT_HOLD_B && v[i] != NT_HOLD_T) src[sc++] = i;
+            if (!occ[i]) dst[dc++] = i;
+        }
+
+        /* Passo 3: shuffle dos paineis fonte → slots livres */
+        shuffleIntArr(dst, dc);  /* embaralha DESTINOS — garante slot aleatorio mesmo com 1 nota */
+        for (int i = 0; i < sc; i++) {
+            int s = src[i], d = dst[i];
+            o[d] = v[s];
+            if (v[s] == NT_HOLD_H) holdDest[s] = d;
+        }
+
+        h->dl = o[0]; h->ul = o[1]; h->cn = o[2]; h->ur = o[3]; h->dr = o[4];
+    }
+}
+
+/* Double/Nightmare: 10 paineis combinados, por row */
+static void rsShuffleDN(StepChart* chart)
+{
+    int holdDest[10];
+    for (int i = 0; i < 10; i++) holdDest[i] = -1;
+
+    for (uint32_t ri = 0; ri < chart->rowCount; ri++) {
+        StepRow* row = &chart->rows[ri];
+        uint8_t v[10] = {
+            row->half1.dl, row->half1.ul, row->half1.cn, row->half1.ur, row->half1.dr,
+            row->half2.dl, row->half2.ul, row->half2.cn, row->half2.ur, row->half2.dr
+        };
+        uint8_t o[10] = { 0 };
+        bool occ[10] = { false, false, false, false, false, false, false, false, false, false };
+
+        for (int i = 0; i < 10; i++) {
+            if (v[i] == NT_HOLD_B || v[i] == NT_HOLD_T) {
+                int d = holdDest[i];
+                if (d >= 0 && d < 10) { o[d] = v[i]; occ[d] = true; }
+                if (v[i] == NT_HOLD_T) holdDest[i] = -1;
+            }
+        }
+
+        int src[10]; int sc = 0;
+        int dst[10]; int dc = 0;
+        for (int i = 0; i < 10; i++) {
+            if (v[i] != 0 && v[i] != NT_HOLD_B && v[i] != NT_HOLD_T) src[sc++] = i;
+            if (!occ[i]) dst[dc++] = i;
+        }
+
+        shuffleIntArr(src, sc);
+        for (int i = 0; i < sc; i++) {
+            int s = src[i], d = dst[i];
+            o[d] = v[s];
+            if (v[s] == NT_HOLD_H) holdDest[s] = d;
+        }
+
+        row->half1.dl=o[0]; row->half1.ul=o[1]; row->half1.cn=o[2]; row->half1.ur=o[3]; row->half1.dr=o[4];
+        row->half2.dl=o[5]; row->half2.ul=o[6]; row->half2.cn=o[7]; row->half2.ur=o[8]; row->half2.dr=o[9];
+    }
+}
+
+/* Half Double: 6 posicoes especificas, por row */
+static void rsShuffleHD(StepChart* chart)
+{
+    int holdDest[6];
+    for (int i = 0; i < 6; i++) holdDest[i] = -1;
+
+    for (uint32_t ri = 0; ri < chart->rowCount; ri++) {
+        StepRow* row = &chart->rows[ri];
+        /* Layout HD: [0]=h1.cn [1]=h1.ur [2]=h1.dr [3]=h2.dl [4]=h2.ul [5]=h2.cn */
+        uint8_t v[6] = {
+            row->half1.cn, row->half1.ur, row->half1.dr,
+            row->half2.dl, row->half2.ul, row->half2.cn
+        };
+        uint8_t o[6] = { 0 };
+        bool occ[6] = { false, false, false, false, false, false };
+
+        for (int i = 0; i < 6; i++) {
+            if (v[i] == NT_HOLD_B || v[i] == NT_HOLD_T) {
+                int d = holdDest[i];
+                if (d >= 0 && d < 6) { o[d] = v[i]; occ[d] = true; }
+                if (v[i] == NT_HOLD_T) holdDest[i] = -1;
+            }
+        }
+
+        int src[6]; int sc = 0;
+        int dst[6]; int dc = 0;
+        for (int i = 0; i < 6; i++) {
+            if (v[i] != 0 && v[i] != NT_HOLD_B && v[i] != NT_HOLD_T) src[sc++] = i;
+            if (!occ[i]) dst[dc++] = i;
+        }
+
+        shuffleIntArr(src, sc);
+        for (int i = 0; i < sc; i++) {
+            int s = src[i], d = dst[i];
+            o[d] = v[s];
+            if (v[s] == NT_HOLD_H) holdDest[s] = d;
+        }
+
+        row->half1.cn=o[0]; row->half1.ur=o[1]; row->half1.dr=o[2];
+        row->half2.dl=o[3]; row->half2.ul=o[4]; row->half2.cn=o[5];
+    }
+}
+
+void Step_ApplyRandomShuffle(StepChart* chart, int panelMode, bool shuffleP1, bool shuffleP2)
+{
+    if (!chart || !chart->rows || chart->rowCount == 0) return;
+
+    if (panelMode == 1) {
+        rsShuffleDN(chart);
+        Log_Print("RS DN: per-row random, rows=%u\n", chart->rowCount);
+    } else if (panelMode == 2) {
+        rsShuffleHD(chart);
+        Log_Print("RS HD: per-row random, rows=%u\n", chart->rowCount);
+    } else {
+        if (shuffleP1) rsShuffleSingle(chart, 0);
+        if (shuffleP2) rsShuffleSingle(chart, 1);
+        Log_Print("RS Single: per-row P1=%d P2=%d rows=%u\n", shuffleP1, shuffleP2, chart->rowCount);
+    }
 }

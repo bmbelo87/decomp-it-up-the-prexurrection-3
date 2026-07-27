@@ -497,7 +497,7 @@ static void renderOneLayer(BGALayer* layer, BGAKeyframe* state, int picVersion, 
         case 1:  glBlendFunc(GL_SRC_ALPHA, GL_ONE);                        break; /* additive    */
         case 2:  glBlendFunc(GL_ZERO, GL_SRC_COLOR);                       break; /* multiply    */
         case 3:  glBlendFunc(GL_DST_COLOR, GL_SRC_ALPHA);                  break; /* dst_color   */
-        case 4:  glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_ALPHA); break; /* inv_dst  */
+        case 4:  glBlendFunc(GL_ONE_MINUS_DST_COLOR, GL_ONE_MINUS_SRC_COLOR);  break; /* inv_dst_color: 0x307, 0x301 — original usa GL_ONE_MINUS_SRC_COLOR nao SRC_ALPHA */
         default: glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);        break; /* alpha normal */
     }
 
