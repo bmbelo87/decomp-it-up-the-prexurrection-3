@@ -360,6 +360,291 @@ static void rebuildModeList(void) {
     cacheModeTileIndices();
 }
 
+/* ─── Setas de canto: "Next MODE" (UL/UR) e "Next MUSIC" (DL/DR) ────────────
+ *
+ * AR-LT/RT/LD/RD  → arrow01.tga, TYPE ani, NUM 6 — a seta animada (81x81)
+ * ARR-LT/RT/LD/RD → etc.tga,     TYPE tile, NUM 1 — o rótulo de texto
+ *
+ * Estas não são carregadas por nome no binário (nenhuma string "ar-lt" no
+ * PUMPY.EXE): vêm como layers do 099.BGA. Por isso são desenhadas via
+ * BGA_SetEventLayer, e os índices são resolvidos por nome em tempo de execução
+ * em vez de hardcoded — bga.c guarda os filenames em minúsculo.
+ *
+ * As posições já estão nos .spr e são absolutas, então não há translate:
+ *   AR-LT  (45, 85)   AR-RT  (514, 85)   AR-LD  (45, 361)   AR-RD  (514, 361)
+ *   ARR-LT (43, 81)   ARR-RT (514, 81)   ARR-LD (43, 368)   ARR-RD (511, 363)
+ */
+#define CORNER_ARROW_COUNT 12
+#define CORNER_WAVE_COUNT   8   /* só os 8 primeiros reagem ao input */
+
+static int  g_cornerLayer[CORNER_ARROW_COUNT];
+static bool g_cornerResolved = false;
+
+/* A ordem importa: os índices 0..3 e 4..7 formam os pares seta+rótulo de cada
+ * canto (LT, RT, LD, RD) e são os que fazem a onda. Os M-* (8..11) têm os mesmos
+ * 9 keyframes estáticos — entram no fade e ficam parados, sem deslocamento. */
+static const char* k_cornerNames[CORNER_ARROW_COUNT] = {
+    "ar-lt",  "ar-rt",  "ar-ld",  "ar-rd",    /* setas animadas, 6 frames */
+    "arr-lt", "arr-rt", "arr-ld", "arr-rd",   /* rótulos, com onda        */
+    "m-lt",   "m-rt",   "m-ld",   "m-rd"      /* rótulos, sem onda        */
+};
+
+/* Resolve os índices e registra o alcance de keyframes de cada layer. O dump é
+ * único por carga do BGA: sem ele não dá para saber que frame passar para o
+ * BGA_SetEventLayer, já que fora do alcance a layer sai com alpha 0. */
+static void resolveCornerArrows(void) {
+    if (g_cornerResolved) return;
+    if (g_game.bgaPicCount <= 0) return;
+    g_cornerResolved = true;
+
+    BGAPicture* pic = &g_game.bgaPics[0];
+    for (int i = 0; i < CORNER_ARROW_COUNT; i++) {
+        g_cornerLayer[i] = findLayerByName(k_cornerNames[i]);
+        int li = g_cornerLayer[i];
+        if (li < 0) {
+            Log_Print("CORNER: '%s' NAO ENCONTRADA\n", k_cornerNames[i]);
+            continue;
+        }
+        BGALayer* L = &pic->layers[li];
+        int f0 = (L->kfCount > 0) ? L->keyframes[0].frame : -1;
+        int f1 = (L->kfCount > 0) ? L->keyframes[L->kfCount - 1].frame : -1;
+        Log_Print("CORNER: '%s' -> layer %d  kf=%d  frames %d..%d  aniFC=%d  tiles=%d\n",
+                  k_cornerNames[i], li, L->kfCount, f0, f1,
+                  L->aniFrameCount, L->sprTileCount);
+    }
+}
+
+/* Frames extraídos dos keyframes reais do 099.BGA. As oito layers compartilham
+ * exatamente a mesma linha do tempo de 13 keyframes:
+ *
+ *   8  → 29   intro: alpha 0→1. Nos rótulos (ARR-*) o x,y sai de ±50 e chega
+ *             a 0, então eles deslizam de fora da tela para o lugar.
+ *   29 … 495  repouso: todos com x=0, y=0, alpha=1 — estado parado.
+ *   495 → 512 onda: o pico é o keyframe 504, que desloca ±15 na diagonal do
+ *             próprio canto (ar-lt vai a -15,-15; ar-rd a +15,+15), e o 512
+ *             devolve a 0,0.
+ *
+ * O keyframe 420 tem type=0 (invisível) e por isso a passagem de repouso nunca
+ * avança sozinha: ficamos parados em 495, que é idêntico ao 29 mas deixa a onda
+ * contígua.
+ */
+#define CORNER_F_INTRO      8    /* alpha 0 — início do fade de entrada       */
+#define CORNER_F_REST_A     29   /* alpha 1 — início do trecho de repouso     */
+#define CORNER_F_REST_B     360  /* fim do trecho: 29,60,115,180,241,300,360  */
+#define CORNER_F_WAVE_A     495  /* início da onda                            */
+#define CORNER_F_WAVE_B     512  /* fim da onda, de volta a 0,0               */
+
+enum { CORNER_INTRO, CORNER_REST, CORNER_WAVE };
+
+static int g_cornerFrame[CORNER_ARROW_COUNT];
+static int g_cornerState[CORNER_ARROW_COUNT];
+
+/* Dispara a onda de um canto. which: 0=LT 1=RT 2=LD 3=RD.
+ * Move a seta (AR-*) e o rótulo (ARR-*) do mesmo canto juntos. Os M-* ficam de
+ * fora: seus keyframes não têm o deslocamento de ±15, então não há onda neles. */
+static void triggerCornerArrow(int which) {
+    if (which < 0 || which > 3) return;
+    for (int i = which; i < CORNER_WAVE_COUNT; i += 4) {
+        g_cornerFrame[i] = CORNER_F_WAVE_A;
+        g_cornerState[i] = CORNER_WAVE;
+    }
+}
+
+/* Coloca as oito na intro (ao entrar na tela) */
+static void resetCornerArrows(void) {
+    for (int i = 0; i < CORNER_ARROW_COUNT; i++) {
+        g_cornerFrame[i] = CORNER_F_INTRO;
+        g_cornerState[i] = CORNER_INTRO;
+    }
+}
+
+static void renderCornerArrows(void) {
+    if (g_game.bgaPicCount <= 0) return;
+    BGAPicture* pic = &g_game.bgaPics[0];
+    for (int i = 0; i < CORNER_ARROW_COUNT; i++) {
+        int li = g_cornerLayer[i];
+        if (li < 0 || li >= pic->layerCount) continue;
+
+        g_cornerFrame[i]++;
+        switch (g_cornerState[i]) {
+        case CORNER_INTRO:
+            if (g_cornerFrame[i] >= CORNER_F_REST_A) {
+                g_cornerFrame[i] = CORNER_F_REST_A;
+                g_cornerState[i] = CORNER_REST;
+            }
+            break;
+        case CORNER_REST:
+            /* Laço no trecho parado. A seta não sai do lugar (x,y,alpha são
+             * iguais nos sete keyframes), mas o animT varre 0→1 a cada segmento
+             * e é ele que avança os 6 frames do AR-*.SPR. Nunca passamos de
+             * 360: o keyframe 420 tem type=0 e apagaria a seta até o 495. */
+            if (g_cornerFrame[i] >= CORNER_F_REST_B)
+                g_cornerFrame[i] = CORNER_F_REST_A;
+            break;
+        case CORNER_WAVE:
+            if (g_cornerFrame[i] >= CORNER_F_WAVE_B) {
+                g_cornerFrame[i] = CORNER_F_REST_A;
+                g_cornerState[i] = CORNER_REST;
+            }
+            break;
+        default:
+            break;
+        }
+        BGA_SetEventLayer(0, g_cornerFrame[i], li);
+    }
+}
+
+/* ─── Indicador de dificuldade (DIFFLCUL.SPR / DIFFNIGH.SPR do 099.DAT) ──────
+ *
+ * Reconstrução de Judge_RenderGradeRow (0x004071b0) — o nome do Ghidra engana,
+ * essa função desenha a linha de bolinhas de nível embaixo do disc.
+ *
+ * Como funciona no original:
+ *   - SongSelect_Enter (0x0040ac65/0x0040ac74) carrega os dois SPRs
+ *   - SongSelect_RenderCarouselMove (0x00409140) só chama o desenho quando
+ *     [0x00d5fd34] > 0x14 — o mesmo timer de estabilização do cursor que
+ *     dispara o preview. Aqui o equivalente é previewState.
+ *   - Posição: x = 0x140 (320), y = 0xfffffe7f (-385) na matriz do carrossel
+ *   - O nível vem de um byte com sinal por música (SongDB_ParseUnlockEntry
+ *     grava `(byte)atol(...)` cru do Stage.cfg)
+ *
+ * O laço do original é `while (i < nivel)` e vale para os dois sprites: o nível
+ * do Stage.cfg é sempre a contagem, sem exceção. NIGHTMARE e DIVISION carregam
+ * 99, então desenham 99 caveiras espalhadas por ±1470px — a maior parte sai da
+ * tela, e é assim mesmo no original. O 99 não é sentinela de "sem nível": ele
+ * apenas escolhe o sprite de caveira no lugar da bolinha.
+ */
+#define DIFF_LEVEL_NIGHT    99    /* nível que troca DIFFLCUL por DIFFNIGH */
+#define DIFF_DOT_SPACING    15.0f /* glTranslatef(fVar1 * 15.0, ...) no original */
+/* O original translada y = 0xfffffe7f (-385) e SPR_RenderTile emite
+ * glVertex2i(x, 480 - y). Combinando: a linha fica em Y-DOWN a partir de 385.
+ *   DIFFLCUL (y1=0,  y2=43) → 385..428, centro 406.5
+ *   DIFFNIGH (y1=6,  y2=31) → 391..416, centro 403.5 */
+#define DIFF_ROW_Y          385.0f
+/* Escala da caveira. Atenção: este número NÃO vem do binário — Judge_RenderGradeRow
+ * não tem nenhum glScalef, desenha o sprite no tamanho do .spr (19x25). O valor
+ * aqui é ajuste visual para bater com o original, então é o primeiro lugar a
+ * mexer se o tamanho parecer errado. */
+#define DIFF_NIGHT_ZOOM     1.0f
+
+static int g_diffLculIdx = -1;    /* tile do DIFFLCUL.SPR (TYPE tile, NUM 1)  */
+static int g_diffNighIdx = -1;    /* tiles do DIFFNIGH.SPR (TYPE ani, NUM 2)  */
+static int g_timeSprIdx  = -1;    /* tile do TIME.SPR    (TYPE tile, NUM 1)  */
+
+/* ── Contador TIME ────────────────────────────────────────────────────────────
+ * SongSelect_UpdateRender (0x00409720) no original:
+ *
+ *   g_nCountdownTimer = 0x3c - Frame_GetDelta() / 0xf0;
+ *   if (timer != prev && timer < 0xb && buffer)  -> Stop/SetCurrentPosition(0)/Play
+ *   Font_DrawNumberSimple(0x159, 0x1bd, g_nCountdownTimer, 2);
+ *   if (0 < g_nCountdownTimer) { ...avança frames...; return; }
+ *   Frame_ResetDelta(); ...; g_dwState = 0x1e;
+ *
+ * Ou seja: 60 s, bip a cada segundo enquanto o valor for < 11 (10..0) e, ao
+ * chegar a zero, sai da tela pelo mesmo caminho do confirm — o próprio original
+ * força g_nCountdownTimer = 0 quando o jogador confirma com o carrossel travado.
+ *
+ * Os dois números vêm de Font_DrawNumberSimple: x = 0x159 (345), y = 0x1bd (445,
+ * já em Y-UP porque Font_RenderDigit emite glVertex2i cru), 2 dígitos, passo de
+ * -0x18 (24 px) do menos significativo para a esquerda. */
+#define TIME_LIMIT_SECONDS  60
+#define TIME_BEEP_BELOW     11    /* 0x0b: bipa quando o valor cai abaixo disso */
+#define TIME_DIGIT_X       345    /* 0x159 */
+#define TIME_DIGIT_Y       445    /* 0x1bd — Y-UP */
+#define TIME_DIGIT_STEP     24    /* 0x18  */
+#define TIME_DIGIT_W        36    /* 0x24  */
+#define TIME_DIGIT_H        39    /* 0x27  */
+#define TIME_DIGIT_COUNT     2
+
+static float g_timeRemain = (float)TIME_LIMIT_SECONDS;  /* segundos, fracionário */
+static int   g_timeShown  = TIME_LIMIT_SECONDS;         /* valor inteiro exibido */
+static int   g_timePrev   = TIME_LIMIT_SECONDS;         /* valor do frame anterior */
+
+static void resetTimeCounter(void) {
+    g_timeRemain = (float)TIME_LIMIT_SECONDS;
+    g_timeShown  = TIME_LIMIT_SECONDS;
+    g_timePrev   = TIME_LIMIT_SECONDS;
+}
+
+/* Mesmo atlas do DanceGrade: Font_RenderDigit (0x0040c8b0) faz col = d & 7,
+ * row = d >> 3, u = col*0.125, v = row*0.12109375 + 0.28515625 — os três floats
+ * estão em 0x00434780 / 0x0043477c / 0x00434778 e batem com o drawDig do
+ * result.c. A diferença é só o Y: lá é Y-DOWN e convertido, aqui o original
+ * passa a coordenada GL direto. */
+static void drawTimeDigit(int x, int yUp, int d) {
+    if (g_fontTexId < 0 || d < 0 || d > 9) return;
+    int col = d % 8, row = d / 8;
+    Texture_Bind(g_fontTexId);
+    glEnable(GL_TEXTURE_2D);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+    float u0 = (float)col * 0.125f;
+    float u1 = u0 + 0.125f;
+    float vb = (float)row * 0.12109375f + 0.28515625f;
+    float vt = vb + 0.12109375f;
+    glBegin(GL_QUADS);
+    glTexCoord2f(u0, 1.0f - vt); glVertex2f((float)x,                  (float)yUp);
+    glTexCoord2f(u1, 1.0f - vt); glVertex2f((float)(x + TIME_DIGIT_W), (float)yUp);
+    glTexCoord2f(u1, 1.0f - vb); glVertex2f((float)(x + TIME_DIGIT_W), (float)(yUp + TIME_DIGIT_H));
+    glTexCoord2f(u0, 1.0f - vb); glVertex2f((float)x,                  (float)(yUp + TIME_DIGIT_H));
+    glEnd();
+}
+
+/* Font_DrawNumberSimple: desenha do dígito menos significativo para a esquerda,
+ * sempre `count` dígitos (com zero à esquerda, como no original). */
+static void drawTimeNumber(int x, int yUp, int value, int count) {
+    if (value < 0) value = 0;
+    for (int i = 0; i < count; i++) {
+        drawTimeDigit(x - i * TIME_DIGIT_STEP, yUp, value % 10);
+        value /= 10;
+    }
+}
+
+static void loadDifficultySprites(void) {
+    /* Resource_ClearBGA zera g_game.sprTileCount a cada troca de tela. Se o
+     * índice cacheado caiu fora do fim, ele está stale e precisa recarregar —
+     * mesmo problema que g_fontArrow541 tem, mas resolvido aqui sem precisar
+     * mexer no resource.c, já que estes são static deste arquivo. */
+    if (g_diffLculIdx >= 0 && g_diffLculIdx < g_game.sprTileCount &&
+        g_diffNighIdx >= 0 && g_diffNighIdx < g_game.sprTileCount &&
+        g_timeSprIdx  >= 0 && g_timeSprIdx  < g_game.sprTileCount)
+        return;
+    g_diffLculIdx = -1;
+    g_diffNighIdx = -1;
+    g_timeSprIdx  = -1;
+
+    char datPath[MAX_PATH];
+    snprintf(datPath, sizeof(datPath), "%s\\BGA\\099.DAT", g_game.currentDirectory);
+    if (!RES_Open(datPath)) {
+        Log_Print("Diff: falha ao abrir '%s'\n", datPath);
+        return;
+    }
+    int startCount = g_game.sprTileCount;
+    g_diffLculIdx = g_game.sprTileCount;
+    SPR_LoadSPR("DIFFLCUL.SPR", NULL, NULL, NULL);
+    g_diffNighIdx = g_game.sprTileCount;
+    SPR_LoadSPR("DIFFNIGH.SPR", NULL, NULL, NULL);
+    /* Rótulo "TIME" — layer time.spr do 099.BGA, keyframes 0..420 sempre
+     * visíveis, x=0 y=0, blend=1 (aditivo). O tile do .spr já traz a posição:
+     * T topline.tga 241 -2 75 37 ... */
+    g_timeSprIdx = g_game.sprTileCount;
+    SPR_LoadSPR("TIME.SPR", NULL, NULL, NULL);
+
+    /* SPR_LoadSPR guarda o V na convenção TGA (V=0 no topo) sem inverter — quem
+     * carrega é que precisa converter, igual Resource_LoadFontAndArrows faz para
+     * os sprites do 00.DAT. Sem isto o DIFFNIGH sai de ponta-cabeça. */
+    for (int i = startCount; i < g_game.sprTileCount; i++) {
+        if (g_game.sprTiles[i].flipV) continue;
+        float tmp = g_game.sprTiles[i].v1;
+        g_game.sprTiles[i].v1 = g_game.sprTiles[i].v2;
+        g_game.sprTiles[i].v2 = tmp;
+    }
+    RES_Close();
+    Log_Print("Diff: difflcul=%d diffnigh=%d time=%d (sprTileCount=%d)\n",
+              g_diffLculIdx, g_diffNighIdx, g_timeSprIdx, g_game.sprTileCount);
+}
+
 static void loadCdTextures(void) {
     if (g_cdLoaded) return;
     char datPath[MAX_PATH];
@@ -412,7 +697,11 @@ void SongSelect_Reset(void) {
     g_carrosselIntro = true;
     g_introFrame = 0;
     g_previewDelay = 0.0f;
+    resetTimeCounter();
     loadCdTextures();
+    loadDifficultySprites();
+    g_cornerResolved = false;  /* BGA recarregou: reindexar as layers de canto */
+    resetCornerArrows();
     cacheModeTileIndices();
 
     /* Carrega font/arrows (00.DAT) se ainda não estiverem carregados.
@@ -436,7 +725,11 @@ void SongSelect_ResetIntro(void) {
     g_carrosselIntro = true;
     g_introFrame = 0;
     g_previewDelay = 0.0f;
+    resetTimeCounter();
     loadCdTextures();
+    loadDifficultySprites();
+    g_cornerResolved = false;  /* BGA recarregou: reindexar as layers de canto */
+    resetCornerArrows();
     cacheModeTileIndices();
     /* Resource_ClearBGA (chamado antes pelo Game_ChangeState) reseta g_fontArrow541.
      * Recarregar 00.DAT para que os ícones de Command continuem aparecendo. */
@@ -459,10 +752,18 @@ static void playPreview(int songId) {
     if (songId < 0) return;
     char path[MAX_PATH];
     snprintf(path, sizeof(path), "%s\\AUDIO\\D%d.AUD", g_game.currentDirectory, songId);
+
+    /* previewState é o gate do estado visual do cursor — brilho do Box2 e linha
+     * de nível — e não deve depender do áudio existir. Música fora do range, sem
+     * DXXX.AUD, tem que se comportar igual às demais; só a reprodução é que fica
+     * condicional ao arquivo. Antes o previewState só subia dentro do if, então
+     * essas músicas ficavam sem brilho e sem nível. */
     if (BGM_LoadAUDDirect(path)) {
         BGM_Play(false);
-        previewState = 1;
+    } else {
+        Log_Print("SongSelect: sem D%d.AUD — preview silencioso\n", songId);
     }
+    previewState = 1;
     prevSongId = songId;
 }
 
@@ -583,6 +884,7 @@ void Gamestate_UpdateSongSelect(float dt) {
             Audio_Play(g_waveSoundIds[SND_3_2], false);
             selectedState = 0; stopPreview();
             g_modeAnimActive = true; g_modeAnimFrame = 0; g_modeAnimDir = 1;
+            triggerCornerArrow(1);  /* UR -> seta superior direita */
             prevSongId = -1; g_songAnimCounter = 0;
             g_carrosselIntro = true; g_introFrame = 0;
             g_carrosselFrame = 588; g_carrosselDir = 0; g_carrosselTarget = 588;
@@ -606,6 +908,7 @@ void Gamestate_UpdateSongSelect(float dt) {
             Audio_Play(g_waveSoundIds[SND_3_2], false);
             selectedState = 0; stopPreview();
             g_modeAnimActive = true; g_modeAnimFrame = 0; g_modeAnimDir = -1;
+            triggerCornerArrow(0);  /* UL -> seta superior esquerda */
             prevSongId = -1; g_songAnimCounter = 0;
             g_carrosselIntro = true; g_introFrame = 0;
             g_carrosselFrame = 588; g_carrosselDir = 0; g_carrosselTarget = 588;
@@ -648,8 +951,10 @@ void Gamestate_UpdateSongSelect(float dt) {
     /* Qualquer player ativo navega músicas (DR=próxima, DL=anterior).
      * Auto-scroll ao segurar: replicado de SongSelect_UpdateRender @ 00409720.
      * - Press: scroll imediato + SND_3_2
-     * - Hold 333 ms (20 frames): scroll automático + SND_10_2 a cada repetição
-     * - Hold ~2 s (carouselPos > 180): timer avança 2×/frame → repetição em ~167 ms */
+     * - Repetição a cada 21 frames (timer > 0x14) + SND_10_2
+     * - Contador > 0x50 (80): repetição cai para 17 frames (timer > 0x10)
+     * - Contador >= 0xb4 (180): timer avança 2×/frame → repetição em 9 frames
+     * Resultado: 21 → 17 → 9 frames, uma aceleração em três estágios. */
     {
         bool drHit = ((g_game.activePlayerMask & 0x1) && Input_IsPadHit(0, PAD_DR))
                   || ((g_game.activePlayerMask & 0x2) && Input_IsPadHit(1, PAD_DR));
@@ -685,11 +990,13 @@ void Gamestate_UpdateSongSelect(float dt) {
             Audio_Play(g_waveSoundIds[SND_3_2], false);
             DO_SONG_NAV(+1);
             g_holdDir = +1; g_holdAnimTimer = 0; g_holdCarouselPos = 0x3c;
+            triggerCornerArrow(3);  /* DR -> seta inferior direita */
         }
         if (dlHit) {
             Audio_Play(g_waveSoundIds[SND_3_2], false);
             DO_SONG_NAV(-1);
             g_holdDir = -1; g_holdAnimTimer = 0; g_holdCarouselPos = 0x3c;
+            triggerCornerArrow(2);  /* DL -> seta inferior esquerda */
         }
 
         /* Hold-scroll: enquanto nenhum press novo, incrementa timer e dispara auto-scroll */
@@ -698,15 +1005,34 @@ void Gamestate_UpdateSongSelect(float dt) {
                 /* Solto — zera estado */
                 g_holdDir = 0; g_holdAnimTimer = 0; g_holdCarouselPos = 0;
             } else if (!g_modeAnimActive && g_holdDir != 0) {
-                /* Mantido pressionado — avança timer (2× se carouselPos > 0xb4) */
-                g_holdCarouselPos++;
-                g_holdAnimTimer += (g_holdCarouselPos > 0xb4) ? 2 : 1;
+                /* Ordem replicada do original: o teste de disparo acontece no
+                 * começo de SongSelect_UpdateRender (0x0040a820) e o incremento
+                 * só no fim da função (0x0040ab29). */
 
-                if (g_holdAnimTimer > 0x14) {  /* 20 frames ≈ 333 ms → próximo scroll */
+                /* Piso de 60 reaplicado a cada frame — 0x0040a832:
+                 *   CMP EAX,0x3c / JGE / MOV EAX,0x3c */
+                if (g_holdCarouselPos < 0x3c) g_holdCarouselPos = 0x3c;
+
+                /* Disparo por OU de dois limiares — 0x0040a841..0x0040a852:
+                 *   CMP EBP,0x14 / JG  dispara          (20 frames)
+                 *   CMP EAX,0x50 / JLE sai              (contador > 80 ...)
+                 *   CMP EBP,0x10 / JLE sai              (... e 16 frames)
+                 * Sem o segundo termo a rolagem fica presa em 21 frames por
+                 * música até o contador chegar a 180. */
+                if (g_holdAnimTimer > 0x14 ||
+                    (g_holdCarouselPos > 0x50 && g_holdAnimTimer > 0x10)) {
                     g_holdAnimTimer = 0;
                     DO_SONG_NAV(g_holdDir);
                     Audio_Play(g_waveSoundIds[SND_10_2], false);
                 }
+
+                /* Incremento do fim da função — 0x0040ab29..0x0040ab67.
+                 * O original condiciona o +2 também a [0x00d5fd88] != 0, flag
+                 * que ele mesmo liga no primeiro disparo; como o auto-scroll
+                 * sempre dispara antes de o contador chegar a 180, aqui ela
+                 * seria sempre verdadeira. */
+                g_holdAnimTimer   += (g_holdCarouselPos >= 0xb4) ? 2 : 1;
+                g_holdCarouselPos++;
             }
         }
 
@@ -770,6 +1096,37 @@ void Gamestate_UpdateSongSelect(float dt) {
             } else {
                 selectedState = 1;
             }
+        }
+    }
+
+    /* ── TIME ────────────────────────────────────────────────────────────────
+     * Ordem igual à do original (0x00409720): primeiro recalcula o valor, depois
+     * compara com o do frame anterior para o bip, e só então testa o zero.
+     * O bip toca a cada troca de segundo enquanto o valor for < 11, ou seja em
+     * 10, 9, ... 1, 0 — exatamente o teste `g_nCountdownTimer < 0xb`. */
+    {
+        if (g_timeRemain > 0.0f) {
+            g_timeRemain -= dt;
+            if (g_timeRemain < 0.0f) g_timeRemain = 0.0f;
+        }
+        g_timeShown = (int)g_timeRemain;   /* trunca, como a divisão inteira do original */
+
+        if (g_timeShown != g_timePrev && g_timeShown < TIME_BEEP_BELOW)
+            Audio_Play(g_waveSoundIds[SND_10_1], false);
+        g_timePrev = g_timeShown;
+
+        /* Zerou: entra na música sob o cursor. No original o contador em zero cai
+         * no mesmo caminho do confirm (g_dwState = 0x1e) — tanto que confirmar
+         * com o carrossel travado apenas força g_nCountdownTimer = 0. */
+        if (g_timeShown <= 0) {
+            Audio_Play(g_waveSoundIds[SND_4_2], false);
+            stopPreview();
+            g_game.selectedDifficulty = mode->difficulties[g_game.selectedSongIndex];
+            selectedState = 0;
+            g_game.isBattleMode = g_isBattleMode;
+            resetTimeCounter();   /* evita disparar de novo antes da troca de estado */
+            Loading_Enter(songId);
+            return;
         }
     }
 }
@@ -1036,6 +1393,106 @@ void Gamestate_RenderSongSelect(void) {
             BGA_SetEventLayer(0, g_game.bgaFrame % 55, 0x18);
         }
     }
+
+    /* Setas de canto "Next MODE" / "Next MUSIC" (layers do 099.BGA) */
+    resolveCornerArrows();
+    renderCornerArrows();
+
+    /* Indicador de dificuldade — Judge_RenderGradeRow (0x004071b0).
+     * Mesmo gate do Box2: só com o preview tocando e fora de animação. */
+    if (previewState && !g_modeAnimActive && !g_carrosselIntro) {
+        if (songCount > 0 && g_diffLculIdx >= 0) {
+            /* Usa exatamente o mesmo `mode` e `renderSongIdx` do carrossel.
+             * g_game.selectedModeIndex diverge de renderModeIdx durante a troca
+             * de modo, e ler do array errado dava o nível de outra música. */
+            int di    = ((renderSongIdx % songCount) + songCount) % songCount;
+            int level = mode->difficulties[di];
+
+            /* NIGHTMARE e DIVISION carregam 99: trocam a bolinha pela caveira
+             * animada, mas a contagem continua vindo do nível — 99 caveiras,
+             * como no original, mesmo que a maioria saia da tela. */
+            bool isNight = (level == DIFF_LEVEL_NIGHT);
+            int  count   = level;
+            if (count > 0) {
+                int sprBase = isNight ? g_diffNighIdx : g_diffLculIdx;
+
+                /* A fileira nasce do centro da tela: contagem ímpar tem um
+                 * sprite exatamente em X=320 e os demais saem em pares para os
+                 * lados; contagem par fica meio passo deslocada para que o
+                 * conjunto continue centrado. Equivale ao par de translates do
+                 * original (-30 / -15), que com o offset interno do .spr
+                 * resultava em 319.5 para o caso ímpar. */
+                float centerOff = (count % 2 == 0) ? -DIFF_DOT_SPACING * 0.5f : 0.0f;
+
+                /* O DIFFNIGH é desenhado com o dobro do tamanho. */
+                float zoom = isNight ? DIFF_NIGHT_ZOOM : 1.0f;
+
+                /* 2 frames alternando, como o DIFFNIGH (TYPE ani, NUM 2) pede */
+                int nightFrame = (int)((g_game.frameCounter / 15) % 2);
+
+                for (int i = 0; i < count; i++) {
+                    /* Posições alternam expandindo do centro: 0, +30, -30, +60…
+                     * No original: i par → (-i)*15, i ímpar → (i+1)*15 */
+                    float off = (i % 2 == 0) ? (float)(-i) : (float)(i + 1);
+                    float tx  = 320.0f + centerOff + off * DIFF_DOT_SPACING;
+
+                    int idx = sprBase + (isNight ? nightFrame : 0);
+                    if (idx < 0 || idx >= g_game.sprTileCount) continue;
+
+                    /* Os quatro campos do .spr são x, y, w, h — confirmado no
+                     * ParseSPR_TileDefinition do original (0x0040baa0), que
+                     * guarda x2 = x + w e y2 = y + h. Portanto srcW/srcH do
+                     * nosso parser são mesmo largura e altura.
+                     *   DIFFLCUL: 0,0,46,43   DIFFNIGH: 9,6,28,31 */
+                    SPRTileDef* t = &g_game.sprTiles[idx];
+                    float w = (float)t->srcW * zoom;
+                    float h = (float)t->srcH * zoom;
+                    /* tx já é o centro: a fileira parte do centro da tela. */
+                    float cx = tx;
+                    /* SPR_RenderTile emite glVertex2i(x, 480 - y), ou seja o
+                     * SPR é Y-DOWN. Somado ao translate de -385 do original, o
+                     * topo fica em DIFF_ROW_Y + y e o centro meia altura abaixo.
+                     * Dá 406.5 para os dois sprites. */
+                    float cy = DIFF_ROW_Y + (float)t->srcY + h * 0.5f;
+
+                    if (isNight) {
+                        /* Balanço do original: triângulo 0→15→0 sobre 30 frames,
+                         * ângulo = tri*2 - 30 (varia de -30° a 0°), pivô no
+                         * centro do próprio sprite. glRotatef opera em Y-UP. */
+                        int tri = (int)(g_game.frameCounter % 30);
+                        if (tri > 15) tri = 30 - tri;
+                        float ang  = (float)(tri * 2) - 30.0f;
+                        float cyUp = 480.0f - cy;
+                        glPushMatrix();
+                        glTranslatef(cx, cyUp, 0.0f);
+                        glRotatef(ang, 0.0f, 0.0f, 1.0f);
+                        glTranslatef(-cx, -cyUp, 0.0f);
+                        Sprite_DrawTileUV(idx, cx, cy, w, h, 1.0f);
+                        glPopMatrix();
+                    } else {
+                        Sprite_DrawTileUV(idx, cx, cy, w, h, 1.0f);
+                    }
+                }
+            }
+        }
+    }
+
+    /* ── TIME: rótulo + contador ─────────────────────────────────────────────
+     * A layer time.spr do 099.BGA fica em x=0 y=0 com keyframes type=1 no frame
+     * 0 e type=0 no 420, isto é, visível o tempo todo — quem posiciona é o
+     * próprio tile do .spr (241, -2, 75x37). blend=1 no keyframe é aditivo. */
+    if (g_timeSprIdx >= 0 && g_timeSprIdx < g_game.sprTileCount) {
+        SPRTileDef* t = &g_game.sprTiles[g_timeSprIdx];
+        float w = (float)t->srcW;
+        float h = (float)t->srcH;
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+        Sprite_DrawTileUV(g_timeSprIdx,
+                          (float)t->srcX + w * 0.5f,
+                          (float)t->srcY + h * 0.5f,
+                          w, h, 1.0f);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    }
+    drawTimeNumber(TIME_DIGIT_X, TIME_DIGIT_Y, g_timeShown, TIME_DIGIT_COUNT);
 
     if (previewState) {
         char buf[64];
