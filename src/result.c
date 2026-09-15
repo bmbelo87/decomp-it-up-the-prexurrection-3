@@ -1,7 +1,13 @@
 #include "pumpy.h"
 
 static int g_resultFrame;
-static int g_fontTexId = -1;
+/* Este static escondia o g_fontTexId global (font.c:103, declarado extern em
+ * pumpy.h:376). Funcionava só por efeito colateral: Font_LoadTexture() além de
+ * devolver o id também grava no global, então as duas cópias acabavam iguais.
+ * Bastava alguém zerar o global — como Font_Shutdown() faz em todo clear de
+ * BGA — para as duas divergirem e este arquivo passar a usar uma textura já
+ * destruída. Removido; agora usa o global diretamente.
+ * static int g_fontTexId = -1; */
 static int g_gradeP1 = 5; // 0=S..5=F
 static int g_gradeP2 = 5;
 static int g_lastDigitSoundCount = 0;
@@ -66,17 +72,42 @@ static void drawNumP2(int rx, int y, int v, int nd, int elap, int offX) {
     }
 }
 
+/* Fórmula e escada extraídas do PUMPY.EXE.
+ *
+ * A razão é calculada no fim de Gameplay_ProcessJudgment (0x0041042c) e
+ * gravada como float em [0x00da22d0] — a decompilação do Ghidra mostra um
+ * cast para (int) por erro de tipagem, mas DanceGradeDisplay lê o endereço
+ * com "FLD float ptr".
+ *
+ *   razao = (perfect + great*0.9 + good*0.6 - bad*0.5 - miss + maxCombo*0.03)
+ *           / total
+ *
+ * O termo maxCombo*0.03 só entra fora do modo EVENT (g_nGameMode != 1).
+ *
+ * A escada de notas vem de DanceGradeDisplay (0x00415330..0x004153ac), onde
+ * cada FCOMP compara a razão com 1.0, 0.9, 0.8, 0.7 e 0.6. A nota máxima
+ * exige adicionalmente missCount == 0 (teste de [0x00da2314] em 0x00415343).
+ */
 static int calcGrade(int perfect, int great, int good, int bad, int miss, int maxCombo) {
     int total = perfect + great + good + bad + miss;
+    float ratio;
     if (total == 0) return 5;
-    float w = (float)(perfect*10 + great*7 + good*5 + bad*2) / (float)(total*10);
-    /* S exige w >= 95% E zero misses. Com qualquer MISS, cai para A. */
-    if (w >= 0.95f && miss == 0) return 0;  // S
-    if (w >= 0.85f) return 1;  // A
-    if (w >= 0.75f) return 2;  // B
-    if (w >= 0.60f) return 3;  // C
-    if (w >= 0.40f) return 4;  // D
-    return 5;                   // F
+
+    ratio = (float)perfect
+          + (float)great * 0.9f
+          + (float)good  * 0.6f
+          - (float)bad   * 0.5f
+          - (float)miss;
+    if (g_game.svcGameMode != 1)          /* fora do modo EVENT */
+        ratio += (float)maxCombo * 0.03f;
+    ratio /= (float)total;
+
+    if (ratio >= 1.0f && miss == 0) return 0;  /* S */
+    if (ratio >= 0.9f)              return 1;  /* A */
+    if (ratio >= 0.8f)              return 2;  /* B */
+    if (ratio >= 0.7f)              return 3;  /* C */
+    if (ratio >= 0.6f)              return 4;  /* D */
+    return 5;                                  /* F */
 }
 
 // Decide proximo estado baseado nas grades e contagem de stages
@@ -124,7 +155,7 @@ void Result_Enter(void) {
     g_game.bgaLoop = false;
     g_game.bgaFrame = 0;
 
-    g_fontTexId = Font_LoadTexture();
+    Font_LoadTexture();   /* já grava no g_fontTexId global */
 
     BGM_Stop();
     char ap[MAX_PATH];
