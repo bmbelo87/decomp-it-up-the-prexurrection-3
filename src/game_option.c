@@ -17,6 +17,16 @@ void GameOption_Save(void)
     fprintf(f, "StageBreak=%d\n",    g_game.optionToggle1);
     fprintf(f, "ShowHelp=%d\n",      g_game.optionToggle2);
     fprintf(f, "AudioOffset=%d\n",   g_game.audioOffsetMs);
+    /* SETUP MENU — GAME OPTION / COIN OPTION / BOOKKEEPING */
+    fprintf(f, "GameMode=%d\n",      g_game.svcGameMode);
+    fprintf(f, "DemoSound=%d\n",     g_game.svcDemoSound);
+    fprintf(f, "LangOption=%d\n",    g_game.svcLangOption);
+    fprintf(f, "Coin1=%d\n",         g_game.svcCoin1);
+    fprintf(f, "Coin2=%d\n",         g_game.svcCoin2);
+    fprintf(f, "CoinTotal=%d\n",     g_game.svcCoinTotal);
+    fprintf(f, "Coin1Total=%d\n",    g_game.svcCoin1Total);
+    fprintf(f, "Coin2Total=%d\n",    g_game.svcCoin2Total);
+    fprintf(f, "ServiceTotal=%d\n",  g_game.svcServiceTotal);
     fclose(f);
     Log_Print("GameOption: saved (diff=%d sb=%d help=%d audio=%dms)\n",
               g_game.optionDifficulty, g_game.optionToggle1, g_game.optionToggle2,
@@ -30,6 +40,17 @@ void GameOption_Load(void)
     g_game.optionToggle1    = 1;   /* Stage Break On */
     g_game.optionToggle2    = 0;   /* Show Help Off */
     g_game.audioOffsetMs    = 80;  /* 80ms — latência típica de áudio moderna */
+    /* SETUP MENU: default é FREE PLAY (svcCoin1 = 0), para o jogo continuar
+     * jogável sem precisar inserir moeda. */
+    g_game.svcGameMode      = 0;   /* NORMAL  */
+    g_game.svcDemoSound     = 0;
+    g_game.svcLangOption    = 1;   /* ENGLISH */
+    g_game.svcCoin1         = 0;   /* FREE PLAY */
+    g_game.svcCoin2         = 1;
+    g_game.svcCoinTotal     = 0;
+    g_game.svcCoin1Total    = 0;
+    g_game.svcCoin2Total    = 0;
+    g_game.svcServiceTotal  = 0;
 
     char path[MAX_PATH];
     snprintf(path, sizeof(path), "%s\\PUMPY.INI", g_game.currentDirectory);
@@ -45,6 +66,15 @@ void GameOption_Load(void)
         if (sscanf(line, "StageBreak=%d",  &v) == 1) g_game.optionToggle1    = v;
         if (sscanf(line, "ShowHelp=%d",    &v) == 1) g_game.optionToggle2    = v;
         if (sscanf(line, "AudioOffset=%d", &v) == 1) g_game.audioOffsetMs    = v;
+        if (sscanf(line, "GameMode=%d",    &v) == 1) g_game.svcGameMode      = v;
+        if (sscanf(line, "DemoSound=%d",   &v) == 1) g_game.svcDemoSound     = v;
+        if (sscanf(line, "LangOption=%d",  &v) == 1) g_game.svcLangOption    = v;
+        if (sscanf(line, "Coin1=%d",       &v) == 1) g_game.svcCoin1         = v;
+        if (sscanf(line, "Coin2=%d",       &v) == 1) g_game.svcCoin2         = v;
+        if (sscanf(line, "CoinTotal=%d",   &v) == 1) g_game.svcCoinTotal     = v;
+        if (sscanf(line, "Coin1Total=%d",  &v) == 1) g_game.svcCoin1Total    = v;
+        if (sscanf(line, "Coin2Total=%d",  &v) == 1) g_game.svcCoin2Total    = v;
+        if (sscanf(line, "ServiceTotal=%d",&v) == 1) g_game.svcServiceTotal  = v;
     }
     fclose(f);
     Log_Print("GameOption: loaded (diff=%d sb=%d help=%d audio=%dms)\n",

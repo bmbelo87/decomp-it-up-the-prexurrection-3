@@ -47,6 +47,11 @@ void Gamestate_UpdateMenu(float dt) {
                     g_game.state = STATE_EXIT;
                     g_game.stateFrame = 0;
                 } else {
+                    /* Ponto único de cobrança: qualquer caminho que leve à
+                     * SongSelect consome um crédito. Em FREE PLAY / EVENT a
+                     * função não faz nada. */
+                    if (target == STATE_SONG_SELECT)
+                        Coin_ConsumeCredit();
                     /* Show Help: se toggle2=ON e indo para SongSelect, passa pelo How To Play */
                     if (target == STATE_SONG_SELECT && g_game.optionToggle2)
                         target = STATE_HOWTOPLAY;
@@ -67,6 +72,7 @@ void Gamestate_UpdateMenu(float dt) {
             if (p2btn >= 0) {
                 /* P2 UL×2 (quando já está em UL): confirma Start como P2-only */
                 if (p2btn == PAD_UL && g_p2MenuSel == 1) {
+                    if (!Coin_HasCredit()) { Log_Print("MENU: sem credito, start P2 bloqueado\n"); return; }
                     Audio_Play(g_waveSoundIds[SND_2_1], false);
                     Log_Print("MENU: P2 confirm UL -> P2-only\n");
                     g_game.activePlayerMask = 0x2;
@@ -90,7 +96,12 @@ void Gamestate_UpdateMenu(float dt) {
             if (padHit(0, PAD_DR)) { Audio_Play(g_waveSoundIds[SND_3_2], false); Log_Print("MENU: sel DR->4\n"); g_menuSelection = 4; return; }
         } else {
             if (padHit(0, PAD_UL)) {
-                if (g_menuSelection == 1) { g_game.activePlayerMask = 0x1; Audio_Play(g_waveSoundIds[SND_2_1], false); Log_Print("MENU: confirm UL\n"); g_game.confirmActive = true; g_game.confirmTimer = 0; g_game.fadeTarget = STATE_SONG_SELECT; return; }
+                if (g_menuSelection == 1) {
+                    /* Sem crédito não inicia. Em FREE PLAY (svcCoin1=0, o
+                     * default) ou modo EVENT, Coin_HasCredit() é sempre true. */
+                    if (!Coin_HasCredit()) { Log_Print("MENU: sem credito, start bloqueado\n"); return; }
+                    g_game.activePlayerMask = 0x1; Audio_Play(g_waveSoundIds[SND_2_1], false); Log_Print("MENU: confirm UL\n"); g_game.confirmActive = true; g_game.confirmTimer = 0; g_game.fadeTarget = STATE_SONG_SELECT; return;
+                }
                 Audio_Play(g_waveSoundIds[SND_3_2], false); Log_Print("MENU: change UL->1\n"); g_menuSelection = 1; return;
             }
             if (padHit(0, PAD_UR)) {
