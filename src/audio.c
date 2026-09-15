@@ -250,7 +250,10 @@ static const char* g_waveFiles[SND_COUNT] = {
     "RANK_D.wav", // SND_RANK_D
     "RANK_F.wav", // SND_RANK_F
     "10-2.wav",    // SND_10_2
-    "7-1.wav"      // SND_7_1
+    "7-1.wav",     // SND_7_1
+    "01-1.wav",    // SND_COIN_PARTIAL
+    "COIN2.wav",   // SND_COIN_CREDIT
+    "10-1.wav"     // SND_10_1
 };
 
 static const int g_waveResIds[SND_COUNT] = {
@@ -265,7 +268,10 @@ static const int g_waveResIds[SND_COUNT] = {
     IDR_WAVE_RANK_D,  /* SND_RANK_D */
     IDR_WAVE_RANK_F,  /* SND_RANK_F */
     IDR_WAVE_10_2,    /* SND_10_2 */
-    IDR_WAVE_7_1      /* SND_7_1 */
+    IDR_WAVE_7_1,     /* SND_7_1 */
+    IDR_WAVE_01_1,    /* SND_COIN_PARTIAL */
+    IDR_WAVE_COIN2,   /* SND_COIN_CREDIT  */
+    IDR_WAVE_10_1     /* SND_10_1 */
 };
 
 int g_waveSoundIds[SND_COUNT];
@@ -868,10 +874,16 @@ bool BGM_HasEnded(void) {
             typedef HRESULT (STDMETHODCALLTYPE *GetEventFn)(void*,long*,LONG_PTR*,LONG_PTR*,long);
             GetEventFn fn = (GetEventFn)((void**)vtbl)[8];
             HRESULT hr = fn(g_dsEvent, &evCode, &p1, &p2, 0);
-            if (SUCCEEDED(hr) && evCode == 1) { // EC_COMPLETE
+            if (SUCCEEDED(hr)) {
+                /* FreeEventParams SEMPRE, não só no EC_COMPLETE. Para vários
+                 * eventos p1/p2 são ponteiros IUnknown com AddRef; sair sem
+                 * liberar vaza a referência. Isso passava despercebido quando
+                 * esta função era chamada de vez em quando, mas vira corrupção
+                 * de heap se ela roda todo frame. */
                 typedef HRESULT (STDMETHODCALLTYPE *FreeEventFn)(void*,long,LONG_PTR,LONG_PTR);
                 ((FreeEventFn)((void**)vtbl)[12])(g_dsEvent, evCode, p1, p2);
-                return true;
+                if (evCode == 1) // EC_COMPLETE
+                    return true;
             }
         }
     }
@@ -898,6 +910,48 @@ bool BGM_HasEnded(void) {
         }
     }
     return false;
+}
+
+/* Repetição no caminho DirectShow.
+ *
+ * O DirectShow não tem flag de loop: o grafo toca até o fim e para. Os outros
+ * dois backends resolvem sozinhos — o MCI com "play ... repeat" e o buffer do
+ * DirectSound com DSBPLAY_LOOPING — mas o .AUD (que é o caso da música de menu)
+ * cai no DirectShow, onde BGM_Play() só guardava a flag `looping` sem nunca
+ * dizer nada ao grafo. Resultado: a faixa tocava uma vez e silenciava.
+ *
+ * A saída é reposicionar e mandar rodar de novo ao detectar o fim. Chamada uma
+ * vez por frame a partir de Game_Update.
+ *
+ * O guarda por `looping` é importante: BGM_HasEnded() consome o EC_COMPLETE do
+ * IMediaEvent, e o gameplay depende desse mesmo evento para saber que a música
+ * acabou. Como durante o gameplay `looping` é falso, esta função fica inerte lá
+ * e não rouba o evento.
+ */
+void BGM_Update(void) {
+    double dur = 0.0, cur = 0.0;
+
+    if (!ds_active) return;
+    if (!g_game.bgm.looping || !g_game.bgm.playing) return;
+    if (!ds_pos || !ds_ctrl) return;
+
+    /* Checagem própria, sem efeito colateral — deliberadamente NÃO usa
+     * BGM_HasEnded() aqui.
+     *
+     * Aquela função drena a fila do IMediaEvent com GetEvent. Rodar isso a
+     * 60 fps faz o grafo entregar eventos o tempo todo, e o custo de chamá-la
+     * tão agressivamente não compensa quando get_CurrentPosition já responde
+     * a mesma pergunta sem tocar em fila nenhuma. */
+    if (FAILED(((VtblPos*)(*(void**)ds_pos))->get_Duration(ds_pos, &dur)) || dur <= 0.0)
+        return;
+    if (FAILED(((VtblPos*)(*(void**)ds_pos))->get_CurrentPosition(ds_pos, &cur)))
+        return;
+    if (cur < dur - 0.25)
+        return;
+
+    ((VtblPos*)(*(void**)ds_pos))->put_CurrentPosition(ds_pos, 0.0);
+    ((VtblControl*)(*(void**)ds_ctrl))->Run(ds_ctrl);
+    Log_Print("BGM: fim da faixa, reiniciando (loop)\n");
 }
 
 uint32_t BGM_GetDurationMs(void) {

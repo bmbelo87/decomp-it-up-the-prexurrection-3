@@ -18,6 +18,10 @@ add_executable(Pumpy WIN32
     src/menu.c
     src/song_select.c
     src/staff.c
+    src/service_menu.c
+    src/coin.c
+    src/debug_console.c
+    src/ranking.c
     src/result.c
     src/loading.c
     src/gameplay.c

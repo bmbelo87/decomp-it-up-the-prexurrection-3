@@ -69,6 +69,7 @@ static void LoadBGAForState(GameState state) {
     case STATE_DANCE_GRADE_ENTER:
     case STATE_DANCE_GRADE_DISPLAY: bgaName = "83"; break;
     case STATE_HOWTOPLAY: bgaName = ""; break; /* limpa BGA do menu imediatamente; 03.DAT carrega no stateFrame==1 */
+    case STATE_SERVICE_MENU: bgaName = ""; break; /* SETUP MENU desenha sobre fundo preto */
     default: break;
     }
 
@@ -178,6 +179,7 @@ void Game_Init(HINSTANCE hInstance) {
     Font_Init();
     Texture_Init();
     Audio_LoadAllWaves();
+    Ranking_RegisterDefaults();  /* Game_InitState faz isso em 0x0040517c */
 
     Log_Print("Loading song database...\n");
     char cfgPath[MAX_PATH];
@@ -225,11 +227,46 @@ void Game_Shutdown(void) {
 
 void Game_Update(float dt) {
     Input_Update();
+    BGM_Update();   /* reinicia a faixa quando ela está em loop (ver audio.c) */
     if (Input_IsKeyHit(VK_F11)) g_game.showDebug = !g_game.showDebug;
+
+    /* Crase abre/fecha o console de debug (0x29 no original) */
+    if (Input_IsKeyHit(VK_OEM_3)) Debug_ConsoleToggle();
+
+    /* Com o console aberto o jogo não enxerga teclado nem pad — as teclas são
+     * entregues ao console pelo WndProc. O resto do update segue rodando para
+     * as animações não congelarem. */
+    if (Debug_ConsoleIsActive()) {
+        memset(g_game.input.keys, 0, sizeof(g_game.input.keys));
+        memset(g_game.input.padState, 0, sizeof(g_game.input.padState));
+    }
 
     /* Alt+F4: encerra o jogo imediatamente de qualquer tela */
     if (Input_IsKeyHit(VK_F4) && (GetKeyState(VK_MENU) & 0x8000))
         PostQuitMessage(0);
+
+    /* F1 abre o SETUP MENU de qualquer tela. Dentro do menu o F1 passa a ser o
+     * TEST BUTTON (percorre a lista) e o F2 o SERVICE BUTTON (confirma) —
+     * tratados em service_menu.c. */
+    /* Botoeira do gabinete, na ordem que o I/O TEST do original lista:
+     *   F1 TEST | F2 SERVICE | F3 CLEAR | F4 COIN1 | F5 COIN2
+     * Fora do SETUP MENU o SERVICE dá crédito de cortesia (type 3, o mesmo que
+     * incrementa g_nServiceTotal no original); dentro dele vira SELECT e o
+     * I/O TEST lê as teclas por conta própria. */
+    if (g_game.state != STATE_SERVICE_MENU) {
+        if (Input_IsKeyHit(VK_F4)) Arcade_ProcessCoin(1);  /* COIN1   */
+        if (Input_IsKeyHit(VK_F5)) Arcade_ProcessCoin(2);  /* COIN2   */
+        if (Input_IsKeyHit(VK_F2)) Arcade_ProcessCoin(3);  /* SERVICE */
+    }
+
+    if (Input_IsKeyHit(VK_F1) && g_game.state != STATE_SERVICE_MENU) {
+        ServiceMenu_Enter();
+        /* Consome a borda do F1 antes de sair: este return pula o
+         * memcpy(prevKeys, keys) do fim de Game_Update, e sem isso o mesmo
+         * press seria lido de novo no frame seguinte, já como MOVE. */
+        memcpy(g_game.input.prevKeys, g_game.input.keys, sizeof(g_game.input.keys));
+        return;
+    }
 
     if (Input_IsKeyHit(VK_ESCAPE)) {
         GameState s = g_game.state;
@@ -244,6 +281,12 @@ void Game_Update(float dt) {
 
         if (s == STATE_STAFF || s == STATE_STAFF_ENTER) {
             Game_ChangeState(STATE_MENU_ENTER);
+            return;
+        }
+
+        /* ESC no SETUP MENU sai como a opção EXIT (página 9 → estado 4) */
+        if (s == STATE_SERVICE_MENU) {
+            ServiceMenu_Exit();
             return;
         }
 
@@ -397,6 +440,13 @@ void Game_Update(float dt) {
     case STATE_GAMEOPTION:
     case STATE_GAMEOPTION_EXIT:
         Gamestate_UpdateGameOption(dt);
+        break;
+    case STATE_SERVICE_MENU:
+        /* Só captura o input aqui; o desenho e a aplicação ficam em
+         * ServiceMenu_UpdateRender, no Game_Render. A captura precisa ser
+         * nesta fase porque Game_Update termina zerando as bordas do teclado
+         * com memcpy(prevKeys, keys). */
+        ServiceMenu_Update();
         break;
     case STATE_HOWTOPLAY:
         /* Frame 1: carrega 03.DAT e inicia 003.AUD (igual ao padrão GAMEOPTION_ENTER) */
@@ -583,9 +633,15 @@ void Game_Render(void) {
     case STATE_GAMEOPTION_EXIT:
         Gamestate_RenderGameOption();
         break;
+    case STATE_SERVICE_MENU:
+        ServiceMenu_UpdateRender();
+        break;
     default:
         break;
     }
+
+    /* Console por último: é overlay, desenha sobre tudo */
+    Debug_ConsoleRender();
 
     if (g_game.showDebug) Render_StateInfo();
     static int renderLogCount = 0;

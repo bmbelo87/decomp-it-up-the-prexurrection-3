@@ -47,7 +47,8 @@ typedef enum {
     STATE_GAMEPLAY        = 0x0F,
     STATE_GAMEOVER        = 0x10,
     STATE_RESULT          = 0x11,
-    STATE_STAFF_ROLL      = 0x12,
+    /* STATE_STAFF_ROLL      = 0x12, */  /* nunca foi usado — valor reaproveitado abaixo */
+    STATE_SERVICE_MENU    = 0x12, /* SETUP MENU — g_dwState = 0x12 em ServiceMenu_Enter (0x00404ee0) */
     STATE_AUTO_EXIT       = 0x13,
     STATE_RANKING         = 0x14,
     STATE_RANKING_IN      = 0x15,
@@ -307,6 +308,23 @@ typedef struct {
                              Equivalente a ajuste de latência: bgmPos/1000 - audioOffsetMs/1000.
                              Salvo em PUMPY.INI como AudioOffset=X. */
 
+    /* ── Menu de serviço (SETUP MENU) ────────────────────────────────────────
+     * Equivalentes dos globais do original usados por ServiceMenu_RenderGameOption
+     * (0x00405910) e ServiceMenu_RenderCoinOption (0x00405d80).
+     * Os campos optionDifficulty/stageBreak/showHelp acima já cobrem
+     * g_nGameLevel, g_nStageBreak e g_nShowHelp.
+     */
+    int svcGameMode;      /* g_nGameMode    — 0=NORMAL, 1=EVENT            */
+    int svcDemoSound;     /* g_nDemoSound   — 0=ON, 1=OFF (verde quando 0) */
+    int svcLangOption;    /* g_nLangOption  — 0=KR,1=EN,2=PT,3=ES          */
+    int svcCoin1;         /* g_nCoin1Setting — 0=FREE PLAY, 1..10          */
+    int svcCoin2;         /* g_nCoin2Setting — 0=FREE PLAY, 1..9           */
+    int svcServiceTotal;  /* contadores do BOOKKEEPING MENU                */
+    int svcCoin1Total;    /* ram0x00d39048 no original                     */
+    int svcCoin2Total;    /* g_nCoin2Total                                 */
+    int svcCoinTotal;     /* g_nCoinTotal — acumulador em MOEDAS, não em
+                           * créditos. Créditos = svcCoinTotal / svcCoin1. */
+
     /* ── Commands (códigos inseridos na SongSelect) ──────────────────────────
      * Sequência confirmada no Ghidra (DAT_00442378, byte pattern 08 10 08 10 04):
      *   UL UR UL UR CN  — 5 botões, buffer circular de 5 posições.
@@ -453,6 +471,9 @@ typedef enum {
     SND_RANK_F,
     SND_10_2,   /* 10-2.WAV: som do auto-scroll DL/DR hold */
     SND_7_1,    /* 7-1.WAV:  som do Stage Break (antes do Game Over) */
+    SND_COIN_PARTIAL, /* 01-1.WAV:  moeda inserida sem fechar crédito */
+    SND_COIN_CREDIT,  /* COIN2.WAV: crédito completo */
+    SND_10_1,   /* 10-1.WAV: bip do TIME no SongSelect, a cada segundo a partir de 10 */
     SND_COUNT
 } SoundID;
 
@@ -475,6 +496,7 @@ bool BGM_LoadMP3(const char* path);
 bool BGM_LoadAUD(int songId, bool preview);
 bool BGM_LoadAUDDirect(const char* path);
 void BGM_Play(bool loop);
+void BGM_Update(void);   /* por frame: refaz o loop no caminho DirectShow */
 void BGM_Stop(void);
 bool BGM_IsPlaying(void);
 uint32_t BGM_GetPositionMs(void);
@@ -505,6 +527,38 @@ void Menu_ResetState(void);
 
 void Staff_Enter(void);
 void Staff_Update(float dt);
+
+/* ranking.c — tabela de recordes (Var_ e Ranking_ do PUMPY.EXE) */
+void Var_RegisterName(int index, int score, const char* name);  /* 0x00402ca0 */
+void Var_SetSystemVariable(int score, const char* name);        /* 0x00402be0 */
+void Ranking_RegisterDefaults(void);                            /* 0x00404fe0 */
+int  Ranking_GetCount(void);
+int  Ranking_GetScore(int i);
+const char* Ranking_GetName(int i);
+
+/* debug_console.c — console de debug (Debug_Console* do PUMPY.EXE) */
+void Demo_ToggleMode(void);                        /* 0x00407cb0 */
+void Debug_PrintString(const char* fmt, ...);      /* 0x00402fa0 */
+void Debug_ConsoleExecute(const char* cmd);        /* 0x00402e80 */
+void Debug_ConsoleKeyHandler(int ch, int vk);      /* 0x00403190 */
+void Debug_ConsoleRender(void);                    /* 0x00403050 */
+int  Debug_GetConsoleMode(void);                   /* 0x00403180 */
+void Debug_ConsoleToggle(void);
+bool Debug_ConsoleIsActive(void);
+
+/* coin.c — crédito e moeda (Arcade_/Coin_ do PUMPY.EXE) */
+void Arcade_ProcessCoin(int type);   /* 0x00402340 — 1=COIN1, 2=COIN2, 3=SERVICE */
+int  Coin_GetCredits(void);          /* 0x00402430 */
+int  Coin_GetMaxCredits(void);       /* 0x00402460 — devolve moedas, não créditos */
+void Coin_ConsumeCredit(void);       /* 0x00402480 */
+bool Coin_IsFreePlay(void);
+bool Coin_HasCredit(void);
+
+/* service_menu.c — SETUP MENU (ServiceMenu_* do PUMPY.EXE) */
+void ServiceMenu_Enter(void);        /* 0x00404ee0 */
+void ServiceMenu_Exit(void);         /* 0x004066d0 */
+void ServiceMenu_Update(void);       /* captura o input — chamar em Game_Update */
+void ServiceMenu_UpdateRender(void); /* 0x004066e0 — desenha e aplica o input */
 void Result_Enter(void);
 void Result_Update(float dt);
 void Result_Render(void);
@@ -533,9 +587,9 @@ void Gameplay_Update(float dt);
 void Gameplay_Render(void);
 
 // Original combo rendering functions from PUMPY.EXE
-void FUN_00411b40(int comboValue);      // Main combo rendering function
-void FUN_00411a90(int spriteType);      // Special combo sprite rendering
-void FUN_004119d0(int digit);           // Individual digit rendering
+void Combo_DrawMain(int comboValue);    /* 0x00411b40 — desenho principal do combo */
+void Combo_DrawSprite(int spriteType);  /* 0x00411a90 — sprites COMBO / MAX COMBO */
+void Combo_DrawDigit(int digit);        /* 0x004119d0 — um dígito do combo       */
 
 void Gamestate_UpdateGameOption(float dt);
 void Gamestate_RenderGameOption(void);
