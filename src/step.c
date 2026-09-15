@@ -62,7 +62,24 @@ bool Step_LoadSong(const char* path, StepSong* song)
         if (compSize == 0 || compSize > (uint32_t)(fileSize - secOff - STX_SECTION_HEADER))
             continue;
 
-        uint32_t secEnd = secOff + STX_SECTION_HEADER + compSize;
+        /* Layout real da seção, conforme Step_ParseFile (0x004068b0):
+         *   [0]   int     — nível de dificuldade
+         *   [4]   50 ints — quantos blocos cada grupo tem
+         *   [204] os blocos, cada um [4 bytes tamanho][dados zlib]
+         * O original soma essas contagens e lê exatamente esse número de blocos
+         * em sequência; o primeiro é o que já lemos acima (o tamanho dele é o
+         * último int do header). */
+        uint32_t blockCounts[50];
+        memcpy(blockCounts, secHeader + 4, sizeof(blockCounts));
+        int totalBlocks = 0;
+        for (int bi = 0; bi < 50; bi++) {
+            if (blockCounts[bi] > 64) { totalBlocks = 0; break; }  /* header suspeito */
+            totalBlocks += (int)blockCounts[bi];
+        }
+        if (totalBlocks < 1) totalBlocks = 1;
+
+        /* Só era usado pela antiga varredura de gap, que saiu:
+         * uint32_t secEnd = secOff + STX_SECTION_HEADER + compSize; */
 
         // Read main section compressed data
         fseek(f, secOff + STX_SECTION_HEADER, SEEK_SET);
@@ -164,112 +181,106 @@ bool Step_LoadSong(const char* path, StepSong* song)
 
         free(decompBuf);
 
-        // Check for split sections (gap before the NEXT non-zero section only)
-        int nextSi = si + 1;
-        while (nextSi < STX_SECTION_COUNT && sectionOffsets[nextSi] == 0)
-            nextSi++;
-        if (nextSi < STX_SECTION_COUNT)
+        /* Blocos seguintes (block splits com mudança de BPM).
+         *
+         * Antes isto varria o espaço até a próxima seção procurando o magic
+         * zlib 78 9C. Era heurística: o formato real, visto em Step_ParseFile
+         * (0x004068b0), tem a contagem de blocos no header e os blocos vêm em
+         * sequência logo após o primeiro, cada um prefixado por 4 bytes com o
+         * próprio tamanho comprimido. Nada de procurar magic. */
         {
-            uint32_t nextOff = sectionOffsets[nextSi];
-            uint32_t prevSecEnd = secEnd;
+            uint32_t blockPos = secOff + STX_SECTION_HEADER + compSize;
 
-            if (nextOff > prevSecEnd + 4)
+            for (int blk = 1; blk < totalBlocks; blk++)
             {
-                uint32_t gapSize = nextOff - prevSecEnd;
-                uint8_t* gapBuf = (uint8_t*)malloc(gapSize);
-                if (gapBuf)
-                {
-                    fseek(f, prevSecEnd, SEEK_SET);
-                    if (fread(gapBuf, 1, gapSize, f) == gapSize)
-                    {
-                        for (uint32_t gapOff = 4; gapOff + 2 < gapSize; )
-                        {
-                            if (gapBuf[gapOff] != 0x78 || gapBuf[gapOff + 1] != 0x9C) { gapOff++; continue; }
+                if (blockPos + 4 > (uint32_t)fileSize) break;
 
-                            uint8_t* splitDecomp = (uint8_t*)malloc(65536);
-                            if (!splitDecomp) break;
+                uint32_t bSize = 0;
+                fseek(f, (long)blockPos, SEEK_SET);
+                if (fread(&bSize, 4, 1, f) != 1) break;
+                blockPos += 4;
+                if (bSize == 0 || blockPos + bSize > (uint32_t)fileSize) break;
 
-                            uint32_t sdl = 65536, sic = 0;
-                            int sret = zlib_decompress_ex(gapBuf + gapOff, gapSize - gapOff, splitDecomp, &sdl, &sic);
-                            if (sret != 0 || sdl < STX_GRID_OFFSET + STX_ROW_SIZE) { free(splitDecomp); break; }
+                uint8_t* bComp = (uint8_t*)malloc(bSize);
+                if (!bComp) break;
+                if (fread(bComp, 1, bSize, f) != bSize) { free(bComp); break; }
+                blockPos += bSize;
 
-                            float sBpm;
-                            uint32_t sBpmM, sBpmS;
-                            int32_t sDelay;
-                            memcpy(&sBpm, splitDecomp, 4);
-                            memcpy(&sBpmM, splitDecomp + 4, 4);
-                            memcpy(&sBpmS, splitDecomp + 8, 4);
-                            memcpy(&sDelay, splitDecomp + 12, 4);
+                uint8_t* bDec = (uint8_t*)malloc(65536);
+                if (!bDec) { free(bComp); break; }
+                uint32_t bdl = 65536, bic = 0;
+                int bret = zlib_decompress_ex(bComp, bSize, bDec, &bdl, &bic);
+                free(bComp);
+                if (bret != 0 || bdl < STX_GRID_OFFSET + STX_ROW_SIZE) { free(bDec); break; }
 
-                            uint32_t sRowCount;
-                            memcpy(&sRowCount, splitDecomp + STX_DECOMP_HEADER, 4);
-                            uint32_t expRows2 = (sdl - STX_GRID_OFFSET) / STX_ROW_SIZE;
-                            if (sRowCount > expRows2) sRowCount = expRows2;
-                            if (sRowCount == 0) { free(splitDecomp); break; }
+                float sBpm;
+                uint32_t sBpmM, sBpmS;
+                int32_t sDelay;
+                memcpy(&sBpm, bDec, 4);
+                memcpy(&sBpmM, bDec + 4, 4);
+                memcpy(&sBpmS, bDec + 8, 4);
+                memcpy(&sDelay, bDec + 12, 4);
 
-                            bool validBpm = (sBpm > 0.0f && sBpm < 2000.0f);
-                            bool validSplitVal = (sBpmS > 0 && sBpmS <= 256 && sBpmM > 0);
-                            bool validDelay = (sDelay >= 0 && sDelay < 10000);
-                            bool validRowCount = (sRowCount > 0 && sRowCount < 50000);
-                            bool validSplit = (validBpm && validSplitVal && validDelay && validRowCount);
-                            if (!validSplit) {
-                                Log_Print("STX: split validation FAILED in section %d: BPM=%.1f bpmM=%d bpmS=%d delay=%d rows=%d (validBpm=%d validSplitVal=%d validDelay=%d validRowCount=%d)\n",
-                                    si, sBpm, sBpmM, sBpmS, sDelay, sRowCount, validBpm, validSplitVal, validDelay, validRowCount);
-                                free(splitDecomp); break;
-                            }
+                uint32_t sRowCount;
+                memcpy(&sRowCount, bDec + STX_DECOMP_HEADER, 4);
+                uint32_t expRows2 = (bdl - STX_GRID_OFFSET) / STX_ROW_SIZE;
+                if (sRowCount > expRows2) sRowCount = expRows2;
+                if (sRowCount == 0) { free(bDec); continue; }
 
-                            if (!chart->hasSplit) chart->hasSplit = true;
-
-                            Log_Print("STX: split in section %d: BPM=%.1f bpmM=%d bpmS=%d delay=%d rows=%d at gapOff=%u\n",
-                                si, sBpm, sBpmM, sBpmS, sDelay, sRowCount, gapOff);
-
-                            int segIdx = chart->segmentCount;
-                            bool added = (segIdx < 8);
-                            if (added)
-                            {
-                                chart->segments[segIdx].bpm = sBpm;
-                                chart->segments[segIdx].beatPerMeasure = sBpmM;
-                                chart->segments[segIdx].beatSplit = sBpmS;
-                                chart->segments[segIdx].delay = sDelay;
-                                chart->segments[segIdx].rowStart = rowCount;
-                                chart->segments[segIdx].rowCount = sRowCount;
-                                chart->segmentCount++;
-                                Log_Print("STX: split added as segment %d (rowStart=%d)\n", segIdx, rowCount);
-                            }
-
-                            if (added) {
-                                uint32_t totalRows = rowCount + sRowCount;
-                                StepRow* merged = (StepRow*)realloc(chart->rows, totalRows * sizeof(StepRow));
-                                if (!merged) { free(splitDecomp); break; }
-                                chart->rows = merged;
-                                for (uint32_t ri = 0; ri < sRowCount; ri++)
-                                {
-                                    const uint8_t* src = splitDecomp + STX_GRID_OFFSET + ri * STX_ROW_SIZE;
-                                    StepRow* dst = &chart->rows[rowCount + ri];
-                                    dst->half1.dl = src[0]; dst->half1.ul = src[1];
-                                    dst->half1.cn = src[2]; dst->half1.ur = src[3];
-                                    dst->half1.dr = src[4];
-                                    if (mirror) {
-                                        dst->half2.dl = src[0]; dst->half2.ul = src[1];
-                                        dst->half2.cn = src[2]; dst->half2.ur = src[3];
-                                        dst->half2.dr = src[4];
-                                    } else {
-                                        dst->half2.dl = src[5]; dst->half2.ul = src[6];
-                                        dst->half2.cn = src[7]; dst->half2.ur = src[8];
-                                        dst->half2.dr = src[9];
-                                    }
-                                }
-                                rowCount += sRowCount;
-                                chart->rowCount = rowCount;
-                            }
-                            free(splitDecomp);
-                            if (sic > 0) gapOff += sic - 1;
-                        }
-                    }
-                    free(gapBuf);
+                /* Sanidade mínima. O delay pode ser negativo — na 826 os blocos
+                 * seguintes têm delay entre -3 e -5, e a regra antiga (>= 0) os
+                 * reprovava, encerrando a música no fim do primeiro bloco. */
+                if (!(sBpm > 0.0f && sBpm < 2000.0f) || sBpmS == 0 || sBpmS > 256 || sBpmM == 0) {
+                    Log_Print("STX: bloco %d da secao %d invalido (BPM=%.1f m=%u s=%u)\n",
+                              blk, si, sBpm, sBpmM, sBpmS);
+                    free(bDec);
+                    continue;
                 }
+
+                chart->hasSplit = true;
+
+                int segIdx = chart->segmentCount;
+                if (segIdx < 8) {
+                    chart->segments[segIdx].bpm = sBpm;
+                    chart->segments[segIdx].beatPerMeasure = sBpmM;
+                    chart->segments[segIdx].beatSplit = sBpmS;
+                    chart->segments[segIdx].delay = sDelay;
+                    chart->segments[segIdx].rowStart = rowCount;
+                    chart->segments[segIdx].rowCount = sRowCount;
+                    chart->segmentCount++;
+                }
+
+                Log_Print("STX: secao %d bloco %d: BPM=%.1f m=%u s=%u delay=%d rows=%u (rowStart=%u)\n",
+                          si, blk, sBpm, sBpmM, sBpmS, sDelay, sRowCount, rowCount);
+
+                uint32_t totalRows = rowCount + sRowCount;
+                StepRow* merged = (StepRow*)realloc(chart->rows, totalRows * sizeof(StepRow));
+                if (!merged) { free(bDec); break; }
+                chart->rows = merged;
+
+                for (uint32_t ri = 0; ri < sRowCount; ri++)
+                {
+                    const uint8_t* src = bDec + STX_GRID_OFFSET + ri * STX_ROW_SIZE;
+                    StepRow* dst = &chart->rows[rowCount + ri];
+                    dst->half1.dl = src[0]; dst->half1.ul = src[1];
+                    dst->half1.cn = src[2]; dst->half1.ur = src[3];
+                    dst->half1.dr = src[4];
+                    if (mirror) {
+                        dst->half2.dl = src[0]; dst->half2.ul = src[1];
+                        dst->half2.cn = src[2]; dst->half2.ur = src[3];
+                        dst->half2.dr = src[4];
+                    } else {
+                        dst->half2.dl = src[5]; dst->half2.ul = src[6];
+                        dst->half2.cn = src[7]; dst->half2.ur = src[8];
+                        dst->half2.dr = src[9];
+                    }
+                }
+                rowCount += sRowCount;
+                chart->rowCount = rowCount;
+                free(bDec);
             }
         }
+
         song->chartCount++;
     }
 
@@ -302,6 +313,11 @@ bool Step_LoadSong(const char* path, StepSong* song)
                         case 4: tv = &ch->rows[tailRi].half1.dr; break;
                     }
                     if (tv && *tv == NT_HOLD_T) break;
+                    /* Outro HEAD antes do TAIL significa dado malformado: sem
+                     * este corte o primeiro head adotava o tail do segundo e o
+                     * hold virava um trecho inteiro que não existe no chart —
+                     * era o "hold que surge do nada" segurando a seta. */
+                    if (tv && *tv == NT_HOLD_H) { tailRi = ch->rowCount; break; }
                     tailRi++;
                 }
                 if (tailRi >= ch->rowCount) continue;
@@ -346,6 +362,11 @@ bool Step_LoadSong(const char* path, StepSong* song)
                         case 4: tv = &ch->rows[tailRi].half2.dr; break;
                     }
                     if (tv && *tv == NT_HOLD_T) break;
+                    /* Outro HEAD antes do TAIL significa dado malformado: sem
+                     * este corte o primeiro head adotava o tail do segundo e o
+                     * hold virava um trecho inteiro que não existe no chart —
+                     * era o "hold que surge do nada" segurando a seta. */
+                    if (tv && *tv == NT_HOLD_H) { tailRi = ch->rowCount; break; }
                     tailRi++;
                 }
                 if (tailRi >= ch->rowCount) continue;
