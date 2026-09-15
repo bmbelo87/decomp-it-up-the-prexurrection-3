@@ -47,9 +47,13 @@ static const float k_judgeLate[3][4] = {
  * Stage break: missCombo > 50 → game over imediato */
 #define LIFE_INITIAL        500
 #define LIFE_DANGER         90
-#define LIFE_SPEED_INIT     500
-#define LIFE_SPEED_MIN      200
-#define LIFE_SPEED_MAX      1000
+/* Substituídos pelas tabelas k_lifeSpeedInit/Min/Max (ver applyLife): no
+ * original estes três valores variam por nível de dificuldade, e fixá-los aqui
+ * deixava NORMAL e HARD com a curva do EASY.
+ * #define LIFE_SPEED_INIT     500
+ * #define LIFE_SPEED_MIN      200
+ * #define LIFE_SPEED_MAX      1000
+ */
 #define LIFE_SPEED_PENALTY  (-700)
 #define STAGE_BREAK_MISSES  50
 /* Escala visual: barra cheia = 252 pixels (original), mapeada como 252.0f */
@@ -111,39 +115,84 @@ static int   g_rvLastMeasure[2];     // última medida onde RV disparou, por pla
 static float g_stageBreakFreezeTimer = -1.0f; // >0: travado antes de ir p/ STATE_STAGE_BREAK
 
 /* Aplica variação de vida para o julgamento dado (fórmulas exatas do Ghidra). */
+/* Curva de lifeSpeed por nível de dificuldade — GameInit 0x00411381.
+ *
+ * O original escolhe o perfil por [0x00d39041] (o nível) e grava:
+ *   inicial -> [0x00da2328] (P1) e [0x00da23c0] (P2)  = piVar16[0x18]
+ *   mínimo  -> [0x00da2260]
+ *   máximo  -> [0x00da22c0]
+ *
+ * Atenção ao que NÃO varia: a barra de vida em si (piVar16[0x17], gravada em
+ * [0x00da2324]/[0x00da23bc]) começa sempre em 500, seja qual for o nível.
+ * Só o lifeSpeed muda — e ele é o multiplicador de ganho, então um lifeSpeed
+ * inicial menor faz a vida subir bem mais devagar no HARD.
+ */
+static const int k_lifeSpeedInit[3] = {  500, 300, 100 };  /* easy, normal, hard */
+static const int k_lifeSpeedMin [3] = {  200, 100,   0 };
+static const int k_lifeSpeedMax [3] = { 1000, 900, 800 };
+
+static int lifeLevel(void)
+{
+    int lvl = g_game.optionDifficulty;
+    if (lvl < 0) lvl = 0;
+    if (lvl > 2) lvl = 2;
+    return lvl;
+}
+
 static void applyLife(int player, JudgeType jt)
 {
+    int  lvl   = lifeLevel();
     int* life  = &g_game.stats.life[player];
     int* speed = &g_game.stats.lifeSpeed[player];
     switch (jt) {
         case JT_PERFECT:
             *life  += (*speed * 12) / 1000;
             *speed += 20;
-            if (*speed > LIFE_SPEED_MAX) *speed = LIFE_SPEED_MAX;
             break;
         case JT_GREAT:
             *life  += (*speed * 10) / 1000;
             *speed += 16;
-            if (*speed > LIFE_SPEED_MAX) *speed = LIFE_SPEED_MAX;
             break;
         case JT_GOOD:
             /* Sem mudança na vida — apenas quebra o missCombo */
             break;
         case JT_BAD:
             *life  -= 50;
-            if (*life < 0) *life = 0;
             *speed += LIFE_SPEED_PENALTY / 2;   /* -= 350 */
-            if (*speed < LIFE_SPEED_MIN) *speed = LIFE_SPEED_MIN;
             break;
         case JT_MISS:
-            *life   = (*life * 3) / 4 - 20;
-            if (*life < 0) *life = 0;
+            /* O original faz "life - (life*500)/2000 - 20" (0x0041042c região
+             * do case 5), que em inteiro é "life - life/4 - 20". Escrito assim
+             * de propósito: (life*3)/4 arredonda 1 unidade para baixo quando
+             * life não é múltiplo de 4. */
+            *life   = *life - (*life / 4) - 20;
             *speed += LIFE_SPEED_PENALTY;        /* -= 700 */
-            if (*speed < LIFE_SPEED_MIN) *speed = LIFE_SPEED_MIN;
             break;
         default:
             break;
     }
+    if (*life < 0) *life = 0;
+    /* Clamp único no fim, como o original faz em Gameplay_ProcessJudgment:
+     * testa os dois limites de uma vez depois do switch, não dentro de cada caso. */
+    if (*speed < k_lifeSpeedMin[lvl]) *speed = k_lifeSpeedMin[lvl];
+    if (*speed > k_lifeSpeedMax[lvl]) *speed = k_lifeSpeedMax[lvl];
+}
+
+/* ─── Diagnóstico temporário: holds fantasmas ───────────────────────────────
+ * Registra toda abertura de hold com o caminho de código que a causou e a
+ * distância temporal entre a row capturada e o tempo atual da música. Uma
+ * abertura legítima tem |dt| dentro da janela de julgamento (~0.22s); qualquer
+ * coisa muito fora disso é o hold que aparece do nada.
+ * Remover quando o bug estiver fechado. */
+static double getRowTime(int ri);
+static void holdOpenDbg(const char* tag, int p, int panel, int ri)
+{
+    double rt = (g_chart && ri >= 0 && ri < (int)g_chart->rowCount) ? getRowTime(ri) : -999.0;
+    double dt = g_songTime - rt;
+    Log_Print("HOLD[%s] p=%d pan=%d row=%d dt=%+.3f t=%.2f%s\n",
+              tag, p, panel, ri, dt, g_songTime,
+              (rt < -900.0) ? "  <<< ROW FORA DO CHART"
+                            : ((dt < -0.25 || dt > 0.25) ? "  <<< FORA DA JANELA" : ""));
 }
 
 static double getSegmentSpr(int seg)
@@ -693,6 +742,7 @@ static void processPendingRows(int player) {
                         jt = JT_MISS;
                     else {
                         g_holdRows[hdPly][pan] = g_pending[i].row;
+                        holdOpenDbg("pend-HD", hdPly, pan, g_pending[i].row);
                         if (hdCheck) clearHDPanel(&g_chart->rows[g_pending[i].row], pan);
                         else clearDNPanel(&g_chart->rows[g_pending[i].row], pan);
                     }
@@ -702,6 +752,8 @@ static void processPendingRows(int player) {
                         jt = JT_MISS;
                     else {
                         g_holdRows[player][pan] = g_pending[i].row;
+                holdOpenDbg("pend", player, pan, g_pending[i].row);
+                        holdOpenDbg("pend-DN", player, pan, g_pending[i].row);
                         clearPanel(&g_chart->rows[g_pending[i].row], pan, player);
                     }
                 }
@@ -711,6 +763,7 @@ static void processPendingRows(int player) {
             uint8_t pv = hdCheck ? getNoteHD(&g_chart->rows[g_pending[i].row], pan) : (dnPr ? getDNPanelValue(&g_chart->rows[g_pending[i].row], pan) : getPanelValue(&g_chart->rows[g_pending[i].row], pan, player));
             if (pv == NT_HOLD_H)
                 g_holdRows[player][pan] = g_pending[i].row;
+                holdOpenDbg("pend", player, pan, g_pending[i].row);
         }
         for (int pan = 0; pan < jdPanels; pan++) {
             uint8_t pv = hdCheck ? getNoteHD(&g_chart->rows[g_pending[i].row], pan) : (dnPr ? getDNPanelValue(&g_chart->rows[g_pending[i].row], pan) : getPanelValue(&g_chart->rows[g_pending[i].row], pan, player));
@@ -841,6 +894,7 @@ static void processInput(int player)
                                     pjt = JT_MISS;
                                 else {
                                     g_holdRows[player][pan] = bestRow;
+                                    holdOpenDbg("input", player, pan, bestRow);
                                     clearHDPanel(&g_chart->rows[bestRow], pan);
                                 }
                             } else if (isDN) {
@@ -848,6 +902,7 @@ static void processInput(int player)
                                     pjt = JT_MISS;
                                 else {
                                     g_holdRows[player][pan] = bestRow;
+                                    holdOpenDbg("input", player, pan, bestRow);
                                     clearDNPanel(&g_chart->rows[bestRow], pan);
                                 }
                             } else {
@@ -856,6 +911,7 @@ static void processInput(int player)
                                     pjt = JT_MISS;
                                 else {
                                     g_holdRows[player][pan] = bestRow;
+                                    holdOpenDbg("input", player, pan, bestRow);
                                     clearPanel(&g_chart->rows[bestRow], pan, player);
                                 }
                             }
@@ -1060,6 +1116,7 @@ static void processAutoplay(void)
                 uint8_t val = isHD ? getNoteHD(&g_chart->rows[hitRows[i]], panel) : (dnAP ? getDNPanelValue(&g_chart->rows[hitRows[i]], panel) : getPanelValue(&g_chart->rows[hitRows[i]], panel, p));
                 if (val == NT_HOLD_H)
                     g_holdRows[p][panel] = hitRows[i];
+                    holdOpenDbg("auto", p, panel, hitRows[i]);
                 if (val)
                     g_lastPerfectRow[p][panel] = hitRows[i];
             }
@@ -1112,9 +1169,17 @@ static void processHolds(void)
                     uint8_t val = isHD ? getNoteHD(&g_chart->rows[ri], panel) : (dnAP ? getDNPanelValue(&g_chart->rows[ri], panel) : getPanelValue(&g_chart->rows[ri], panel, p));
                     if (!val) continue;
                     double rt = getRowTime(ri);
-                    if (g_songTime < rt - JUDGE_BAD) break;
+                    double diff = g_songTime - rt;
+                    if (diff < -JUDGE_BAD) break;   /* ainda no futuro */
+                    /* Faltava o limite do PASSADO: sem ele, segurar o botão
+                     * capturava rows de hold já vencidas há muito tempo, cada
+                     * uma disparando explosion e holdbody do nada. Mesmo padrão
+                     * das linhas 817-818, inclusive avançando o cursor para não
+                     * revisitar a row todo frame. */
+                    if (diff > JUDGE_BAD) { g_nextNoteRow[p][panel] = ri + 1; continue; }
                     if (val == NT_HOLD_H || val == NT_HOLD_B || val == NT_HOLD_T) {
                         g_holdRows[p][panel] = ri;
+                        holdOpenDbg("capture", p, panel, ri);
                         g_nextNoteRow[p][panel] = ri + 1;
                         if (isHD) clearHDPanel(&g_chart->rows[ri], panel);
                         else if (dnAP) clearDNPanel(&g_chart->rows[ri], panel);
@@ -1138,6 +1203,11 @@ static void processHolds(void)
                             g_judgeFrame[p] = 40;
                             g_judgeDisplayCombo[p] = g_game.stats.combo[p];
                         }
+                        /* Captura é uma só. Sem este break o laço seguia varrendo
+                         * e re-disparava o explosion (g_noteState/g_glowTimer)
+                         * para cada row de hold adiante — os "holds fantasmas"
+                         * que apareciam sem pontuar. */
+                        break;
                     }
                 }
             }
@@ -1199,6 +1269,11 @@ static void processHolds(void)
                 {
                     g_holdRows[p][panel] = -1;
                     g_nextNoteRow[p][panel] = ri + 1;
+                    /* Acabou o hold: parar aqui. Sem o break o laço seguia
+                     * varrendo a lane com g_holdRows já em -1 e podia consumir
+                     * rows de um hold posterior cuja head não foi julgada,
+                     * disparando explosion sem dono. */
+                    break;
                 }
             }
         }
@@ -1292,8 +1367,10 @@ void Gameplay_Start(int songId)
     memset(&g_game.stats, 0, sizeof(g_game.stats));
     g_game.stats.life[0]      = 224; /* baseline visual: 11+2/3 de 26 retangulos ao inicio da musica. */
     g_game.stats.life[1]      = 224;
-    g_game.stats.lifeSpeed[0] = LIFE_SPEED_INIT; /* 500 — GameInit easy: _DAT_00da2328 = 500 */
-    g_game.stats.lifeSpeed[1] = LIFE_SPEED_INIT;
+    /* lifeSpeed inicial varia por nível (GameInit 0x00411381):
+     * easy=500, normal=300, hard=100. Antes era fixo em 500, o perfil do easy. */
+    g_game.stats.lifeSpeed[0] = k_lifeSpeedInit[lifeLevel()];
+    g_game.stats.lifeSpeed[1] = k_lifeSpeedInit[lifeLevel()];
     memset(g_judgeDisplayTimer, 0, sizeof(g_judgeDisplayTimer));
     memset(g_hitTimer, 0, sizeof(g_hitTimer));
     memset(g_glowTimer, 0, sizeof(g_glowTimer));
@@ -1395,8 +1472,14 @@ void Gameplay_Update(float dt)
         bool dnAP = (g_game.selectedModeIndex >= 0 && g_game.selectedModeIndex < g_game.songDB.modeCount &&
                     (strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "DOUBLE") == 0 ||
                      strcmp(g_game.songDB.modes[g_game.selectedModeIndex].name, "NIGHTMARE") == 0));
-        int apKeys[10] = { VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10 };
         int apCount = dnAP ? 10 : (hdAP ? 6 : 5);
+
+        /* Autoplay por painel individual (F1..F10) — desativado.
+         * O F1 passou a abrir o menu de serviço e as demais F* colidiam com
+         * outros atalhos. Agora o F8 liga/desliga o autoplay de todas as setas
+         * de uma vez (bloco abaixo).
+         *
+        int apKeys[10] = { VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6, VK_F7, VK_F8, VK_F9, VK_F10 };
         for (int a = 0; a < apCount; a++)
         {
             if (Input_IsKeyHit(apKeys[a]))
@@ -1405,6 +1488,21 @@ void Gameplay_Update(float dt)
                 Log_Print("GP: autoplay %d: %s\n", a, g_autoPanel[a] ? "ON" : "OFF");
             }
         }
+        */
+
+        /* F8: alterna o autoplay de todos os painéis do modo atual */
+        if (Input_IsKeyHit(VK_F8))
+        {
+            bool allOn = true;
+            for (int a = 0; a < apCount; a++)
+                if (!g_autoPanel[a]) { allOn = false; break; }
+
+            for (int a = 0; a < MAX_PANELS; a++)
+                g_autoPanel[a] = !allOn;
+
+            Log_Print("GP: autoplay (todas as setas): %s\n", allOn ? "OFF" : "ON");
+        }
+
         g_autoplay = true;
         for (int a = 0; a < apCount; a++)
             if (!g_autoPanel[a]) { g_autoplay = false; break; }
@@ -1968,7 +2066,27 @@ void Gameplay_Render(void)
                     float y2 = (float)(receptorY + rh2 / 2 + (vendRi - visualScrollRow) * pPixelsPerRow);
                     if (y2 < y1) { float t = y1; y1 = y2; y2 = t; }
 
-                    if (g_holdRows[p][panel] >= 0) {
+                    /* O clamp abaixo só vale para o body do hold que está sendo
+                     * segurado AGORA. Antes bastava g_holdRows >= 0, e isso
+                     * pegava qualquer run de HOLD_B do mesmo painel visível na
+                     * tela — inclusive o do PRÓXIMO hold, lá em cima. Aquele run
+                     * era esticado do receptor até o topo e virava a "sujeira"
+                     * que cobria a lane inteira (os taps continuavam aparecendo
+                     * por cima porque são desenhados em outro pass).
+                     * Critério: um HOLD_H entre o hold ativo e esta row significa
+                     * que este body pertence a outro hold. */
+                    int activeHold = g_holdRows[p][panel];
+                    bool ownedByActive = (activeHold >= 0 && activeHold < ri);
+                    if (ownedByActive) {
+                        for (int hr = activeHold + 1; hr <= ri; hr++) {
+                            uint8_t sv = isHalfDouble ? getNoteHD(&g_chart->rows[hr], panel)
+                                       : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[hr], panel)
+                                       : getPanelValue(&g_chart->rows[hr], panel, p));
+                            if (sv == NT_HOLD_H) { ownedByActive = false; break; }
+                        }
+                    }
+
+                    if (ownedByActive) {
                         /* HOLD SEGURADO (PERFECT): body começa exatamente na linha do receptor.
                          * Independe de velocidade ou de rows processadas — sem gap. */
                         y1 = (float)(receptorY + rh2 / 2);
@@ -2760,8 +2878,9 @@ void Gameplay_Render(void)
 
 // Original combo rendering functions from PUMPY.EXE
 
-// FUN_00411b40: Main combo rendering function
-void FUN_00411b40(int comboValue)
+// Combo_DrawMain — 0x00411b40 no PUMPY.EXE. Desenho principal do combo,
+// com os casos especiais de 1000/2000/3000 (comparação entre players).
+void Combo_DrawMain(int comboValue)
 {
     // Bind the font texture (original uses DAT_0079e70c)
     Texture_Bind(g_fontTexId);
@@ -2770,21 +2889,21 @@ void FUN_00411b40(int comboValue)
     if (comboValue == 1000) {
         // Player 1 has higher combo - show "COMBO" sprite
         glTranslatef(0x43800000, 0, 0);  // X position from original
-        FUN_00411a90(0);  // Special sprite type 0
+        Combo_DrawSprite(0);  // Special sprite type 0
         return;
     }
     
     if (comboValue == 2000) {
         // Both players have same combo - show "MAX COMBO" sprite  
         glTranslatef(0x43800000, 0, 0);  // X position from original
-        FUN_00411a90(1);  // Special sprite type 1
+        Combo_DrawSprite(1);  // Special sprite type 1
         return;
     }
     
     if (comboValue == 3000) {
         // Player 2 has higher combo - show "COMBO" sprite
         glTranslatef(0x43800000, 0, 0);  // X position from original
-        FUN_00411a90(2);  // Special sprite type 2
+        Combo_DrawSprite(2);  // Special sprite type 2
         return;
     }
     
@@ -2792,15 +2911,15 @@ void FUN_00411b40(int comboValue)
     int digitPos = 3;  // Start with 3 digits (hundreds place)
     do {
         int digit = comboValue % 10;  // Get the rightmost digit
-        FUN_004119d0(digit);         // Render the digit
+        Combo_DrawDigit(digit);         // Render the digit
         glTranslatef(0xc2080000, 0, 0);  // Move left for next digit (from original)
         digitPos--;
         comboValue = comboValue / 10;  // Remove the rightmost digit
     } while (digitPos > 0);
 }
 
-// FUN_00411a90: Special combo sprite rendering function
-void FUN_00411a90(int spriteType)
+// Combo_DrawSprite — 0x00411a90 no PUMPY.EXE. Sprites "COMBO" / "MAX COMBO".
+void Combo_DrawSprite(int spriteType)
 {
     float u1, u2;
     
@@ -2840,8 +2959,8 @@ void FUN_00411a90(int spriteType)
     glEnd();
 }
 
-// FUN_004119d0: Individual digit rendering function
-void FUN_004119d0(int digit)
+// Combo_DrawDigit — 0x004119d0 no PUMPY.EXE. Um dígito, via grid 6x4 da font.
+void Combo_DrawDigit(int digit)
 {
     // Bind the dec00 texture (same as original)
     Texture_Bind(g_fontDec00Id);
