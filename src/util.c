@@ -6,28 +6,41 @@ GameContext g_game = {0};
 
 static FILE* g_logFile = NULL;
 
+/* A versão anterior formatava direto em g_game.logBuffer no offset logPos e
+ * depois fazia OutputDebugStringA(logBuffer + logPos - written). Dois problemas:
+ *
+ *   1. vsnprintf devolve o tamanho que a string TERIA, não o que coube. Com o
+ *      buffer cheio, `written` continuava grande enquanto logPos ficava preso
+ *      em sizeof-1 — e `logPos - written` apontava para ANTES do buffer.
+ *   2. Chegando em sizeof-1, o terceiro argumento do vsnprintf virava 1: nada
+ *      mais era escrito e o OutputDebugString passava a imprimir lixo antigo.
+ *
+ * Como logBuffer não é lido em lugar nenhum (só servia de scratch), agora a
+ * formatação acontece num buffer local e o ponteiro nunca sai do lugar.
+ */
 void Log_Print(const char* fmt, ...) {
-    va_list args, args2;
+    char line[1024];
+    va_list args;
+    int written;
+
     va_start(args, fmt);
-    va_copy(args2, args);
-    int written = vsnprintf(g_game.logBuffer + g_game.logPos, 
-                            sizeof(g_game.logBuffer) - g_game.logPos, fmt, args);
+    written = vsnprintf(line, sizeof(line), fmt, args);
     va_end(args);
-    if (written > 0) {
-        g_game.logPos += written;
-        if (g_game.logPos >= (int)sizeof(g_game.logBuffer) - 1) {
-            g_game.logPos = sizeof(g_game.logBuffer) - 1;
-        }
-    }
-    OutputDebugStringA(g_game.logBuffer + g_game.logPos - written);
+
+    if (written < 0) return;                       /* erro de formatação */
+    if (written >= (int)sizeof(line))              /* truncado: usa o que coube */
+        written = (int)sizeof(line) - 1;
+    line[written] = '\0';
+
+    OutputDebugStringA(line);
+
     if (!g_logFile) {
         g_logFile = fopen("pumpy.log", "w");
     }
     if (g_logFile) {
-        vfprintf(g_logFile, fmt, args2);
-        fflush(g_logFile);
+        fputs(line, g_logFile);
+        fflush(g_logFile);   /* mantido: foi o que permitiu localizar o crash */
     }
-    va_end(args2);
 }
 
 void Log_Flush(void) {
