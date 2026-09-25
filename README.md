@@ -6,7 +6,7 @@ A faithful C reconstruction of **PUMPY.EXE**, the arcade executable for **Pump I
 
 This project reverse-engineers the original x86 binary and reproduces its gameplay, rendering, audio, and state machine as closely as possible — no emulation, no wrappers. Native executable for Windows and Linux, built with SDL2 + OpenGL.
 
-## Status — v0.9.5
+## Status — v1.0
 
 | Feature                                      | Status                  |
 | -------------------------------------------- | ----------------------- |
@@ -24,13 +24,36 @@ This project reverse-engineers the original x86 binary and reproduces its gamepl
 | BGA playback (BGA/BGA2/VSL)                  | ✅                       |
 | BGM/SFX audio (SDL2)                         | ✅                       |
 | Menu + staff screen                          | ✅                       |
+| Song select: level, corner arrows, BOX2, TIME counter | ✅              |
+| Service menu (SETUP / BOOKKEEPING) + credits | ✅                       |
+| Settings persistence (`pumpprex3.ini`, EEPROM format) | ✅              |
+| Ranking (20 default entries)                 | ✅                       |
+| Debug console (original's 11 commands)       | ✅                       |
+| Alt+Enter fullscreen toggle                  | ✅                       |
 | Stage transition flow                        | ✅                       |
 | P2 input handling                            | ✅                       |
-| Modifiers (random/mirror/vanish)             | 🚧 Implemented           |
+| Modifiers (commands, see below)              | ✅                       |
 | Fade in/out transitions                      | ✅                       |
 | FreeStyle/Nightmare                          | ✅                       |
 | HalfDouble                                   | ✅                       |
 | Division                                     | ⏳ Planned for post-v1.0 |
+
+## Modifiers (Commands)
+
+Entered on the song select screen with the pads of the player they apply to. Each one
+maps to a bit of the original's per-player modifier mask (`DAT_00da22b4` P1 /
+`DAT_00da22b0` P2), and the port follows the same rules for which command cancels which.
+
+| Command | Sequence | Effect |
+| ------- | -------- | ------ |
+| Speed | `UL UR UL UR CN` | Cycles x1 → x2 → x3 → x4 → RV → x1 |
+| Random Velocity (RV) | `UL UR UL UR UL UR UL UR CN` | New random speed (x1–x4) every measure. Same bit as the RV step of the speed cycle |
+| Vanish / Non-Step | `UL UR DL DR CN` | Cycles Vanish → Non-Step → Vanish+Non-Step → off. Vanish fades arrows out near the receptor; Non-Step hides them |
+| Mirror | `DR DL UR UL DR DL UR UL CN` | Swaps panels UL↔DR, UR↔DL (fixed swaps for Double/HalfDouble) |
+| Random Step | `UL UR UL UR DL DR DL DR CN` | Shuffles panels on every row ⚠️ shuffle algorithm is a variant, see `docs/PARIDADE.md` |
+| Freedom | `UL DL UR DR DR UL UR DL CN` | Hides the receptor |
+| Earthworm | `DR DL UR UL DR UR DL UL CN` | Speed jumps between x2/x3 (x1/x2 above 180 BPM) every measure |
+| Reset | `DL DR` × 3 | Clears all of the player's modifiers |
 
 ## Project Structure
 
@@ -45,6 +68,10 @@ PumpyReconstructed/
 │   ├── loading.c
 │   ├── staff.c    # Credits screen
 │   ├── eeprom.c   # Service menu / credits / settings persistence (pumpprex3.ini)
+│   ├── service_menu.c # SETUP MENU / BOOKKEEPING screens
+│   ├── coin.c     # Coin / credit handling
+│   ├── ranking.c  # Ranking table
+│   ├── debug_console.c # In-game debug console
 │   ├── resource.c # SPR/SP2/BGA/DAT resource loading
 │   ├── font.c     # Font rendering (font8x8 bitmaps, GDI-free)
 │   ├── texture.c  # OpenGL texture management
@@ -147,9 +174,9 @@ Hold notes (heads, bodies, tails) use a per-panel auto-capture system:
 
 ### Scoring
 
-- Every note gives 1000 base + 1000 bonus if `combo > 3`
-- Grade formula: `(perfect×10 + great×7 + good×5 + bad×2) / (total×10)`
-- Thresholds: S≥0.95, A≥0.85, B≥0.75, C≥0.60, D≥0.40, F<0.40
+- Perfect gives 1000, Great 500, both +1000 bonus if `combo > 3`; Good and Bad score nothing
+- Grade ratio: `(perfect + great×0.9 + good×0.6 − bad×0.5 − miss + maxCombo×0.03) / total` (the `maxCombo` term is skipped in EVENT mode)
+- Thresholds: S≥1.0 with no misses, A≥0.9, B≥0.8, C≥0.7, D≥0.6, F<0.6
 
 ## License
 

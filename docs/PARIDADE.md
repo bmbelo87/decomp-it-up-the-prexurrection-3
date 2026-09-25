@@ -135,6 +135,11 @@ capas `CD01..CD45.TGA` (a confirmar), `PUMPPAD.DLL` (N/A em Linux).
 | Janelas ao trocar de BPM | ✅ | recalculadas em `judgeWindows` no BPM do segmento atual |
 | **Mirror** | ✅ idêntico | swaps do original (`0x410a30`): Double `0↔8,1↔9,2↔7,3↔5,4↔6`; Single `0↔3,1↔4`; HD = subconjunto `2↔7,3↔5,4↔6` (posições extras vazias no HD). Iguais às nossas permutações |
 | **Random** | ⚠️ variante | original (`0x4106e0`): por linha, **5 trocas aleatórias** dentro de `[lo..hi]` (P1 0-4, P2 5-9, Double 0-9, HD 2-7) só nas linhas **sem hold**; hold movido como bloco de colunas. O port faz Fisher-Yates por linha e embaralha também as linhas com hold. Diferença estatística/cosmética, não reescrita (falta decodificar `0x410670/0x410620`). O comentário do `step.h` que falava em "4 swaps globais" estava desatualizado |
+| **Commands (song select)** | 🔧 corrigido | máscara por jogador `0xda22b4`/`0xda22b0`, tratada em `0x407390` (P1) / `0x4075a0` (P2); sequências idênticas às tabelas `0x442348` (9 botões) e `0x442378` (5 botões). O passo "RV" do ciclo de velocidade é o **mesmo bit 0x200** do Random Velocity (no port só trocava o ícone). Vanish tem 4 estados (`off→0x10→0x80→0x90→off`; o port pulava o Non-Step sozinho). Speed e RV **não** desligam o Earthworm |
+| **Random Velocity** | 🔧 corrigido | `0x41421a`: a cada compasso (row % 48) `(rand()%4+1)·1000`, podendo repetir (o port excluía a velocidade anterior) |
+| **Earthworm** | 🔧 corrigido | `0x4142a1`: a cada compasso, relógio de 1 ms `0xd35eac`: BPM ≤ 180 → x3 se `ms%120 ≤ 60`, senão x2; BPM > 180 → x2 se `ms%90 ≤ 45`, senão x1. O port fazia uma senoide contínua x1–x2 |
+| Rampa de velocidade | 🔧 corrigido | `0x414888`: ±50 (de 1000) por frame, linear; o port usava aproximação exponencial |
+| **Freedom** | ✅ | bit 0x400 pula o desenho do receptor (`0x40da50` → `0x40d960`, `01.spr`) |
 | **Ranking** | ✅ idêntico | 20 entradas (nome, pontuação, posição) iguais às de `Ranking_RegisterDefaults` (0x404fe0), conferido por script |
 | Console de debug | ✅ | 11 comandos nos dois; o port tem aliases extras (`/coin`, `/h`); `/mode` e `/play` são de linha de comando no original |
 | Linha de comando | ⚠️ ausente | o original lê `/play`, `/autoplay`, `/mode`, `/testmode2`, `-n -h -d -c -hd -dv -nm`; o port ignora `argv` |

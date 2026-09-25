@@ -4,7 +4,8 @@
 /* ── Command detection ──────────────────────────────────────────────────────
  * Buffer5 (5-botões): velocidade e Vanish/NonStep
  *   Speed:   UL UR UL UR CN → x1→x2→x3→x4→RV→x1
- *   Vanish:  UL UR DL DR CN → Vanish→NonStep→OFF
+ *            (RV = Random Velocity, o mesmo bit 0x200 do Buffer9 — PUMPY.EXE 0x40747e)
+ *   Vanish:  UL UR DL DR CN → Vanish→NonStep→Vanish+NonStep→OFF (PUMPY.EXE 0x407464)
  *
  * Buffer9 (9-botões): cheats longos
  *   Random Velocity: UL UR UL UR UL UR UL UR CN
@@ -20,7 +21,6 @@
 
 static PadButton g_cmdBuf[2][CMD_BUF_LEN];
 static int       g_cmdBufCount[2]  = {0, 0};
-static int       g_cmdSpeedIdx[2]  = {0, 0};
 
 static PadButton g_cmdBuf9[2][CMD_BUF9_LEN];
 static int       g_cmdBuf9Count[2] = {0, 0};
@@ -58,15 +58,9 @@ static const PadButton k_seq9[5][CMD_BUF9_LEN] = {
     { PAD_DR, PAD_DL, PAD_UR, PAD_UL, PAD_DR, PAD_UR, PAD_DL, PAD_UL, PAD_C }, /* Earthworm       */
 };
 
-/* Ciclo de velocidade: x1→x2→x3→x4→RV→x1 */
-#define CMD_SPEED_COUNT 5
-static const int  k_speedMult[] = {1, 2, 3, 4, 1};
-static const bool k_speedRV[]   = {false, false, false, false, true};
-
 /* Reseta todos os cheats de um player (Buffer6 trigger) */
 static void Cmd_ResetAllCheats(int player) {
     g_game.cmdSpeedMult[player]      = 1;
-    g_game.cmdSpeedRV[player]        = false;
     g_game.cmdMirror[player]         = false;
     g_game.cmdRandomStep[player]     = false;
     g_game.cmdRandomVelocity[player] = false;
@@ -74,7 +68,6 @@ static void Cmd_ResetAllCheats(int player) {
     g_game.cmdFreedom[player]        = false;
     g_game.cmdVanish[player]         = false;
     g_game.cmdNonStep[player]        = false;
-    g_cmdSpeedIdx[player]            = 0;
     g_cmdBufCount[player]            = 0;
     g_cmdBuf9Count[player]           = 0;
     g_cmdBuf6Count[player]           = 0;
@@ -115,9 +108,9 @@ static bool Cmd_Push(int player, PadButton btn) {
                 g_cmdBuf9Count[player] = 0;
                 g_cmdBufCount[player]  = 0;
                 switch (seq) {
-                case 0: /* Random Velocity */
+                case 0: /* Random Velocity — PUMPY.EXE 0x4073dc: limpa x2/x3/x4, alterna 0x200 */
+                    g_game.cmdSpeedMult[player]      = 1;
                     g_game.cmdRandomVelocity[player] = !g_game.cmdRandomVelocity[player];
-                    g_game.cmdEarthworm[player]      = false; /* accel effect remove Earthworm */
                     Log_Print("CMD P%d: RandomVelocity %s\n", player+1,
                               g_game.cmdRandomVelocity[player] ? "ON" : "OFF");
                     break;
@@ -136,15 +129,10 @@ static bool Cmd_Push(int player, PadButton btn) {
                     Log_Print("CMD P%d: Freedom %s\n", player+1,
                               g_game.cmdFreedom[player] ? "ON" : "OFF");
                     break;
-                case 4: /* Earthworm */
-                    g_game.cmdEarthworm[player] = !g_game.cmdEarthworm[player];
-                    if (g_game.cmdEarthworm[player]) {
-                        /* Earthworm cancela multiplicador e RV — HUD volta a exibir 1X */
-                        g_game.cmdSpeedMult[player]      = 1;
-                        g_game.cmdSpeedRV[player]        = false;
-                        g_cmdSpeedIdx[player]            = 0;
-                        g_game.cmdRandomVelocity[player] = false;
-                    }
+                case 4: /* Earthworm — PUMPY.EXE 0x407405: limpa x2/x3/x4 e RV, alterna 0x800 */
+                    g_game.cmdEarthworm[player]      = !g_game.cmdEarthworm[player];
+                    g_game.cmdSpeedMult[player]      = 1;
+                    g_game.cmdRandomVelocity[player] = false;
                     Log_Print("CMD P%d: Earthworm %s\n", player+1,
                               g_game.cmdEarthworm[player] ? "ON" : "OFF");
                     break;
@@ -160,31 +148,27 @@ static bool Cmd_Push(int player, PadButton btn) {
         if (memcmp(g_cmdBuf[player], k_speedSeq, CMD_BUF_LEN * sizeof(PadButton)) == 0) {
             g_cmdBufCount[player]  = 0;
             g_cmdBuf9Count[player] = 0;
-            g_cmdSpeedIdx[player]  = (g_cmdSpeedIdx[player] + 1) % CMD_SPEED_COUNT;
-            g_game.cmdSpeedMult[player]      = k_speedMult[g_cmdSpeedIdx[player]];
-            g_game.cmdSpeedRV[player]        = k_speedRV[g_cmdSpeedIdx[player]];
-            g_game.cmdRandomVelocity[player] = false; /* Buffer5 cancela RV do Buffer9 */
-            g_game.cmdEarthworm[player]      = false; /* accel effect remove Earthworm */
-            Log_Print("CMD P%d: Speed -> x%d%s (idx=%d)\n",
-                      player + 1, g_game.cmdSpeedMult[player],
-                      g_game.cmdSpeedRV[player] ? " RV" : "",
-                      g_cmdSpeedIdx[player]);
+            /* PUMPY.EXE 0x40747e: o próximo estado sai dos bits atuais
+             * (RV→x1, x4→RV, x3→x4, x2→x3, x1→x2); Earthworm não é tocado. */
+            int*  mult = &g_game.cmdSpeedMult[player];
+            bool* rv   = &g_game.cmdRandomVelocity[player];
+            if (*rv)             { *rv = false; *mult = 1; }
+            else if (*mult >= 4) { *rv = true;  *mult = 1; }
+            else                 { *mult = (*mult < 1 ? 1 : *mult) + 1; }
+            if (*rv) Log_Print("CMD P%d: Speed -> RV\n", player + 1);
+            else     Log_Print("CMD P%d: Speed -> x%d\n", player + 1, *mult);
             cheatFired = true;
         } else if (memcmp(g_cmdBuf[player], k_vanishSeq, CMD_BUF_LEN * sizeof(PadButton)) == 0) {
             g_cmdBufCount[player]  = 0;
             g_cmdBuf9Count[player] = 0;
-            if (!g_game.cmdVanish[player]) {
-                g_game.cmdVanish[player]   = true;
-                g_game.cmdNonStep[player]  = false;
-                Log_Print("CMD P%d: Vanish ON\n", player + 1);
-            } else if (!g_game.cmdNonStep[player]) {
-                g_game.cmdNonStep[player]  = true;
-                Log_Print("CMD P%d: NonStep ON (Vanish+NonStep)\n", player + 1);
-            } else {
-                g_game.cmdVanish[player]   = false;
-                g_game.cmdNonStep[player]  = false;
-                Log_Print("CMD P%d: Vanish/NonStep OFF\n", player + 1);
-            }
+            /* PUMPY.EXE 0x407464: com Vanish (0x10) ligado, desliga-o e alterna
+             * NonStep (0x80); sem Vanish, liga Vanish.
+             * Ciclo: OFF → Vanish → NonStep → Vanish+NonStep → OFF */
+            bool* v  = &g_game.cmdVanish[player];
+            bool* ns = &g_game.cmdNonStep[player];
+            if (*v) { *ns = !*ns; *v = false; }
+            else    { *v = true; }
+            Log_Print("CMD P%d: Vanish=%d NonStep=%d\n", player + 1, *v, *ns);
             cheatFired = true;
         }
     }
@@ -207,6 +191,13 @@ static bool g_carrosselIntro = true;
 static int g_introFrame = 0;
 static int g_pendingMove = 0;
 static float g_previewDelay = 0.0f;
+/* Atraso do preview (PUMPY.EXE 0x40a6d5): toca quando [0xd5fd34] > 0x28 E
+ * [0xd5e394] > 0x50, dois contadores de +1 por frame (0x40ab4c/0x40ab5f).
+ *   - Entrada / troca de modo (0x40a4be, 0x40a69b): os dois zerados -> 81 frames.
+ *   - Navegação (0x40a87e): [0xd5fd34]=0 e [0xd5e394]>=0x3c -> 41 frames.
+ * Os contadores correm mesmo durante as animações; só o disparo é bloqueado. */
+#define PREVIEW_DELAY_ENTER (81.0f / 60.0f)
+#define PREVIEW_DELAY_NAV   (41.0f / 60.0f)
 
 static const int g_slotFrameOffset[7] = { -48, -32, -16, 0, +16, +32, +48 };
 
@@ -680,7 +671,6 @@ void SongSelect_Reset(void) {
     g_cmdBuf9Count[0] = 0; g_cmdBuf9Count[1] = 0;
     g_cmdBuf6Count[0] = 0; g_cmdBuf6Count[1] = 0;
     g_cmdBuf6State[0] = 0; g_cmdBuf6State[1] = 0;
-    g_cmdSpeedIdx[0]  = 0; g_cmdSpeedIdx[1]  = 0;
 
     /* Inicializa lista de modos de acordo com activePlayerMask */
     g_modeCount = 6;
@@ -698,7 +688,7 @@ void SongSelect_Reset(void) {
     g_carrosselTarget = 588;
     g_carrosselIntro = true;
     g_introFrame = 0;
-    g_previewDelay = 0.0f;
+    g_previewDelay = PREVIEW_DELAY_ENTER; /* era 0.0f */
     resetTimeCounter();
     loadCdTextures();
     loadDifficultySprites();
@@ -726,7 +716,7 @@ void SongSelect_ResetIntro(void) {
     g_carrosselTarget = 588;
     g_carrosselIntro = true;
     g_introFrame = 0;
-    g_previewDelay = 0.0f;
+    g_previewDelay = PREVIEW_DELAY_ENTER; /* era 0.0f */
     resetTimeCounter();
     loadCdTextures();
     loadDifficultySprites();
@@ -890,6 +880,7 @@ void Gamestate_UpdateSongSelect(float dt) {
             prevSongId = -1; g_songAnimCounter = 0;
             g_carrosselIntro = true; g_introFrame = 0;
             g_carrosselFrame = 588; g_carrosselDir = 0; g_carrosselTarget = 588;
+            g_previewDelay = PREVIEW_DELAY_ENTER;
         }
 
         if (ulHit) {
@@ -914,6 +905,7 @@ void Gamestate_UpdateSongSelect(float dt) {
             prevSongId = -1; g_songAnimCounter = 0;
             g_carrosselIntro = true; g_introFrame = 0;
             g_carrosselFrame = 588; g_carrosselDir = 0; g_carrosselTarget = 588;
+            g_previewDelay = PREVIEW_DELAY_ENTER;
         }
     }
 
@@ -984,7 +976,7 @@ void Gamestate_UpdateSongSelect(float dt) {
     g_pendingMove         = (dir_);                                                 \
     g_carrosselTarget     = g_carrosselFrame - (dir_) * 16;                        \
     g_carrosselDir        = -(dir_);                                                \
-    g_previewDelay        = 1.0f;                                                   \
+    g_previewDelay        = PREVIEW_DELAY_NAV;                                      \
 } while (0)
 
         /* Press inicial: scroll imediato + SND_3_2 + inicializa hold state */
@@ -1067,6 +1059,8 @@ void Gamestate_UpdateSongSelect(float dt) {
      * aparece quando local_30 == 20.0 (carrossel de DL/DR no pico). Ao pressionar UL/UR,
      * g_nCarouselSpeed=0 → local_30=0.0 → Box2 nunca aparece e audio para.
      * Aqui replicamos: bloqueamos o preview durante troca de modo e intro do carrossel. */
+    /* Contagem corre sempre (como os contadores do original); só o disparo
+     * espera o fim das animações.
     if (!g_modeAnimActive && !g_carrosselIntro) {
         if (g_previewDelay > 0.0f) {
             g_previewDelay -= dt;
@@ -1079,7 +1073,12 @@ void Gamestate_UpdateSongSelect(float dt) {
             if (songId != prevSongId)
                 playPreview(songId);
         }
-    }
+    } */
+    if (g_previewDelay > 0.0f)
+        g_previewDelay -= dt;
+    if (!g_modeAnimActive && !g_carrosselIntro && g_previewDelay <= 0.0f
+        && songId != prevSongId)
+        playPreview(songId);
 
     /* Confirmação de música: CN de qualquer jogador ativo */
     {
@@ -1531,7 +1530,7 @@ void Gamestate_RenderSongSelect(void) {
 
             /* ── Velocidade ──────────────────────────────────────────────── */
             int speedOff;
-            if (g_game.cmdRandomVelocity[_p] || g_game.cmdSpeedRV[_p]) {
+            if (g_game.cmdRandomVelocity[_p]) {
                 speedOff = 12; /* raccel — RV do ciclo (após x4) ou Random Velocity (Buffer9) */
             } else {
                 speedOff = 36; /* accel1 */

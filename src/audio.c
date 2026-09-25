@@ -31,6 +31,14 @@ static MixChannel g_channels[MAX_SOUNDS];
 static MixChannel g_bgmChan = {0};
 static SDL_AudioDeviceID g_dev = 0;
 
+/* Interpolação do relógio da BGM: g_bgmChan.pos só anda em blocos de
+ * want.samples (1024 frames ≈ 23 ms) dentro do mix_cb. Sem interpolar, o
+ * songTime (e a rolagem das setas) avança em degraus e trava visualmente. */
+static volatile uint64_t g_bgmCbPos = 0;    /* pos ao fim do último callback */
+static volatile uint64_t g_bgmCbTicks = 0;  /* SDL_GetPerformanceCounter nesse instante */
+static uint64_t g_bgmCbFrames = 1024;       /* tamanho do bloco do callback */
+static double   g_bgmLastMs = 0.0;          /* último valor devolvido (monotônico) */
+
 static void mix_cb(void* userdata, Uint8* stream, int len) {
     (void)userdata;
     int16_t* out = (int16_t*)stream;
@@ -70,6 +78,9 @@ static void mix_cb(void* userdata, Uint8* stream, int len) {
         out[f * 2 + 0] = (int16_t)l;
         out[f * 2 + 1] = (int16_t)r;
     }
+    g_bgmCbFrames = (uint64_t)frames;
+    g_bgmCbPos = g_bgmChan.pos;
+    g_bgmCbTicks = SDL_GetPerformanceCounter();
 }
 
 bool Audio_Init(void) {
@@ -654,6 +665,7 @@ void BGM_Play(bool loop) {
     if (g_dev) SDL_LockAudioDevice(g_dev);
     g_bgmChan.pos = 0;
     g_bgmChan.playing = true;
+    g_bgmCbPos = 0; g_bgmCbTicks = 0; g_bgmLastMs = 0.0;
     g_bgmChan.loop = loop;
     if (g_dev) SDL_UnlockAudioDevice(g_dev);
     g_game.bgm.playing = true;
@@ -664,13 +676,39 @@ void BGM_Stop(void) {
     if (g_dev) SDL_LockAudioDevice(g_dev);
     g_bgmChan.playing = false;
     g_bgmChan.pos = 0;
+    g_bgmCbPos = 0; g_bgmCbTicks = 0; g_bgmLastMs = 0.0;
     if (g_dev) SDL_UnlockAudioDevice(g_dev);
     g_game.bgm.playing = false;
 }
 
-uint32_t BGM_GetPositionMs(void) {
+/* uint32_t BGM_GetPositionMs(void) {
     if (!g_bgmChan.inUse) return 0;
     return (uint32_t)(g_bgmChan.pos * 1000ull / DEV_RATE);
+} */
+uint32_t BGM_GetPositionMs(void) {
+    if (!g_bgmChan.inUse) return 0;
+    if (!g_bgmChan.playing || g_bgmCbTicks == 0) {
+        g_bgmLastMs = 0.0;
+        return (uint32_t)(g_bgmChan.pos * 1000ull / DEV_RATE);
+    }
+    if (g_dev) SDL_LockAudioDevice(g_dev);
+    uint64_t basePos = g_bgmCbPos;
+    uint64_t baseTicks = g_bgmCbTicks;
+    uint64_t blk = g_bgmCbFrames;
+    if (g_dev) SDL_UnlockAudioDevice(g_dev);
+
+    double baseMs = (double)basePos * 1000.0 / DEV_RATE;
+    double elapsed = (double)(SDL_GetPerformanceCounter() - baseTicks) * 1000.0
+                     / (double)SDL_GetPerformanceFrequency();
+    double maxAhead = (double)blk * 1000.0 / DEV_RATE;   /* no máx. 1 bloco */
+    if (elapsed > maxAhead) elapsed = maxAhead;
+    double ms = baseMs + elapsed;
+
+    /* Monotônico: jitter do callback não pode fazer as setas voltarem.
+     * Um salto grande pra trás (BGM_Play/loop) é aceito como reinício. */
+    if (ms < g_bgmLastMs && g_bgmLastMs - ms < 100.0) ms = g_bgmLastMs;
+    g_bgmLastMs = ms;
+    return (uint32_t)ms;
 }
 
 bool BGM_HasEnded(void) {
@@ -678,7 +716,9 @@ bool BGM_HasEnded(void) {
     return (!g_bgmChan.loop && g_bgmChan.pos >= g_bgmChan.frames);
 }
 
-bool BGM_IsDSActive(void) { return false; }
+/* bool BGM_IsDSActive(void) { return false; } */
+/* A BGM toca no mixer SDL: a posicao (g_bgmChan.pos) e valida enquanto tocando. */
+bool BGM_IsDSActive(void) { return BGM_IsPlaying(); }
 
 bool BGM_IsPlaying(void) {
     return g_bgmChan.inUse && g_bgmChan.playing;

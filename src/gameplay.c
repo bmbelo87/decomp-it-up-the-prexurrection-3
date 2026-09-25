@@ -128,6 +128,7 @@ static bool g_autoPanel[10]; // per-panel autoplay: 0-4 P1, 5-9 P2
 static float g_scrollSpeedX[2];      // velocidade atual por player
 static float g_scrollSpeedTarget[2]; // target por player
 static int   g_rvLastMeasure[2];     // última medida onde RV disparou, por player
+static int   g_ewLastRow[2];         // última row vista pelo Earthworm (DAT_00da24bc)
 static float g_stageBreakFreezeTimer = -1.0f; // >0: travado antes de ir p/ STATE_STAGE_BREAK
 
 /* Aplica variação de vida para o julgamento dado (fórmulas exatas do Ghidra). */
@@ -466,6 +467,7 @@ static bool loadChartForSong(int songId, int diffTier, const char* modeName)
         g_scrollSpeedX[_ip]      = spd;
         g_scrollSpeedTarget[_ip] = spd;
         g_rvLastMeasure[_ip]     = 0; /* igual ao DAT_00da24bc original: inicia em 0 → pula row 0 */
+        g_ewLastRow[_ip]         = 0;
     }
 
     memset(g_noteHits, 0, sizeof(g_noteHits));
@@ -1654,46 +1656,50 @@ void Gameplay_Update(float dt)
 
     // ── Velocidade por player: RV, Earthworm, interpolação ──────────────
     {
-        double _rowF   = getRowAtTimeFloat(g_songTime);
-        int currentRow = (int)_rowF;
-        float ewRow    = (float)_rowF; /* float preciso — não truncar p/ Earthworm ser suave */
+        int currentRow = (int)getRowAtTimeFloat(g_songTime);
 
         for (int _p = 0; _p < 2; _p++)
         {
             if (!(g_game.activePlayerMask & (1 << _p))) continue;
 
-            /* RV (Random Velocity): muda velocidade a cada 48 rows (1 compasso).
-             * Original (Ghidra): DAT_00da24b4 % 0x30 == 0 && != DAT_00da24bc.
+            /* RV e Earthworm só trocam a velocidade na virada de compasso (48 rows).
+             * Original (PUMPY.EXE 0x4141cc): DAT_00da24b4 % 0x30 == 0 && != DAT_00da24bc.
              * g_rvLastMeasure[p] inicia em 0 (pula row 0). */
-            if (g_game.cmdRandomVelocity[_p])
+            if (g_game.cmdRandomVelocity[_p]
+                && currentRow > 0 && currentRow % 48 == 0 && currentRow != g_rvLastMeasure[_p])
             {
-                if (currentRow > 0 && currentRow % 48 == 0 && currentRow != g_rvLastMeasure[_p])
-                {
-                    g_rvLastMeasure[_p] = currentRow;
-                    int prevSpd = (int)(g_scrollSpeedTarget[_p] + 0.5f);
-                    if (prevSpd < 1) prevSpd = 1;
-                    if (prevSpd > 4) prevSpd = 4;
-                    int opts[3]; int oc = 0;
-                    for (int _s = 1; _s <= 4; _s++)
-                        if (_s != prevSpd) opts[oc++] = _s;
-                    g_scrollSpeedTarget[_p] = (float)opts[rand() % 3];
-                }
+                g_rvLastMeasure[_p] = currentRow;
+
+                /* RV (0x41421a): (rand() % 4 + 1) * 1000 → x1..x4, pode repetir */
+                if (g_game.cmdRandomVelocity[_p])
+                    g_scrollSpeedTarget[_p] = (float)(rand() % 4 + 1);
+
             }
 
-            /* Earthworm: onda senoidal — oscila entre x1.0 e x2.0 (centro x1.5).
-             * 1 ciclo completo a cada 8 rows. Bypassa a interpolação abaixo. */
-            if (g_game.cmdEarthworm[_p])
-            {
-                float ewPhase = fmodf(ewRow, 8.0f) / 8.0f;
-                float ewSpeed = 1.5f + 0.5f * sinf(ewPhase * 6.2831853f);
-                g_scrollSpeedX[_p]      = ewSpeed;
-                g_scrollSpeedTarget[_p] = ewSpeed;
+            /* Earthworm (0x4142a1): NÃO depende da virada de compasso — o
+             * "jne 0x41428e" em 0x4141e7 pula o % 0x30 e só exige row != última
+             * row (DAT_00da24bc, gravado a cada frame em 0x412998). Ou seja,
+             * sorteia novo alvo a cada row; a rampa gera a ondulação.
+             * Alterna conforme o tick DAT_00d35eac (via 0x4024f0). NÃO é ms:
+             * o callback de timeSetEvent(1ms) em 0x41a1c0 só incrementa quando
+             * (n*240)/1000 muda → tick de 240 Hz. BPM <= 180: x3 se
+             * tick%120 <= 60, senão x2 (onda de 0,5 s); BPM > 180: x2 se
+             * tick%90 <= 45, senão x1 (onda de 0,375 s). */
+            if (g_game.cmdEarthworm[_p] && currentRow != g_ewLastRow[_p]) {
+                uint32_t tick = (uint32_t)((uint64_t)timeGetTime() * 240u / 1000u);
+                if (g_baseBpm <= 180.0)
+                    g_scrollSpeedTarget[_p] = (tick % 120 <= 60) ? 3.0f : 2.0f;
+                else
+                    g_scrollSpeedTarget[_p] = (tick % 90 <= 45) ? 2.0f : 1.0f;
             }
+            g_ewLastRow[_p] = currentRow;
 
-            /* Smooth interpolation toward target (não afeta Earthworm) */
+            /* Rampa linear até o alvo: ±50/1000 por frame no original (0x414888),
+             * ou seja ~3x por segundo a 60 fps. */
             float speedDiff = g_scrollSpeedTarget[_p] - g_scrollSpeedX[_p];
-            if (fabsf(speedDiff) > 0.01f)
-                g_scrollSpeedX[_p] += speedDiff * dt * 5.0f;
+            float speedStep = 3.0f * dt;
+            if (fabsf(speedDiff) > speedStep)
+                g_scrollSpeedX[_p] += (speedDiff > 0.0f) ? speedStep : -speedStep;
             else
                 g_scrollSpeedX[_p] = g_scrollSpeedTarget[_p];
         }
@@ -2398,7 +2404,7 @@ void Gameplay_Render(void)
 
             /* Velocidade: raccel(12) quando RV ativo, senão accel1/2/3/4 */
             int speedOff;
-            if (g_game.cmdRandomVelocity[p] || g_game.cmdSpeedRV[p]) {
+            if (g_game.cmdRandomVelocity[p]) {
                 speedOff = 12; /* raccel */
             } else {
                 speedOff = 36; /* accel1 */
@@ -2812,15 +2818,23 @@ void Gameplay_Render(void)
                 int displayW = (int)(displayF * (154.0f + 145.0f) + 0.5f);
                 int seg1w = (displayW > 154) ? 154 : displayW;
                 if (seg1w > 0) {
+                    /* V=0 é o topo do ST02.PNG (decoder PNG não inverte linhas):
+                     * linhas 144..158 entram direto. O (th - 1 - v) era da
+                     * convenção TGA e lia as linhas 97..111 (outro sprite).
                     Texture_DrawUV(texHd, fillX, fillY, (float)seg1w, 14.0f,
                         0, (float)(th - 1 - 158), (float)seg1w,
-                        (float)(th - 1 - 144), 1,1,1,1);
+                        (float)(th - 1 - 144), 1,1,1,1); */
+                    Texture_DrawUV(texHd, fillX, fillY, (float)seg1w, 14.0f,
+                        0, 144.0f, (float)seg1w, 158.0f, 1,1,1,1);
                 }
                 if (displayW > 154) {
                     int seg2w = displayW - 154;
+                    /* Idem: linhas 160..174 direto.
                     Texture_DrawUV(texHd, fillX + 153.0f, fillY, (float)seg2w, 14.0f,
                         0, (float)(th - 1 - 174), (float)seg2w,
-                        (float)(th - 1 - 160), 1,1,1,1);
+                        (float)(th - 1 - 160), 1,1,1,1); */
+                    Texture_DrawUV(texHd, fillX + 153.0f, fillY, (float)seg2w, 14.0f,
+                        0, 160.0f, (float)seg2w, 174.0f, 1,1,1,1);
                 }
             }
         } else if (g_fontSpr04 >= 0) {  /* 04.SPR fill — non-coop */

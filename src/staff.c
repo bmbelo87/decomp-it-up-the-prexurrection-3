@@ -16,6 +16,14 @@ void Staff_Enter(void) {
     else
         staffMaxFrame = 3840;
     Log_Print("Staff: %lu ms = %lu frames\n", g_game.bgm.durationMs, staffMaxFrame);
+    /* PUMPY.EXE 0x4041b0: carrega STAFF.DAT e 84.AUD, zera o contador de 240 Hz
+     * (0x402510) e espera em loop ate 0x1E0 ticks = 2,0 s (0x404220) antes de
+     * tocar a musica (0x4191a0). Nada e desenhado durante a espera. */
+    {
+        uint32_t t0 = timeGetTime();
+        while (timeGetTime() - t0 < 2000)
+            Sleep(1);
+    }
     BGM_Play(false);
     g_game.state = STATE_STAFF;
     g_game.stateFrame = 0;

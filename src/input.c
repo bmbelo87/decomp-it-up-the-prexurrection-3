@@ -3,6 +3,14 @@
 #include <stdio.h>
 #include <string.h>
 
+/* O Windows SDK nao define VK_A/VK_0 (usa os literais ASCII). */
+#ifndef VK_A
+#define VK_A 0x41
+#endif
+#ifndef VK_0
+#define VK_0 0x30
+#endif
+
 /* Linux native input: the keyboard is read straight from SDL_GetKeyboardState
  * every frame and mapped onto Windows virtual-key codes so the game logic
  * (which indexes g_game.input.keys[256] by VK_*) stays unchanged.
@@ -189,6 +197,7 @@ bool Input_ProcessEvent(void* evp) {
  * actually listens to. */
 static int Input_VKFromEvent(const SDL_Event* ev) {
     SDL_Keycode sym = ev->key.keysym.sym;
+    if (ev->key.keysym.scancode == SDL_SCANCODE_GRAVE) return VK_OEM_3; /* ver Input_Update */
     switch (sym) {
     case SDLK_BACKSPACE: return VK_BACK;
     case SDLK_TAB:       return VK_TAB;
@@ -283,6 +292,10 @@ void Input_Update(void) {
         if (kbd[SDL_GetScancodeFromKey(ctrl[i].k)])
             g_game.input.keys[ctrl[i].vk] = true;
     }
+    /* VK_OEM_3 no Windows é a posição física à esquerda do 1 (scancode 0x29),
+     * independente do layout. Pelo keycode (SDLK_BACKQUOTE) ela some em
+     * layouts onde a crase é tecla morta (ABNT2), e o console não abre. */
+    if (kbd[SDL_SCANCODE_GRAVE]) g_game.input.keys[VK_OEM_3] = true;
 
     g_focused = false;
     SDL_Window* kb = SDL_GetKeyboardFocus();

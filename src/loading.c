@@ -6,10 +6,17 @@
 static int g_pnzTexId = -1;
 static int g_loadingSongId = -1;
 static int g_loadingTimer = 0;
+/* PUMPY.EXE: o contador de 240 Hz [0xd35eb4] é zerado em 0x402510, logo após
+ * desenhar o título (0x40928f). A init do gameplay (0x410cf0) carrega tudo e
+ * então espera em loop até [0xd35eb4] >= 0x3C0 (0x4116b5) = 960 ticks = 4,0 s
+ * antes de iniciar a música. Do título à música há, portanto, no mínimo 4 s. */
+#define LOADING_MIN_TO_MUSIC_MS 4000
+static uint32_t g_loadingStartMs = 0;
 
 void Loading_Enter(int songId) {
     g_loadingSongId = songId;
     g_loadingTimer = LOADING_DURATION_MS;
+    g_loadingStartMs = timeGetTime();
     g_pnzTexId = -1;
 
     // Decrementa stage count (exceto no bonus que nao altera)
@@ -72,13 +79,21 @@ void Loading_Update(float dt) {
             char audioPath[MAX_PATH];
             snprintf(audioPath, sizeof(audioPath), "%s/AUDIO/%d.AUD", g_game.currentDirectory, g_loadingSongId);
             Log_Print("Loading: loading AUD '%s'\n", audioPath);
-            if (BGM_LoadAUDDirect(audioPath))
-                BGM_Play(false);
+            bool audOk = BGM_LoadAUDDirect(audioPath);
 
             g_game.songSelectHighlighted = g_game.selectedSongIndex;
 
+            /* Steps carregados antes da espera, como na init do original
+             * (0x410cf0 carrega o step antes do loop de 0x4116b5). */
             g_game.state = STATE_GAMEPLAY;
             Gameplay_Start(g_loadingSongId);
+
+            /* Espera ativa como no original (0x4116b5): nada é desenhado. */
+            while (timeGetTime() - g_loadingStartMs < LOADING_MIN_TO_MUSIC_MS)
+                Sleep(1);
+
+            if (audOk)
+                BGM_Play(false);
             g_game.stateFrame = 0;
             g_game.bgaFrame = 0;
             Render_SetGlobalColor(0, 0, 0, 0);

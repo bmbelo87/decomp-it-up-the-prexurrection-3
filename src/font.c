@@ -26,7 +26,8 @@ static void build_glyph_list(unsigned char ch) {
     if (ch >= 128) {
         /* No glyph data past ASCII; make an empty list so indices stay 1:1. */
         glNewList(FONT_LIST_BASE + ch, GL_COMPILE);
-        glBitmap(FONT_GLYPH_W, FONT_GLYPH_H, 0.0f, 0.0f, 0.0f, 0.0f, NULL);
+        static const uint8_t blank[FONT_GLYPH_H] = {0}; /* NULL crasha o driver NVIDIA */
+        glBitmap(FONT_GLYPH_W, FONT_GLYPH_H, 0.0f, 0.0f, 0.0f, 0.0f, blank);
         glEndList();
         return;
     }

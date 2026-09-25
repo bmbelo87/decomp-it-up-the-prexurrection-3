@@ -364,21 +364,20 @@ typedef struct {
      * Cada vez que a sequência é completada, avança para o próximo estado:
      *   x1 → x2 → x3 → x4 → RV → x1
      *
-     * RV (Reverse): no original, mantém velocidade x1 mas inverte a direção das
-     * setas (de cima para baixo em vez de baixo para cima). cmdSpeedRV=true.
-     * A inversão de direção ainda não está implementada na gameplay.
+     * RV = Random Velocity (ícone raccel): é o mesmo bit 0x200 que o command de
+     * 9 botões UL UR UL UR UL UR UL UR CN alterna (PUMPY.EXE 0x4073dc / 0x40747e).
      *
-     * Outros commands (9 botões, buffer separado no original — não implementados):
-     *   UL UR UL UR UL UR UL UR CN  → bit 9 (0x200) — outro modifier
-     *   UL UR UL UR ... CN  → bit 6 (0x40) → FUN_004109c0 (HalfDouble?)
+     * Máscara por jogador no original (DAT_00da22b4 P1 / DAT_00da22b0 P2):
+     *   0x002/0x004/0x008 x2/x3/x4   0x010 Vanish     0x020 Mirror
+     *   0x040 Random Step            0x080 Non-Step   0x200 Random Velocity
+     *   0x400 Freedom                0x800 Earthworm
      *   Mirror   – inverte painéis: UL↔DR, UR↔DL, CN=CN
-     *   Vanish   – setas somem no meio da tela para cima
+     *   Vanish   – setas somem ao chegar perto do receptor
      *   Non-Step – todas as setas ficam invisíveis
      *   Freedom  – receptor invisível
-     *   Earthworm– setas sobem em movimento senoidal (vai e volta)
+     *   Earthworm– velocidade salta entre x2/x3 (ou x1/x2 acima de 180 BPM) a cada compasso
      */
     int  cmdSpeedMult[2];        /* multiplicador de velocidade por jogador: 1..4. Default=1 */
-    bool cmdSpeedRV[2];          /* RV por jogador. Default=false */
     bool cmdMirror[2];           /* Mirror ativo por jogador */
     bool cmdRandomStep[2];       /* Random Step ativo por jogador */
     bool cmdRandomVelocity[2];   /* Random Velocity ativo por jogador */
