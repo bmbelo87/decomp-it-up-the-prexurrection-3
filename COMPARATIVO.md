@@ -376,6 +376,16 @@ lê esse campo (o `d0` lido é outro); todos os materiais usam `REPEAT` e o blen
 começa desligado. `Resource_ClearBGA` → `Font_Shutdown` desligava a fonte de debug no gameplay;
 o bloco chama `Font_Init()` antes de desenhar.
 
+### Gameplay — judge, setas e fim da música (25/09/2026, noite)
+
+Levantamento completo do desenho do gameplay em `docs/GAMEPLAY_RENDER.md`.
+
+| Item | Original | Reconstructed antes | Correção (`src/gameplay.c`) |
+|---|---|---|---|
+| Duração do judge | 25 frames para PERFECT..MISS; 40 só nos tipos 6/7 (`0x40dd8a`–`0x40dda6`), que não desenham sprite | 40 frames + escala fixa 0,99 para PERFECT/GREAT (lógica dos tipos 6/7) | 25 para todos; ramo "P/G" desligado |
+| Quadro da animação da seta | `fase_da_batida / 10` (`0x412905`–`0x412930`) → 6 quadros por batida | `(frameCounter / 3) % 6` (20 fps fixos) | `arrowAnimFrame()` |
+| Fim do gameplay | sai no que vier primeiro: chart do jogador acabou (`[0xda24b4] >= [chart+0xd39130]`) **ou** BGM parou (`0x4192a0() == 1`) (`0x414902`–`0x414968`) | só por tempo parado/timeout; `g_hasAudio` nunca atribuída → esperava o chart inteiro (815: 148 s de chart, 95 s de música) | as duas regras do original; `g_hasAudio` definida no `Gameplay_Start` |
+
 **Esperas antes de música ainda não conferidas:** `0x4191a0` (toca a BGM) é chamada em 10
 pontos; conferidos `0x4116dd` (gameplay), `0x40422c` (Staff), `0x40a715`/`0x40a797`
 (preview). Pendentes: `0x40414d`, `0x4044fb`, `0x4046ba`, `0x405fd2`, `0x415a17`, `0x415b0b`.

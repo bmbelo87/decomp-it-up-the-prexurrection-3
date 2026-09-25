@@ -310,6 +310,32 @@ static int getRowAtTime(double t)
     return (int)g_chart->rowCount - 1;
 }
 
+static double getRowAtTimeFloat(double t);
+/* Quadro da animacao da seta (0..5). PUMPY.EXE 0x412905..0x412930:
+ * [0xda24c4] = (fase % 60) / 10, onde a fase e a posicao em 1/60 de batida
+ * (acumulador de 60/beatSplit por linha em 0x4127a0) -> 6 quadros por batida,
+ * acompanhando o BPM. Antes o port usava (frameCounter / 3) % 6 (20 fps fixos). */
+static int arrowAnimFrame(void)
+{
+    if (!g_chart || g_chart->segmentCount == 0) return 0;
+    double row = getRowAtTimeFloat(g_songTime);
+    double beats = 0.0;
+    for (uint32_t s = 0; s < g_chart->segmentCount; s++) {
+        double split = (double)(g_chart->segments[s].beatSplit ? g_chart->segments[s].beatSplit : 1);
+        double start = (double)g_chart->segments[s].rowStart;
+        double cnt   = (double)g_chart->segments[s].rowCount;
+        if (row < start + cnt || s == g_chart->segmentCount - 1) {
+            double r = row - start; if (r < 0.0) r = 0.0;
+            beats += r / split;
+            break;
+        }
+        beats += cnt / split;
+    }
+    int phase = (int)(beats * 60.0) % 60;
+    if (phase < 0) phase += 60;
+    return phase / 10;
+}
+
 static double getRowAtTimeFloat(double t)
 {
     if (!g_chart) return t / g_secondsPerRow;
@@ -717,7 +743,7 @@ static void processRowJudgment(int player, int row, JudgeType jt) {
     }
     g_judgeDisplayType[player] = jt;
     g_judgeDisplayTimer[player] = 0.6f;
-    g_judgeFrame[player] = (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25;
+    g_judgeFrame[player] = 25; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25 */
     int sc = 0, cb = g_game.stats.combo[player];
     switch (jt) {
         case JT_PERFECT: sc = 1000; if (cb > 3) sc += 1000; cb++; break;
@@ -919,7 +945,7 @@ static void applyRowJudgment(int p, JudgeType jt)
     }
     g_judgeDisplayType[p] = jt;
     g_judgeDisplayTimer[p] = 0.6f;
-    g_judgeFrame[p] = (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25;
+    g_judgeFrame[p] = 25; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25 */
     g_judgeDisplayCombo[p] = (jt == JT_MISS) ? (int)g_game.stats.missCombo[p] : (int)g_game.stats.combo[p];
     applyLife(p, jt);
     if (g_game.stats.combo[p] > g_game.stats.maxCombo[p])
@@ -1072,7 +1098,7 @@ static void processInput(int player)
                     }
                     g_judgeDisplayType[player] = pjt;
                     g_judgeDisplayTimer[player] = 0.6f;
-                    g_judgeFrame[player] = (pjt == JT_GREAT || pjt == JT_PERFECT) ? 40 : 25;
+                    g_judgeFrame[player] = 25; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (pjt == JT_GREAT || pjt == JT_PERFECT) ? 40 : 25 */
                     { int sc = 0, cb = g_game.stats.combo[player];
                       int receptorY = 38;
                       switch (pjt) {
@@ -1136,7 +1162,7 @@ static void processInput(int player)
         }
         g_judgeDisplayType[player] = jt;
         g_judgeDisplayTimer[player] = 0.6f;
-        g_judgeFrame[player] = (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25;
+        g_judgeFrame[player] = 25; /* PUMPY.EXE 0x40dd9a: 25 p/ todos (40 so nos tipos 6/7). Era: (jt == JT_GREAT || jt == JT_PERFECT) ? 40 : 25 */
         { int sc = 0, cb = g_game.stats.combo[player];
           int receptorY = 38;
           switch (jt) {
@@ -1239,7 +1265,7 @@ static void processAutoplay(void)
         {
             g_judgeDisplayType[p] = JT_PERFECT;
             g_judgeDisplayTimer[p] = 0.6f;
-            g_judgeFrame[p] = 40;
+            g_judgeFrame[p] = 25; /* 0x40dd9a (era 40) */
             g_judgeDisplayCombo[p] = ++g_game.stats.combo[p];
             g_game.stats.missCombo[p] = 0;
             g_game.stats.score[p] += 1000;
@@ -1563,7 +1589,11 @@ void Gameplay_Start(int songId)
             Step_ApplyRandomShuffle(g_chart, chartMode, rsP1, rsP2);
     }
 
-    Log_Print("Gameplay: started song %d\n", songId);
+    /* g_hasAudio nunca era atribuida (sempre false): o fim por "musica acabou"
+     * nao rodava e o jogo esperava o chart inteiro (ex.: 815 = 148 s de chart,
+     * 95 s de musica). A BGM ja foi carregada pelo Loading antes desta chamada. */
+    g_hasAudio = (BGM_GetDurationMs() > 0);
+    Log_Print("Gameplay: started song %d (audio=%d, %u ms)\n", songId, (int)g_hasAudio, BGM_GetDurationMs());
 }
 
 void Gameplay_Exit(void)
@@ -1852,6 +1882,24 @@ void Gameplay_Update(float dt)
     // ORIGINAL: g_songTime parou por 2s (120 frames) → música acabou
     if (g_stagnantFrames >= 60 && g_songTime > 5.0) {
         Log_Print("GP: song ended (stagnant %.1fs for %d frames)\n", g_songTime, g_stagnantFrames);
+        BGM_Stop();
+        Game_ChangeState(STATE_DANCE_GRADE_ENTER);
+        return;
+    }
+
+    /* PUMPY.EXE 0x414902..0x414968: o gameplay termina (estado 0x18, Dance Grade)
+     * no que acontecer primeiro:
+     *   - o chart do jogador ativo acabou: linha atual [0xda24b4] >= total de
+     *     linhas [chart+0xd39130]  (aqui: g_songTime >= duracao do chart);
+     *   - a musica terminou: 0x4192a0() == 1 (BGM nao esta mais tocando). */
+    if (g_chart && g_totalSongSeconds > 0 && g_songTime >= g_totalSongSeconds) {
+        Log_Print("GP: chart ended (%.2f >= %.2f)\n", g_songTime, g_totalSongSeconds);
+        BGM_Stop();
+        Game_ChangeState(STATE_DANCE_GRADE_ENTER);
+        return;
+    }
+    if (g_hasAudio && g_songTime > 1.0 && !BGM_IsPlaying()) {
+        Log_Print("GP: music ended (%.2f)\n", g_songTime);
         BGM_Stop();
         Game_ChangeState(STATE_DANCE_GRADE_ENTER);
         return;
@@ -2368,7 +2416,7 @@ void Gameplay_Render(void)
                                (arrowGroup == 3) ? g_fontArrow543 :
                                (arrowGroup == 4) ? g_fontArrow544 : -1;
                 if (arrowSpr >= 0 && !g_game.cmdNonStep[p]) {
-                    int af = (g_game.frameCounter / 3) % 6;
+                    int af = arrowAnimFrame(); /* era: (g_game.frameCounter / 3) % 6 */
                     int aidx = arrowSpr + af;
                     float sw = (float)g_game.sprTiles[aidx].srcW;
                     float sh = (float)g_game.sprTiles[aidx].srcH;
@@ -2471,7 +2519,9 @@ void Gameplay_Render(void)
             JudgeType jt = g_judgeDisplayType[p];
             int decTimer = g_judgeFrame[p]; // decremented timer (0..24 normal, 0..39 P/G)
             if (decTimer > 39) decTimer = 39;
-            int isPG = (jt == JT_GREAT || jt == JT_PERFECT);
+            /* int isPG = (jt == JT_GREAT || jt == JT_PERFECT); -- o ramo 'P/G' era a logica dos
+             * tipos 6/7 do original (0x40de19..0x40de81), que nao desenham judge. */
+            int isPG = 0;
 
             // Tabelas do original (Ghidra DAT_004428d4 / 00442850 / 00442910)
             // normalScaleTable[decTimer] para decTimer 11..24 (pop-in uniform)
@@ -2957,7 +3007,7 @@ void Gameplay_Render(void)
             if (base < 0) continue;
             float ef = (float)g_noteExplodeFrame[pe][pan];
             float eAlpha = 1.0f - ef / 24.0f; /* fade suave do frame 0 ao 24 */
-            int af = (g_game.frameCounter / 3) % 6;
+            int af = arrowAnimFrame(); /* era: (g_game.frameCounter / 3) % 6 */
             int aSpr = base + af;
             float sw = (float)g_game.sprTiles[aSpr].srcW;
             float sh = (float)g_game.sprTiles[aSpr].srcH;
