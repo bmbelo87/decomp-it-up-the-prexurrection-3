@@ -1,0 +1,38 @@
+name: build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependências
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libgl-dev libglu1-mesa-dev zlib1g-dev
+      - name: Configurar e compilar
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pumpy-linux
+          path: build/Pumpy
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependências (vcpkg)
+        run: vcpkg install sdl2:x64-windows zlib:x64-windows
+      - name: Configurar e compilar
+        run: |
+          cmake -S . -B build -A x64 -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
+          cmake --build build --config Release --parallel
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Pumpy-windows
+          path: |
+            build/Release/Pumpy.exe
+            build/Release/*.dll

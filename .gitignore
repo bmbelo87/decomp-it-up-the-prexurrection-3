@@ -1,0 +1,15 @@
+/*
+!/.gitignore
+!/src
+!/include
+!/CMakeLists.txt
+!/README.md
+!/IA_LOGO.png
+!/docs
+!/tools
+!/third_party
+!/.github
+
+/build
+src/*_REV01.c
+tools/res_extract
