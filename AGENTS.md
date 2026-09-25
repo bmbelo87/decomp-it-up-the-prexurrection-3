@@ -621,8 +621,12 @@ Implement original combo rendering system from PUMPY.EXE using Combo_DrawMain (0
 
 ## 🚨 REGRA ABSOLUTA — Git ⚠️
 
-- **Nunca** execute `git commit`, `git push`, `git pull`, `git add`, ou qualquer outro subcomando que modifique o repositório.
-- **Permitido apenas:** `git diff HEAD` (consulta visual, sem alterações).
+- **Claude (Claude Code)** pode executar `git add`, `git commit` e `git push` **somente quando as duas condições valerem**:
+  1. o usuário pediu o commit/push explicitamente na conversa; **e**
+  2. as mudanças incluídas foram discutidas e o usuário concordou com elas.
+  Antes de commitar, mostrar o que entra (`git status`) e confirmar o escopo em caso de dúvida.
+- **Qualquer outro agente/IA:** **nunca** execute `git commit`, `git push`, `git pull`, `git add`, ou qualquer outro subcomando que modifique o repositório. Permitido apenas `git diff HEAD` (consulta visual, sem alterações).
+- **Para todos, sempre proibido:** `git push --force`, `git reset --hard`, `git rebase`, reescrever histórico ou apagar branches, a menos que o usuário peça exatamente isso.
 
 ---
 

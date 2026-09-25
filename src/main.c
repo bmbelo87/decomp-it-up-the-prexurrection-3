@@ -174,7 +174,8 @@ void Game_Init(HINSTANCE hInstance) {
     g_game.globalScaleX = 1.0f;
     g_game.globalScaleY = 1.0f;
     g_game.globalAlpha = 1.0f;
-    g_game.showDebug = true;
+    /* g_game.showDebug = true; */
+    g_game.showDebug = false;  /* debug oculto ao abrir; F11 alterna (Game_Update) */
     /* g_game.stageBreak = 1; */ /* DISABLED: controlado por optionToggle1 no GameOption */
     g_game.showHelp = 0;
     g_game.cmdSpeedMult[0] = 1;    /* Command P1: velocidade padrão x1 */

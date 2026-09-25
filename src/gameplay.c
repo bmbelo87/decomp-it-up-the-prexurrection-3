@@ -3035,6 +3035,54 @@ void Gameplay_Render(void)
             }
         Font_DrawStringCentered(g_game.screenWidth/2, 28, buf, 0, 1, 0, 0.7f);
     }
+    /* Debug (F11): cronometro da musica e frame do VSL no centro da tela.
+     * g_songTime = posicao da BGM - AudioOffset (mesmo relogio das setas).
+     * PUMPY_DUMP_DIR + PUMPY_DUMP_AT="s1,s2,..." salvam o framebuffer em BMP. */
+    if (g_game.showDebug) {
+        glMatrixMode(GL_PROJECTION); glPushMatrix(); glLoadIdentity();
+        glOrtho(0, 640, 0, 480, -1.0, 1.0);
+        glMatrixMode(GL_MODELVIEW); glPushMatrix(); glLoadIdentity();
+        glPushAttrib(GL_ALL_ATTRIB_BITS);
+        glDisable(GL_CULL_FACE); glDisable(GL_SCISSOR_TEST); glDisable(GL_ALPHA_TEST);
+        glDisable(GL_LIGHTING); glDisable(GL_STENCIL_TEST); glDisable(GL_DEPTH_TEST);
+        glDisable(GL_TEXTURE_2D); glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+        glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glColor4f(0, 0, 0, 0.6f);
+        glBegin(GL_QUADS); glVertex2f(200, 190); glVertex2f(440, 190); glVertex2f(440, 272); glVertex2f(200, 272); glEnd();
+        Font_Init(); /* Resource_ClearBGA -> Font_Shutdown zera a fonte de debug */
+        double t = g_songTime; if (t < 0) t = 0;
+        { static int once = 0; if (once++ < 3) Log_Print("DIAG TIMER: bloco executado t=%.2f\n", t); }
+        int mm = (int)(t / 60.0), ss = (int)t % 60, cc = (int)((t - (int)t) * 100.0);
+        char tb[48];
+        snprintf(tb, sizeof(tb), "%02d:%02d.%02d", mm, ss, cc);
+        Font_DrawStringCenteredScaled(322, 218, tb, 0, 0, 0, 1, 3.0f);
+        Font_DrawStringCenteredScaled(320, 216, tb, 1, 1, 0, 1, 3.0f);
+        if (g_game.isVSL && g_vsl.active) {
+            snprintf(tb, sizeof(tb), "VSL frame %d", g_game.bgaFrame);
+            Font_DrawStringCenteredScaled(321, 267, tb, 0, 0, 0, 1, 1.5f);
+            Font_DrawStringCenteredScaled(320, 266, tb, 1, 1, 1, 1, 1.5f);
+        }
+        { /* DIAG: PUMPY_DUMP_DIR + PUMPY_DUMP_AT (s) -> salva o framebuffer em BMP */
+            static int dumped = 0; const char* dd = getenv("PUMPY_DUMP_DIR"); const char* dl = getenv("PUMPY_DUMP_AT");
+            /* lista separada por virgulas; dumped = quantos ja foram salvos */
+            char da[32] = {0};
+            if (dl) { const char* q = dl; for (int k = 0; k < dumped && q; k++) { q = strchr(q, ','); if (q) q++; }
+                      if (q) { size_t n = strcspn(q, ","); if (n > 31) n = 31; memcpy(da, q, n); } }
+            if (dd && da[0] && t >= atof(da)) {
+                GLint vp[4]; glGetIntegerv(GL_VIEWPORT, vp); int W = vp[2], H = vp[3], rs = (W * 3 + 3) & ~3;
+                unsigned char* px = (unsigned char*)malloc((size_t)rs * H);
+                if (px) { glPixelStorei(GL_PACK_ALIGNMENT, 4); glReadPixels(vp[0], vp[1], W, H, GL_BGR_EXT, GL_UNSIGNED_BYTE, px);
+                    char fp[512]; snprintf(fp, sizeof(fp), "%s/dump_%s.bmp", dd, da); FILE* bf = fopen(fp, "wb");
+                    if (bf) { unsigned int fs = 54 + rs * H; unsigned char hd[54] = {'B','M'}; memcpy(hd+2,&fs,4); hd[10]=54; hd[14]=40;
+                        memcpy(hd+18,&W,4); memcpy(hd+22,&H,4); hd[26]=1; hd[28]=24; fwrite(hd,1,54,bf); fwrite(px,1,(size_t)rs*H,bf); fclose(bf); }
+                    free(px); Log_Print("DIAG: dump %s\n", fp); }
+                dumped++;
+            }
+        }
+        glPopAttrib();
+        glMatrixMode(GL_PROJECTION); glPopMatrix();
+        glMatrixMode(GL_MODELVIEW); glPopMatrix();
+    }
 }
 
 

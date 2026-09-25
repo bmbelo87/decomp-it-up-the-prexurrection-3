@@ -355,6 +355,27 @@ Todos confirmados no assembly do `PUMPY.EXE`; tempos em ticks de 240 Hz ou frame
 | Console (crase) | `VK_OEM_3` = posição física à esquerda do 1 (scancode `0x29`) | mapeado por keycode `SDLK_BACKQUOTE`; não abria no ABNT2 | mapeado por `SDL_SCANCODE_GRAVE` (`src/input.c`) |
 | Lifebar HalfDouble (preenchimento) | — | V invertido no estilo TGA (`th − 1 − v`) lia as linhas 97–111 / 81–95 do `ST02.PNG` | linhas 144–158 / 160–174 direto (`src/gameplay.c`); coordenadas ainda não conferidas no assembly |
 
+### VSL (músicas 900) — corrigido (25/09/2026, noite)
+
+Confirmado no assembly e por capturas lado a lado da 902 (original × port).
+
+| Item | Original | Reconstructed antes | Correção (`src/vsl.c`) |
+|---|---|---|---|
+| Modo de repetição da textura | por material: `WRAP_S/T` = `GL_CLAMP` se flags `0x400`/`0x800`, senão `GL_REPEAT` (`0x4166f5`–`0x416736`) | `CLAMP_TO_EDGE` sempre; UVs do `.tc` vão de −1 a 0 → borda esticada, fundo quase todo preto | `GL_REPEAT` ao ligar cada textura |
+| Orientação V | — | `1 - v` compensava o WIC antigo, que invertia linhas | V direto |
+| Matriz do quadro-chave | 12 floats na ordem do arquivo: `a[0..2]=f0..f2`, `a[4..6]=f3..f5`, `a[8..10]=f6..f8`, `a[12..14]=f9..f11` (`0x416ab0`–`0x416b2a`); `glMultMatrixf` direto (`0x416d01`) | rotação transposta + inversão de `m[1]`/`m[4]` no render (só acertava rotação em Z) | ordem do original, sem inversão |
+| Faces de trás | `glEnable(GL_CULL_FACE)` + `glCullFace(GL_BACK)` (`0x418333`–`0x41834e`) | cull desligado | cull ligado |
+
+Câmera já idêntica: `gluPerspective(73.74, 4/3, 0.01, 15)` e `gluLookAt((0,0,3.2)→(0,0,−1), up (0,1,0))`.
+
+**Pendente:** as flags do material no original também escolhem o blend (`0x10` aditivo,
+`0x20` alpha, nenhum → sem blend) e o clamp (`0x400`/`0x800`). O parser do `.tc` do port não
+lê esse campo (o `d0` lido é outro); todos os materiais usam `REPEAT` e o blend + "color key".
+
+**Debug:** F11 mostra o cronômetro da música e o frame do VSL (`Gameplay_Render`); debug
+começa desligado. `Resource_ClearBGA` → `Font_Shutdown` desligava a fonte de debug no gameplay;
+o bloco chama `Font_Init()` antes de desenhar.
+
 **Esperas antes de música ainda não conferidas:** `0x4191a0` (toca a BGM) é chamada em 10
 pontos; conferidos `0x4116dd` (gameplay), `0x40422c` (Staff), `0x40a715`/`0x40a797`
 (preview). Pendentes: `0x40414d`, `0x4044fb`, `0x4046ba`, `0x405fd2`, `0x415a17`, `0x415b0b`.

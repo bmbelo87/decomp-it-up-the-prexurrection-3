@@ -257,12 +257,18 @@ static bool vsl_load_tc(const char* tcName, int meshTableIdx) {
                     // f[0]..f[8]: Rotação/Escala (3x3)
                     // f[9]..f[11]: Translação (Tx, Ty, Tz)
                     
-                    // Coluna 0
-                    me->anims[i].m[0][0] = f[0]; me->anims[i].m[1][0] = f[1]; me->anims[i].m[2][0] = f[2];  me->anims[i].m[3][0] = f[9]; 
-                    // Coluna 1
+                    /* PUMPY.EXE 0x416ab0..0x416b2a: os 12 floats vão na ordem do arquivo
+                     * para o array do glMultMatrixf: a[0..2]=f0..f2, a[4..6]=f3..f5,
+                     * a[8..10]=f6..f8, a[12..14]=f9..f11, a[15]=1 (a[k] = m[k/4][k%4]).
+                     * A versão abaixo transpunha a rotação (a[4]=f1 ...), o que exigia a
+                     * inversão de sinal no VSL_Render e distorcia rotações em X/Y.
+                    me->anims[i].m[0][0] = f[0]; me->anims[i].m[1][0] = f[1]; me->anims[i].m[2][0] = f[2];  me->anims[i].m[3][0] = f[9];
                     me->anims[i].m[0][1] = f[3]; me->anims[i].m[1][1] = f[4]; me->anims[i].m[2][1] = f[5];  me->anims[i].m[3][1] = f[10];
-                    // Coluna 2
-                    me->anims[i].m[0][2] = f[6]; me->anims[i].m[1][2] = f[7]; me->anims[i].m[2][2] = f[8];  me->anims[i].m[3][2] = f[11];
+                    me->anims[i].m[0][2] = f[6]; me->anims[i].m[1][2] = f[7]; me->anims[i].m[2][2] = f[8];  me->anims[i].m[3][2] = f[11]; */
+                    me->anims[i].m[0][0] = f[0]; me->anims[i].m[0][1] = f[1]; me->anims[i].m[0][2] = f[2];
+                    me->anims[i].m[1][0] = f[3]; me->anims[i].m[1][1] = f[4]; me->anims[i].m[1][2] = f[5];
+                    me->anims[i].m[2][0] = f[6]; me->anims[i].m[2][1] = f[7]; me->anims[i].m[2][2] = f[8];
+                    me->anims[i].m[3][0] = f[9]; me->anims[i].m[3][1] = f[10]; me->anims[i].m[3][2] = f[11];
                     
                     // Última Coluna (W)
                     me->anims[i].m[0][3] = 0.0f;
@@ -470,7 +476,11 @@ void VSL_Render(int frame) {
     }
 
     glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
+    /* PUMPY.EXE 0x418333..0x41834e: glDisable(GL_DEPTH_TEST),
+     * glEnable(GL_CULL_FACE), glCullFace(GL_BACK) antes da camera.
+    glDisable(GL_CULL_FACE); */
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
 
     glMatrixMode(GL_PROJECTION);
     glPushMatrix();
@@ -534,6 +544,14 @@ void VSL_Render(int frame) {
                 } else {
                     glEnable(GL_TEXTURE_2D);
                     glBindTexture(GL_TEXTURE_2D, g_game.textures[texId].id);
+                    /* PUMPY.EXE 0x4166f5..0x416736: por material, WRAP_S = CLAMP se
+                     * flags & 0x400 senão REPEAT; WRAP_T = CLAMP se flags & 0x800
+                     * senão REPEAT. O campo de flags do original ainda não foi
+                     * mapeado no parser do .tc; usa-se o caso comum (REPEAT). As UVs
+                     * do .tc vão de -1 a 0, então CLAMP_TO_EDGE (padrão do
+                     * Texture_CreateGL) esticava a borda da textura. */
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
                 }
 
                 // Configuração de Material (original usa glColor4fv com cor do AMBIENT, não diffuse)
@@ -559,8 +577,11 @@ void VSL_Render(int frame) {
                 if (me->animCount > 0 && ai >= 0 && ai < me->animCount) {
                     float m[16];
                     memcpy(m, &me->anims[ai].m[0][0], sizeof(m));
+                    /* PUMPY.EXE 0x416cec..0x416d01: glPushMatrix + glMultMatrixf(anims + i*64)
+                     * direto, sem mexer em sinais. A inversão abaixo não existe no original
+                     * e distorcia rotações em X/Y (cúpula e fitas da 902 a partir de 28 s).
                     m[1] = -m[1];   // Inverte seno Z rotation
-                    m[4] = -m[4];   // Inverte seno Z rotation
+                    m[4] = -m[4];   // Inverte seno Z rotation */
                     glMultMatrixf(m);
                 }
 
@@ -570,7 +591,11 @@ void VSL_Render(int frame) {
                 int vc = me->faceCounts[sg];
                 
                 for (int v = sv; v < sv + vc && v < me->totalVertices; v++) {
-                    glTexCoord2f(me->vertices[v].u, 1.0f - me->vertices[v].v);
+                    /* V direto: desde o port SDL2 o decoder de PNG/BMP entrega V=0 no topo. O
+                     * '1 - v' compensava o WIC antigo, que invertia as linhas (0a5ac4b
+                     * texture.c:168); sem o WIC ele passou a espelhar as texturas do VSL.
+                    glTexCoord2f(me->vertices[v].u, 1.0f - me->vertices[v].v); */
+                    glTexCoord2f(me->vertices[v].u, me->vertices[v].v);
                     glVertex3f(me->vertices[v].x, me->vertices[v].y, me->vertices[v].z);
                 }
                 glEnd();
