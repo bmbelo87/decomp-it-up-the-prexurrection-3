@@ -368,7 +368,7 @@ Confirmado no assembly e por capturas lado a lado da 902 (original × port).
 
 Câmera já idêntica: `gluPerspective(73.74, 4/3, 0.01, 15)` e `gluLookAt((0,0,3.2)→(0,0,−1), up (0,1,0))`.
 
-**Pendente:** as flags do material no original também escolhem o blend (`0x10` aditivo,
+**Aceito como está (26/09/2026):** sem diferença visível nas cenas testadas. As flags do material no original também escolhem o blend (`0x10` aditivo,
 `0x20` alpha, nenhum → sem blend) e o clamp (`0x400`/`0x800`). O parser do `.tc` do port não
 lê esse campo (o `d0` lido é outro); todos os materiais usam `REPEAT` e o blend + "color key".
 
@@ -421,7 +421,8 @@ nem combo; pisadas na janela (PERFECT..BAD) explodem e somam no contador
 PERFECT..MISS, 7–9 desconhecidas; faixa `0,0` é ignorada; **vence o último ramo válido**.
 Contadores **por página** (hipótese muito provável: o máximo pedido por uma página é igual ao
 número de W da página anterior — 712 p1.2 tem 2 W e p2.3 pede W 2-2; 736 p3.4 tem 4 W e p4.5
-pede W 4-4; ponto do original que zera não localizado). Todos os ramos de uma página têm o
+pede W 4-4; ponto do original que zera não localizado — aceito como está em 26/09/2026,
+funciona em jogo). Todos os ramos de uma página têm o
 mesmo número de linhas → a página seguinte é substituída no chart sem mexer no tempo.
 
 **Velocidade por bloco** (vale para qualquer música): `0x4118d0` — alvo = velocidade do
@@ -551,9 +552,9 @@ comportamento:
   DirectMusic; MP3 via `dr_mp3.h`, o que o original não faz.
 - **Músicas de teste:** a música 100 (sem `100.AUD` / `D100.AUD`) é adição local para
   testes, não existe no original; o aviso "preview silencioso" no log é esperado.
-- **Nomes pendentes:** `gameplay.c` ainda tem `FUN_00411b40`, `FUN_00411a90` e
-  `FUN_004119d0` com os nomes do Ghidra. Correspondem a `Combo_DrawMain`,
-  `Combo_DrawSprite` e `Combo_DrawDigit`. Renomear é cosmético mas ajuda a leitura.
+- **Nomes do combo:** `gameplay.c` já usa `Combo_DrawMain` (`0x00411b40`),
+  `Combo_DrawSprite` (`0x00411a90`) e `Combo_DrawDigit` (`0x004119d0`), com o endereço no
+  comentário. Os `FUN_*` só restam em `gameplay_REV01.c`, que não entra no build.
 
 ---
 
