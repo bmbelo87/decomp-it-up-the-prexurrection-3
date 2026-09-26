@@ -291,6 +291,86 @@ static int getBlockInfo(int ri, int* outLine) {
     return block;
 }
 
+/* Division: notas especiais tiradas do chart na carga (W=2, G=3, A=4), por
+ * jogador, em [linha*5 + coluna]. O julgamento normal nunca as vê: no original
+ * elas não dão MISS nem judge (0x40f3a7..0x40f446), só explodem se pisadas. */
+static uint8_t* g_divSpec[2];
+static int g_divW[2], g_divG[2];   /* contadores: G = tipo 2 ([jog+0x2C]), W = tipo 3 ([jog+0x28]) */
+/* Os contadores valem POR PÁGINA: nos 9 charts, o máximo de W pedido pelos ramos
+ * de uma página é igual ao número de W da página anterior (ex.: 712 p1.2 tem 2 W
+ * e p2.3 pede W 2-2; 736 p3.4 tem 4 W e p4.5 pede W 4-4). Acumulando, esses ramos
+ * seriam inalcançáveis. O ponto do original que zera não foi localizado. */
+static int g_divLastPage[2];
+
+/* Tira W/G/A das linhas [r0, r1) do chart e guarda em g_divSpec. */
+static void divExtractSpecials(uint32_t r0, uint32_t r1)
+{
+    if (!g_chart) return;
+    for (int p = 0; p < 2; p++) {
+        if (!g_divSpec[p]) continue;
+        for (uint32_t r = r0; r < r1 && r < g_chart->rowCount; r++) {
+            uint8_t* h1 = (uint8_t*)&g_chart->rows[r].half1;
+            uint8_t* h2 = (uint8_t*)&g_chart->rows[r].half2;
+            for (int i = 0; i < 5; i++) {
+                uint8_t* src = (p == 0) ? h1 : h2;
+                uint8_t v = src[i];
+                g_divSpec[p][r * 5 + i] = (v == NT_DIV_W || v == NT_DIV_G || v == NT_DIV_A) ? v : 0;
+            }
+        }
+    }
+    for (uint32_t r = r0; r < r1 && r < g_chart->rowCount; r++) {
+        uint8_t* h1 = (uint8_t*)&g_chart->rows[r].half1;
+        uint8_t* h2 = (uint8_t*)&g_chart->rows[r].half2;
+        for (int i = 0; i < 5; i++) {
+            if (h1[i] == NT_DIV_W || h1[i] == NT_DIV_G || h1[i] == NT_DIV_A) h1[i] = 0;
+            if (h2[i] == NT_DIV_W || h2[i] == NT_DIV_G || h2[i] == NT_DIV_A) h2[i] = 0;
+        }
+    }
+}
+
+/* Escolha do ramo da página seguinte — PUMPY.EXE 0x40f19a..0x40f39d: para cada
+ * ramo existente, 10 faixas [mín,máx] (0 e 0 = ignorada) contra PERFECT, GREAT,
+ * GOOD, BAD, MISS, W, G e mais 3 contadores; vence o ÚLTIMO ramo válido. Nos 9
+ * charts de Division só W e G são usados. As linhas do ramo substituem a página
+ * no chart tocável (todos os ramos de uma página têm o mesmo tamanho). */
+static void divApplyBranch(int p, int hitRow)
+{
+    if (!g_chart || g_chart->divPageCount <= 0) return;
+    int pg = -1;
+    for (int i = 0; i < g_chart->divPageCount; i++) {
+        uint32_t s = g_chart->divPages[i].rowStart, n = g_chart->divPages[i].rowCount;
+        if ((uint32_t)hitRow >= s && (uint32_t)hitRow < s + n) { pg = i; break; }
+    }
+    int np = pg + 1;
+    if (pg < 0 || np >= g_chart->divPageCount) return;
+    int stat[10] = {
+        (int)g_game.stats.perfectCount[p], (int)g_game.stats.greatCount[p],
+        (int)g_game.stats.goodCount[p], (int)g_game.stats.badCount[p],
+        (int)g_game.stats.missCount[p], g_divG[p], g_divW[p], 0, 0, 0 };  /* faixa 5 = tipo 2 (G), faixa 6 = tipo 3 (W) */
+    int chosen = 0;
+    for (int br = 0; br < g_chart->divPages[np].branchCount && br < 10; br++) {
+        if (!g_chart->divPages[np].branchRows[br]) continue;
+        const int32_t* c = g_chart->divPages[np].cond[br];
+        bool ok = true;
+        for (int q = 0; q < 10; q++) {
+            int mn = c[2 * q], mx = c[2 * q + 1];
+            if (mn == 0 && mx == 0) continue;
+            if (q >= 7) { Log_Print("DIV: condicao %d desconhecida ignorada\n", q); continue; }
+            if (stat[q] < mn || stat[q] > mx) { ok = false; break; }
+        }
+        if (ok) chosen = br;
+    }
+    uint32_t s = g_chart->divPages[np].rowStart, n = g_chart->divPages[np].rowCount;
+    if (s + n <= g_chart->rowCount)
+        memcpy(&g_chart->rows[s], g_chart->divPages[np].branchRows[chosen], n * sizeof(StepRow));
+    divExtractSpecials(s, s + n);
+    /* No Division as páginas são os segmentos, na mesma ordem (ramo 0 de cada
+     * página foi emendado como segmento); a página leva a velocidade do ramo. */
+    if ((uint32_t)np < g_chart->segmentCount)
+        g_chart->segments[np].speed = g_chart->divPages[np].speed[chosen];
+    Log_Print("DIV: P%d W=%d G=%d -> pagina %d ramo %d\n", p + 1, g_divW[p], g_divG[p], np, chosen);
+}
+
 static int getRowAtTime(double t)
 {
     if (!g_chart) return 0;
@@ -527,6 +607,18 @@ static bool loadChartForSong(int songId, int diffTier, const char* modeName)
     Log_Print("GP: chart %d: BPM=%.1f subdiv=%d rows=%d panels=%d time=%.1fs spR=%.4f segments=%d baseSpr=%.4f\n",
         g_chartIdx, bpm, subdiv, g_chart->rowCount, g_chart->panelCount, g_totalSongSeconds, g_secondsPerRow, g_chart->segmentCount, 60.0/(g_baseBpm*(double)g_baseBeatSplit));
     g_songLoaded = true;
+
+    for (int p = 0; p < 2; p++) {
+        free(g_divSpec[p]); g_divSpec[p] = NULL;
+        g_divW[p] = g_divG[p] = 0;
+        g_divLastPage[p] = -1;
+    }
+    if (g_chart->divPageCount > 0) {
+        for (int p = 0; p < 2; p++)
+            g_divSpec[p] = (uint8_t*)calloc((size_t)g_chart->rowCount * 5, 1);
+        divExtractSpecials(0, g_chart->rowCount);
+        Log_Print("DIV: %d paginas\n", g_chart->divPageCount);
+    }
 
     g_chart->totalNotes = 0;
     for (uint32_t r = 0; r < g_chart->rowCount; r++)
@@ -987,6 +1079,41 @@ static void processInput(int player)
         if (!Input_IsPadHit(usePlayer, btn)) continue;
         g_hitTimer[player][panel] = 17;
         g_p1FlashTimer[player][panel] = 15; // inicia zoom+fade do tile p1
+
+        /* Division: W/G pisadas na janela (PERFECT..BAD) explodem, somam no
+         * contador e escolhem o ramo — sem judge, combo ou MISS (0x40f16a). */
+        if (g_divSpec[player] && !isHD && !isDN && panel < 5) {
+            int hitSpec = -1;
+            for (int ri = 0; ri < (int)g_chart->rowCount; ri++) {
+                uint8_t sv = g_divSpec[player][ri * 5 + panel];
+                if (sv != NT_DIV_W && sv != NT_DIV_G) continue;
+                double sd = g_songTime - getRowTime(ri);
+                if (sd < -judgeBadEarly()) break;
+                if (sd > judgeBadLate()) continue;
+                hitSpec = ri; break;
+            }
+            if (hitSpec >= 0) {
+                uint8_t sv = g_divSpec[player][hitSpec * 5 + panel];
+                g_divSpec[player][hitSpec * 5 + panel] = 0;
+                {
+                    int hp = -1;
+                    for (int i = 0; i < g_chart->divPageCount; i++) {
+                        uint32_t s0 = g_chart->divPages[i].rowStart, n0 = g_chart->divPages[i].rowCount;
+                        if ((uint32_t)hitSpec >= s0 && (uint32_t)hitSpec < s0 + n0) { hp = i; break; }
+                    }
+                    if (hp != g_divLastPage[player]) {   /* página nova: contadores zerados */
+                        g_divW[player] = g_divG[player] = 0;
+                        g_divLastPage[player] = hp;
+                    }
+                }
+                if (sv == NT_DIV_W) g_divW[player]++; else g_divG[player]++;
+                g_noteState[player][panel] = 1;
+                g_noteExplodeRow[player][panel] = hitSpec;
+                g_noteExplodeFrame[player][panel] = 0;
+                divApplyBranch(player, hitSpec);
+                continue;
+            }
+        }
 
         double bestDiff    = 999;  /* diff com sinal: negativo=early, positivo=late */
         int bestRow = -1;
@@ -1730,12 +1857,26 @@ void Gameplay_Update(float dt)
 
             /* Rampa linear até o alvo: ±50/1000 por frame no original (0x414888),
              * ou seja ~3x por segundo a 60 fps. */
-            float speedDiff = g_scrollSpeedTarget[_p] - g_scrollSpeedX[_p];
+            /* Velocidade do bloco atual — PUMPY.EXE 0x4118d0: alvo = velocidade do
+             * jogador, ou velBloco*0,001*velJogador se velBloco != 0. A rampa
+             * abaixo (±0,05x/frame, 0x414888) é a mesma do 1/2/3.
+            float speedDiff = g_scrollSpeedTarget[_p] - g_scrollSpeedX[_p]; */
+            float blockMul = 1.0f;
+            if (g_chart && currentRow >= 0) {
+                for (uint32_t s = 0; s < g_chart->segmentCount; s++) {
+                    uint32_t s0 = g_chart->segments[s].rowStart;
+                    if ((uint32_t)currentRow >= s0 && (uint32_t)currentRow < s0 + g_chart->segments[s].rowCount) {
+                        if (g_chart->segments[s].speed > 0) blockMul = (float)g_chart->segments[s].speed * 0.001f;
+                        break;
+                    }
+                }
+            }
+            float speedDiff = g_scrollSpeedTarget[_p] * blockMul - g_scrollSpeedX[_p];
             float speedStep = 3.0f * dt;
             if (fabsf(speedDiff) > speedStep)
                 g_scrollSpeedX[_p] += (speedDiff > 0.0f) ? speedStep : -speedStep;
             else
-                g_scrollSpeedX[_p] = g_scrollSpeedTarget[_p];
+                g_scrollSpeedX[_p] = g_scrollSpeedTarget[_p] * blockMul; /* era: g_scrollSpeedTarget[_p] */
         }
     }
 
@@ -2405,6 +2546,10 @@ void Gameplay_Render(void)
                     arrowIdx = panel;
                 }
                 uint8_t val = isHalfDouble ? getNoteHD(&g_chart->rows[ri], panel) : (isDoubleOrNightmare ? getDNPanelValue(&g_chart->rows[ri], panel) : getPanelValue(&g_chart->rows[ri], panel, p));
+                if (!val && g_divSpec[p] && !isHalfDouble && !isDoubleOrNightmare && panel < 5) {
+                    uint8_t sv = g_divSpec[p][ri * 5 + panel];
+                    if (sv == NT_DIV_W || sv == NT_DIV_G) val = sv;   /* A (4) nao desenha */
+                }
                 if (!val || val == NT_HOLD_B || val == NT_HOLD_T) continue;
 
                 // HD: pos 0=CN(545), 1=UR(543), 2=DR(544), 3=DL(542), 4=UL(541), 5=CN(545)
@@ -2419,6 +2564,14 @@ void Gameplay_Render(void)
                                (arrowGroup == 2) ? g_fontArrow545 :
                                (arrowGroup == 3) ? g_fontArrow543 :
                                (arrowGroup == 4) ? g_fontArrow544 : -1;
+                /* Notas especiais do Division — PUMPY.EXE 0x412b91..0x412c3f:
+                 *   2 -> G: tile 0x8bb194 = ARROWETC.SP2 +6
+                 *   3 -> W: tile 0x8bb02c = ARROWETC.SP2 +0
+                 *   4 -> nao desenha (so liga uma flag e e apagada) */
+                uint8_t nv = (uint8_t)(val & 0x7F);
+                if (nv == 4) continue;
+                if ((nv == 2 || nv == 3) && g_fontArrowETC >= 0)
+                    arrowSpr = g_fontArrowETC + ((nv == 2) ? 6 : 0);  /* confirmado em jogo pelo usuario */
                 if (arrowSpr >= 0 && !g_game.cmdNonStep[p]) {
                     int af = arrowAnimFrame(); /* era: (g_game.frameCounter / 3) % 6 */
                     int aidx = arrowSpr + af;

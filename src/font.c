@@ -323,10 +323,19 @@ void Font_DrawDecDigit(int texId, float x, float y, int digit, float alpha, floa
      * (1-V) que havia aqui amostrava as linhas 43..88, ou seja, a faixa do
      * GREAT em vez dos números do combo. */
     float vTop = (float)row * 0.17578125f + 0.65625f;
+    /* Ajuste EMPÍRICO: no DEC00.PNG os dígitos 5-9 estão desenhados 1 px mais
+     * baixos na célula (topo na linha 2, contra linha 1 nos 0-4). Nas capturas
+     * do original (combos 019, 027) os dígitos aparecem alinhados, então a linha
+     * 5-9 começa 1 px abaixo (214). A causa no original não foi localizada. */
+    if (row == 1) vTop += 1.0f / 256.0f;
     float vEnd = vTop + 0.17578125f;
     /* Row 1 (dígitos 5-9): vEnd = 1.00781 > 1.0 → com GL_REPEAT mostra linha do topo da textura.
      * GL_CLAMP_TO_EDGE em Texture_CreateGL é o fix primário, mas clampamos aqui também por segurança. */
-    if (vEnd > 1.0f) vEnd = 1.0f;
+    /* if (vEnd > 1.0f) vEnd = 1.0f;
+     * O corte encolhia a faixa da linha 5-9 para 43 px esticados em 45 px de
+     * altura: os dígitos 5-9 desciam alguns pixels. O original (0x40c780) usa os
+     * 45 px exatos; com CLAMP_TO_EDGE as 2 linhas além de 1.0 repetem a última
+     * linha do DEC00.PNG, que é transparente (alfa 0). */
     Texture_Bind(texId);
     glEnable(GL_TEXTURE_2D);
     glEnable(GL_BLEND);

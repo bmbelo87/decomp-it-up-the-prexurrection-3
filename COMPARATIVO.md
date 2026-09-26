@@ -393,6 +393,48 @@ Levantamento completo do desenho do gameplay em `docs/GAMEPLAY_RENDER.md`.
 | Quadro da animação da seta | `fase_da_batida / 10` (`0x412905`–`0x412930`) → 6 quadros por batida | `(frameCounter / 3) % 6` (20 fps fixos) | `arrowAnimFrame()` |
 | Fim do gameplay | sai no que vier primeiro: chart do jogador acabou (`[0xda24b4] >= [chart+0xd39130]`) **ou** BGM parou (`0x4192a0() == 1`) (`0x414902`–`0x414968`) | só por tempo parado/timeout; `g_hasAudio` nunca atribuída → esperava o chart inteiro (815: 148 s de chart, 95 s de música) | as duas regras do original; `g_hasAudio` definida no `Gameplay_Start` |
 
+### Division — implementado (26/09/2026)
+
+Confirmado no assembly e validado em jogo pelo usuário.
+
+**Acesso.** Nenhuma tela do `PUMPY.EXE` seleciona o Division: a entrada do Song Select trata
+`[0xd5fd80] == 7` (`0x40ad2e`, → `Stage.cfg` índice 4), mas nada grava 7. O caminho do original é
+o comando de console `run <id> -dv` (`/play`), tabela em `0x43d080` → `0x410cf0`; a própria
+confirmação do Song Select usa `run` por dentro (`0x4091a0`–`0x4092a2`).
+Reconstructed: `run`/`/play` no console (`src/debug_console.c`) e DIVISION como 7º modo no
+carrossel (**extra do port**; rótulo "DIVISION / WILD MODE" já existia sem uso no `MODE.PNG`;
+layer clonado do NIGHTMARE em tempo de execução).
+
+**Formato (seção 7 do `.STX`).** As 50 contagens de bloco do header são **páginas**; os blocos
+de cada página são **ramos**. Cabeçalho de cada bloco: BPM `+0`, compasso `+4`, divisão `+8`,
+delay `+12`, **10 faixas `[mín,máx]` `+16`** (condições), **velocidade ×1000 `+96`**.
+O reconstructed emendava todos os blocos como mudanças de BPM (719: 339 s de passos para 101 s
+de música).
+
+**Notas especiais.** `2` = **G** (tile `0x8bb194`, `ARROWETC.SP2`+6), `3` = **W** (`0x8bb02c`,
++0), `4` = **A** (marcador do bloco de decisão, não desenha, `0x412c2f`). Não dão MISS, judge
+nem combo; pisadas na janela (PERFECT..BAD) explodem e somam no contador
+(`0x40f16a`: `+0x2C` para 2, `+0x28` para 3).
+
+**Troca de página.** Ao pisar W/G, para cada ramo da página seguinte testa as faixas
+(`0x40f19a`–`0x40f39d`): faixa 5 = contador do tipo 2 (G), faixa 6 = tipo 3 (W), faixas 0–4 =
+PERFECT..MISS, 7–9 desconhecidas; faixa `0,0` é ignorada; **vence o último ramo válido**.
+Contadores **por página** (hipótese muito provável: o máximo pedido por uma página é igual ao
+número de W da página anterior — 712 p1.2 tem 2 W e p2.3 pede W 2-2; 736 p3.4 tem 4 W e p4.5
+pede W 4-4; ponto do original que zera não localizado). Todos os ramos de uma página têm o
+mesmo número de linhas → a página seguinte é substituída no chart sem mexer no tempo.
+
+**Velocidade por bloco** (vale para qualquer música): `0x4118d0` — alvo = velocidade do
+jogador, ou `velBloco × 0,001 × velJogador` se `velBloco ≠ 0`; mesma rampa ±0,05x/frame.
+1000 em 897 blocos, 0 em 9, 1500 em 2.
+
+### Números do combo — ajustado (26/09/2026)
+
+- Dígitos 5–9 (linha 213–258 do `DEC00.PNG`): o reconstructed cortava `vEnd` em 1,0 e esticava
+  43 px em 45 → desciam vários px. Corte removido (a última linha do `DEC00.PNG` tem alfa 0).
+- Ajuste **empírico** de +1 px no início da linha 5–9: na textura esses dígitos estão 1 px mais
+  baixos, mas nas capturas do original aparecem alinhados; causa no original não localizada.
+
 **Esperas antes de música — todas conferidas (25/09/2026):** `0x4191a0` (toca a BGM) é
 chamada em 10 pontos. Só há espera no gameplay (`0x4116dd`, 4,0 s) e no Staff (`0x40422c`,
 2,0 s), já corrigidos. Os demais tocam logo após carregar, como o reconstructed:

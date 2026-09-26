@@ -240,11 +240,48 @@ static void dcCmdTestmode(void)
     Demo_ToggleMode();
 }
 
+/* run / /play — 0x00410cf0. "run <id> <modo>"; a confirmação do Song Select usa
+ * este mesmo comando (0x4091a0..0x4092a2). Modos do original: -n -h -d -c -hd -dv -nm.
+ * -dv (Division) escolhe a seção 7 do .STX — a interface do original não expõe
+ * esse modo; o console é o único caminho no PUMPY.EXE. */
+static void dcCmdRun(void)
+{
+    static const struct { const char* flag; const char* mode; } kModes[] = {
+        { "-n", "EASY" }, { "-h", "HARD" }, { "-d", "DOUBLE" }, { "-c", "CRAZY" },
+        { "-hd", "HALFDOUBLE" }, { "-dv", "DIVISION" }, { "-nm", "NIGHTMARE" },
+    };
+    if (g_dcArgc < 3) {
+        Debug_PrintString("%s step mode(-n, -h, -d, -c, -hd, -dv, -nm)", g_dcArgv[0]);
+        return;
+    }
+    int songId = atoi(g_dcArgv[1]);
+    const char* modeName = NULL;
+    for (size_t i = 0; i < sizeof(kModes) / sizeof(kModes[0]); i++)
+        if (_stricmp(g_dcArgv[2], kModes[i].flag) == 0) modeName = kModes[i].mode;
+    if (!modeName || songId <= 0) {
+        Debug_PrintString("run: modo ou musica invalidos");
+        return;
+    }
+    int mi = Song_FindMode(&g_game.songDB, modeName);
+    if (mi < 0) {
+        Debug_PrintString("run: modo %s nao existe no Stage.cfg", modeName);
+        return;
+    }
+    Debug_PrintString("run %d %s", songId, modeName);
+    BGM_Stop();
+    Menu_ResetState();
+    g_game.selectedModeIndex = mi;
+    if (Debug_ConsoleIsActive()) Debug_ConsoleToggle();
+    Loading_Enter(songId);
+}
+
 /* Tabela de comandos — espelha 0x0043d080, terminada por nome NULL.
  * Os nomes e a ordem são os do binário. */
 typedef struct { const char* name; void (*fn)(void); } DCCommand;
 
 static const DCCommand g_dcCommands[] = {
+    { "run",       dcCmdRun      },
+    { "/play",     dcCmdRun      },
     { "/help",     dcCmdHelp     },
     { "/h",        dcCmdHelp     },
     { "-h",        dcCmdHelp     },

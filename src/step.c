@@ -7,6 +7,47 @@
 
 void Log_Print(const char* fmt, ...);
 
+/* Linhas cruas de um bloco -> StepRow (mesma regra de espelho do bloco principal). */
+static StepRow* stepParseRows(const uint8_t* dec, uint32_t n, bool mirror)
+{
+    StepRow* r = (StepRow*)malloc((n ? n : 1) * sizeof(StepRow));
+    if (!r) return NULL;
+    for (uint32_t ri = 0; ri < n; ri++) {
+        const uint8_t* src = dec + STX_GRID_OFFSET + ri * STX_ROW_SIZE;
+        r[ri].half1.dl = src[0]; r[ri].half1.ul = src[1]; r[ri].half1.cn = src[2];
+        r[ri].half1.ur = src[3]; r[ri].half1.dr = src[4];
+        if (mirror) r[ri].half2 = r[ri].half1;
+        else { r[ri].half2.dl = src[5]; r[ri].half2.ul = src[6]; r[ri].half2.cn = src[7];
+               r[ri].half2.ur = src[8]; r[ri].half2.dr = src[9]; }
+    }
+    return r;
+}
+
+/* Preenche NT_HOLD_B entre cabeça e cauda (single, half1) — mesma regra do
+ * preenchimento do chart, aplicada aos ramos guardados do Division. */
+static void stepFillHolds(StepRow* rows, uint32_t n)
+{
+    for (int panel = 0; panel < 5; panel++) {
+        for (uint32_t ri = 0; ri < n; ri++) {
+            uint8_t* v = &((uint8_t*)&rows[ri].half1)[panel];
+            if (*v != NT_HOLD_H) continue;
+            uint32_t t = ri + 1;
+            while (t < n) {
+                uint8_t tv = ((uint8_t*)&rows[t].half1)[panel];
+                if (tv == NT_HOLD_T) break;
+                if (tv == NT_HOLD_H) { t = n; break; }
+                t++;
+            }
+            if (t >= n) continue;
+            for (uint32_t k = ri + 1; k < t; k++) {
+                uint8_t* bv = &((uint8_t*)&rows[k].half1)[panel];
+                if (*bv == 0) *bv = NT_HOLD_B;
+            }
+            ri = t;
+        }
+    }
+}
+
 bool Step_LoadSong(const char* path, StepSong* song)
 {
     memset(song, 0, sizeof(StepSong));
@@ -78,6 +119,24 @@ bool Step_LoadSong(const char* path, StepSong* song)
         }
         if (totalBlocks < 1) totalBlocks = 1;
 
+        /* Division: cada contagem não-nula do header é uma página e os blocos
+         * dela são ramos. Só vira "páginas" se alguma página tiver > 1 bloco;
+         * senão os blocos continuam sendo mudanças de BPM em sequência. */
+        int blkPage[64], blkBranch[64], divPages = 0;
+        bool isDiv = false;
+        {
+            int bi = 0;
+            for (int g = 0; g < 50 && bi < 64; g++) {
+                if (!blockCounts[g]) continue;
+                if (blockCounts[g] > 1) isDiv = true;
+                for (uint32_t k = 0; k < blockCounts[g] && bi < 64; k++) {
+                    blkPage[bi] = divPages; blkBranch[bi] = (int)k; bi++;
+                }
+                divPages++;
+            }
+            if (divPages > STEP_DIV_MAX_PAGES) isDiv = false;
+        }
+
         /* Só era usado pela antiga varredura de gap, que saiu:
          * uint32_t secEnd = secOff + STX_SECTION_HEADER + compSize; */
 
@@ -140,6 +199,9 @@ bool Step_LoadSong(const char* path, StepSong* song)
         chart->segments[0].delay = delay;
         chart->segments[0].rowStart = 0;
         chart->segments[0].rowCount = rowCount;
+        /* Velocidade do bloco x1000 (bloco+96 = chart+0x60 a partir do BPM; o
+         * PUMPY.EXE lê em 0x4118d0 e multiplica pela velocidade do jogador). */
+        memcpy(&chart->segments[0].speed, decompBuf + 96, 4);
 
         bool mirror = true;
         chart->panelCount = STEP_PANELS_SINGLE;
@@ -177,6 +239,17 @@ bool Step_LoadSong(const char* path, StepSong* song)
                 chart->rows[ri].half2.ur = src[8];
                 chart->rows[ri].half2.dr = src[9];
             }
+        }
+
+        if (isDiv) {
+            chart->divPageCount = divPages;
+            chart->divPages[0].rowStart = 0;
+            chart->divPages[0].rowCount = rowCount;
+            chart->divPages[0].branchRows[0] = stepParseRows(decompBuf, rowCount, mirror);
+            memcpy(chart->divPages[0].cond[0], decompBuf + 16, sizeof(chart->divPages[0].cond[0]));
+            memcpy(&chart->divPages[0].speed[0], decompBuf + 96, 4);
+            chart->divPages[0].branchCount = 1;
+            Log_Print("STX: secao %d DIVISION: %d paginas\n", si, divPages);
         }
 
         free(decompBuf);
@@ -237,6 +310,34 @@ bool Step_LoadSong(const char* path, StepSong* song)
                     continue;
                 }
 
+                if (isDiv && blk < 64) {
+                    int pg = blkPage[blk], br = blkBranch[blk];
+                    if (br > 0) {
+                        /* Ramo alternativo: guardado, não entra no chart tocável. */
+                        if (br < 10 && pg < STEP_DIV_MAX_PAGES) {
+                            chart->divPages[pg].branchRows[br] = stepParseRows(bDec, sRowCount, mirror);
+                            memcpy(chart->divPages[pg].cond[br], bDec + 16, sizeof(chart->divPages[pg].cond[br]));
+                            memcpy(&chart->divPages[pg].speed[br], bDec + 96, 4);
+                            if (chart->divPages[pg].branchCount < br + 1) chart->divPages[pg].branchCount = br + 1;
+                            if (chart->divPages[pg].branchRows[br]) stepFillHolds(chart->divPages[pg].branchRows[br], sRowCount);
+                            Log_Print("STX: DIVISION pagina %d ramo %d rows=%u cond G[%d,%d] W[%d,%d]\n", pg, br, sRowCount,
+                                      chart->divPages[pg].cond[br][10], chart->divPages[pg].cond[br][11],
+                                      chart->divPages[pg].cond[br][12], chart->divPages[pg].cond[br][13]);
+                        }
+                        free(bDec);
+                        continue;
+                    }
+                    if (pg < STEP_DIV_MAX_PAGES) {
+                        chart->divPages[pg].rowStart = rowCount;
+                        chart->divPages[pg].rowCount = sRowCount;
+                        chart->divPages[pg].branchRows[0] = stepParseRows(bDec, sRowCount, mirror);
+                        memcpy(chart->divPages[pg].cond[0], bDec + 16, sizeof(chart->divPages[pg].cond[0]));
+                        memcpy(&chart->divPages[pg].speed[0], bDec + 96, 4);
+                        if (chart->divPages[pg].branchCount < 1) chart->divPages[pg].branchCount = 1;
+                        if (chart->divPages[pg].branchRows[0]) stepFillHolds(chart->divPages[pg].branchRows[0], sRowCount);
+                    }
+                }
+
                 chart->hasSplit = true;
 
                 int segIdx = chart->segmentCount;
@@ -247,6 +348,7 @@ bool Step_LoadSong(const char* path, StepSong* song)
                     chart->segments[segIdx].delay = sDelay;
                     chart->segments[segIdx].rowStart = rowCount;
                     chart->segments[segIdx].rowCount = sRowCount;
+                    memcpy(&chart->segments[segIdx].speed, bDec + 96, 4);
                     chart->segmentCount++;
                 }
 
@@ -283,6 +385,10 @@ bool Step_LoadSong(const char* path, StepSong* song)
 
         song->chartCount++;
     }
+
+    for (int c = 0; c < song->chartCount; c++)
+        if (song->charts[c].divPageCount > 0 && song->charts[c].divPages[0].branchRows[0])
+            stepFillHolds(song->charts[c].divPages[0].branchRows[0], song->charts[c].divPages[0].rowCount);
 
     // Preenche NT_HOLD_B entre HEAD e TAIL
     for (int c = 0; c < song->chartCount; c++)
@@ -399,6 +505,12 @@ void Step_FreeSong(StepSong* song)
     {
         free(song->charts[i].rows);
         song->charts[i].rows = NULL;
+        for (int pg = 0; pg < STEP_DIV_MAX_PAGES; pg++)
+            for (int br = 0; br < 10; br++) {
+                free(song->charts[i].divPages[pg].branchRows[br]);
+                song->charts[i].divPages[pg].branchRows[br] = NULL;
+            }
+        song->charts[i].divPageCount = 0;
     }
     song->chartCount = 0;
 }

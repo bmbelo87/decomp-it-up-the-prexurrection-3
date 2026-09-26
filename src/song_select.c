@@ -204,19 +204,26 @@ static const int g_slotFrameOffset[7] = { -48, -32, -16, 0, +16, +32, +48 };
 // Modos 1 jogador: NORMAL(0), HARD(1), CRAZY(2), HALFDOUBLE(3), DOUBLE(4), NIGHTMARE(5)
 // Modos 2 jogadores (P1+P2 juntos): NORMAL(0), HARD(1), CRAZY(2), BATTLE(3)
 // BATTLE usa steps HARD e só aparece quando activePlayerMask == 0x3 (ambos ativos)
-static const char* g_modeNames1P[6] = {"NORMAL","HARD","CRAZY","HALFDOUBLE","DOUBLE","NIGHTMARE"};
-static const int   g_modeLayers1P[6] = {31, 32, 30, 27, 28, 8};
+/* static const char* g_modeNames1P[6] = {"NORMAL","HARD","CRAZY","HALFDOUBLE","DOUBLE","NIGHTMARE"};
+static const int   g_modeLayers1P[6] = {31, 32, 30, 27, 28, 8}; */
+/* DIVISION: extra deste port. No PUMPY.EXE o modo existe (Stage.cfg, run -dv,
+ * SongSelect_Enter 0x40ad2e) mas nenhuma tela o seleciona; o rótulo
+ * "DIVISION / WILD MODE" existe no MODE.PNG sem SPR. Layer -2 = clone criado
+ * em tempo de execução por ensureDivisionLayer(). */
+#define MODE_COUNT_1P 7
+static const char* g_modeNames1P[MODE_COUNT_1P] = {"NORMAL","HARD","CRAZY","HALFDOUBLE","DOUBLE","NIGHTMARE","DIVISION"};
+static const int   g_modeLayers1P[MODE_COUNT_1P] = {31, 32, 30, 27, 28, 8, -2};
 static const char* g_modeNames2P[4] = {"NORMAL","HARD","CRAZY","BATTLE"};
 static const int   g_modeLayers2P[4] = {31, 32, 30, -1}; /* -1=BATTLE: layer buscado por nome */
 
 /* Array dinâmico de layer indices — preenchido por rebuildModeList().
  * Para BATTLE, o layer do BATTLE.SPR é descoberto pelo nome no BGAPicture. */
-static int g_modeLayersDyn[6];
+static int g_modeLayersDyn[MODE_COUNT_1P];
 
-static int g_modeCount = 6;    // número de modos ativos (6 em 1P/P2-solo, 4 em P1+P2)
-static int g_modeDBIdx[6];     // indices correspondentes no SongDB
-static int g_modeTileIdx[6];   // indices dos primeiros tiles SPR de cada modo
-static int g_modeSongIndex[6]; // última posição de música lembrada por modo
+static int g_modeCount = MODE_COUNT_1P;    // número de modos ativos (6 em 1P/P2-solo, 4 em P1+P2)
+static int g_modeDBIdx[MODE_COUNT_1P];     // indices correspondentes no SongDB
+static int g_modeTileIdx[MODE_COUNT_1P];   // indices dos primeiros tiles SPR de cada modo
+static int g_modeSongIndex[MODE_COUNT_1P]; // última posição de música lembrada por modo
 static bool g_isBattleMode = false; // true quando slot selecionado é BATTLE (P1+P2)
 
 static int g_selDispIdx = 0;          // indice de exibicao atual (0-5)
@@ -308,6 +315,37 @@ static int findLayerByName(const char* keyword) {
     return -1;
 }
 
+/* Clona o layer do NIGHTMARE (mesma animação/posição no carrossel) com um tile
+ * novo apontando para o rótulo DIVISION do MODE.PNG. NIGHTMAR.SPR:
+ *   T mode.tga 43 16 125 55 0 182 125 237  -> DIVISION: u 132..256, mesmo v.
+ * Devolve o índice do layer, ou -1. Reaproveita o clone se já existir. */
+static int ensureDivisionLayer(void) {
+    if (g_game.bgaPicCount <= 0) return -1;
+    BGAPicture* pic = &g_game.bgaPics[0];
+    for (int li = 0; li < pic->layerCount; li++)
+        if (strcmp(pic->layers[li].filename, "division.spr") == 0) return li;
+    int src = 8; /* layer do NIGHTMARE (g_modeLayers1P) */
+    if (src >= pic->layerCount || pic->layerCount >= MAX_BGA_LAYERS) return -1;
+    if (g_game.sprTileCount >= MAX_SPR_TILES) return -1;
+    int nt = pic->layers[src].sprTileStart;
+    if (nt < 0 || nt >= g_game.sprTileCount) return -1;
+    int ti = g_game.sprTileCount++;
+    g_game.sprTiles[ti] = g_game.sprTiles[nt];
+    strncpy(g_game.sprTiles[ti].name, "division", sizeof(g_game.sprTiles[ti].name) - 1);
+    float du = g_game.sprTiles[nt].u2 - g_game.sprTiles[nt].u1;   /* 125/256 */
+    float px = (du != 0.0f) ? du / 125.0f : (1.0f / 256.0f);
+    g_game.sprTiles[ti].u1 = g_game.sprTiles[nt].u1 + 132.0f * px;
+    g_game.sprTiles[ti].u2 = g_game.sprTiles[ti].u1 + 124.0f * px;
+    g_game.sprTiles[ti].srcW = 124;
+    int li = pic->layerCount++;
+    pic->layers[li] = pic->layers[src];
+    strncpy(pic->layers[li].filename, "division.spr", sizeof(pic->layers[li].filename) - 1);
+    pic->layers[li].sprTileStart = ti;
+    pic->layers[li].sprTileCount = 1;
+    Log_Print("SongSelect: layer DIVISION clonado (layer %d, tile %d)\n", li, ti);
+    return li;
+}
+
 /* Reconstrói a lista de modos disponíveis de acordo com activePlayerMask.
  * BATTLE aparece apenas quando P1+P2 estão ambos ativos (mask == 0x3).
  * P2 sozinho (0x2) ou P1 sozinho (0x1) = 6 modos normais. */
@@ -331,12 +369,15 @@ static void rebuildModeList(void) {
         g_isBattleMode = false; /* atualizado quando slot 3 é selecionado */
     } else {
         /* 1P solo (P1 ou P2 separado): 6 modos com HD/Double/Nightmare */
-        g_modeCount = 6;
-        for (int m = 0; m < 6; m++) {
+        g_modeCount = MODE_COUNT_1P;
+        for (int m = 0; m < MODE_COUNT_1P; m++) {
             g_modeDBIdx[m] = Song_FindMode(db, g_modeNames1P[m]);
             if (g_modeDBIdx[m] < 0) g_modeDBIdx[m] = 0;
-            g_modeLayersDyn[m] = g_modeLayers1P[m];
+            g_modeLayersDyn[m] = (g_modeLayers1P[m] == -2) ? ensureDivisionLayer() : g_modeLayers1P[m];
         }
+        /* Sem DIVISION no Stage.cfg ou sem o clone: volta aos 6 modos. */
+        if (Song_FindMode(db, "DIVISION") < 0 || g_modeLayersDyn[MODE_COUNT_1P - 1] < 0)
+            g_modeCount = MODE_COUNT_1P - 1;
         g_isBattleMode = false;
     }
     /* Se o selDispIdx atual está fora do novo g_modeCount, volta para 0 */
@@ -673,7 +714,7 @@ void SongSelect_Reset(void) {
     g_cmdBuf6State[0] = 0; g_cmdBuf6State[1] = 0;
 
     /* Inicializa lista de modos de acordo com activePlayerMask */
-    g_modeCount = 6;
+    g_modeCount = MODE_COUNT_1P;
     g_selDispIdx = 0;
     g_displaySongIndex = 0;
     g_modeAnimActive = false;

@@ -41,6 +41,11 @@ typedef struct {
 #define NT_HOLD_H  10 // hold head (0x0A)
 #define NT_HOLD_B  11 // hold body (0x0B)
 #define NT_HOLD_T  12 // hold tail (0x0C)
+// Notas especiais do Division (PUMPY.EXE 0x412b91, 0x40f16a):
+#define NT_DIV_G   2  // G: pisar soma no contador de G ([jog+0x2C]) e escolhe ramo
+#define NT_DIV_W   3  // W: idem, contador de W ([jog+0x28])
+#define NT_DIV_A   4  // A: marcador antes do bloco de decisão (não desenha)
+#define STEP_DIV_MAX_PAGES 8
 
 typedef struct {
     StepHalf half1;
@@ -67,7 +72,24 @@ typedef struct {
         int32_t delay;
         uint32_t rowStart; // first row of this segment
         uint32_t rowCount; // rows in this segment
+        int32_t speed;     // velocidade do bloco x1000 (bloco+96; 0 = sem multiplicador)
     } segments[8]; // up to 7 splits
+
+    /* Division (seção 7): o header da seção tem 50 contagens de blocos; cada
+     * contagem não-nula é uma PÁGINA e os blocos dela são RAMOS (PUMPY.EXE:
+     * chart = página*10 + ramo, 0x4127a0/0x41413e). O chart tocável usa o ramo 0
+     * de cada página; ao pisar W/G (0x40f16a) o ramo da página seguinte é
+     * escolhido pelas condições e as linhas dela são trocadas (todos os ramos de
+     * uma página têm o mesmo número de linhas nos 9 charts de Division). */
+    int divPageCount;          // 0 = chart sem páginas (não é Division)
+    struct {
+        int branchCount;
+        uint32_t rowStart;     // linha inicial da página no chart tocável
+        uint32_t rowCount;
+        StepRow* branchRows[10];
+        int32_t cond[10][20];  // 10 pares [mín,máx] por ramo (bloco+16)
+        int32_t speed[10];     // velocidade de cada ramo x1000 (bloco+96)
+    } divPages[STEP_DIV_MAX_PAGES];
 } StepChart;
 
 typedef struct {
