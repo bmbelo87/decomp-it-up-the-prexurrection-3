@@ -113,8 +113,11 @@ static GLuint Texture_CreateGL(uint8_t* data, int width, int height) {
     glBindTexture(GL_TEXTURE_2D, id);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA,
                  GL_UNSIGNED_BYTE, data);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    /* glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR); */
+    GLint flt = g_game.gfxTexFilter ? GL_NEAREST : GL_LINEAR;  /* GRAPHICS SETTINGS */
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, flt);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, flt);
     /* GL_CLAMP_TO_EDGE: previne UV wrap em sprites cujas coordenadas excedem [0,1] por alguns pixels.
      * Exemplos confirmados via análise do ARROW542.SP2:
      *   - combo_ sprite: u2=258/256=1.007 → sem clamp, mostra borda esquerda do MISS (wrap S)
@@ -412,6 +415,17 @@ static bool Texture_LoadBMP(const char* path, uint8_t** dataOut, int* wOut, int*
 }
 
 void Texture_Init(void) {
+}
+
+/* Reaplica o filtro (TEXTURE FILTER do Service Menu) em todas as texturas carregadas. */
+void Texture_ApplyFilterAll(void) {
+    GLint flt = g_game.gfxTexFilter ? GL_NEAREST : GL_LINEAR;
+    for (int i = 0; i < MAX_TEXTURES; i++) {
+        if (!g_game.textures[i].inUse) continue;
+        glBindTexture(GL_TEXTURE_2D, g_game.textures[i].id);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, flt);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, flt);
+    }
 }
 
 static bool Texture_LoadFile(const char* path, uint8_t** dataOut, int* wOut, int* hOut, int* fmtOut) {

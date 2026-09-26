@@ -25,6 +25,13 @@ static bool loadIni(bool all)
     while (fgets(line, sizeof(line), f)) {
         int v;
         if (sscanf(line, "AudioOffset=%d", &v) == 1) g_game.audioOffsetMs = v;
+        /* GRAPHICS SETTINGS (extra do port) */
+        if (sscanf(line, "Fullscreen=%d",  &v) == 1) g_game.isFullscreen = (v != 0);
+        if (sscanf(line, "Resolution=%d",  &v) == 1) g_game.gfxResIdx    = (v >= 0 && v <= 4) ? v : 2;
+        if (sscanf(line, "VSync=%d",       &v) == 1) g_game.vsync        = (v != 0);
+        if (sscanf(line, "TexFilter=%d",   &v) == 1) g_game.gfxTexFilter = (v != 0);
+        if (sscanf(line, "ShowFPS=%d",     &v) == 1) g_game.gfxShowFps   = (v != 0);
+        if (sscanf(line, "Aspect=%d",      &v) == 1) g_game.gfxAspect    = (v != 0);
         if (!all) continue;
         if (sscanf(line, "Difficulty=%d",  &v) == 1) g_game.optionDifficulty = v;
         if (sscanf(line, "StageBreak=%d",  &v) == 1) g_game.optionToggle1    = v;
@@ -53,6 +60,13 @@ void GameOption_Save(void)
     if (f) {
         fprintf(f, "[GameOption]\n");
         fprintf(f, "AudioOffset=%d\n", g_game.audioOffsetMs);
+        fprintf(f, "[Graphics]\n");
+        fprintf(f, "Fullscreen=%d\n", (int)g_game.isFullscreen);
+        fprintf(f, "Resolution=%d\n", g_game.gfxResIdx);
+        fprintf(f, "VSync=%d\n", (int)g_game.vsync);
+        fprintf(f, "TexFilter=%d\n", g_game.gfxTexFilter);
+        fprintf(f, "ShowFPS=%d\n", (int)g_game.gfxShowFps);
+        fprintf(f, "Aspect=%d\n", g_game.gfxAspect);
         fclose(f);
     }
     Log_Print("GameOption: saved (diff=%d sb=%d help=%d audio=%dms)\n",
@@ -62,6 +76,11 @@ void GameOption_Save(void)
 
 void GameOption_Load(void)
 {
+    g_game.gfxResIdx    = 2;      /* 1024x768 (WINDOW_DEFAULT) */
+    g_game.gfxTexFilter = 0;
+    g_game.gfxShowFps   = false;
+    g_game.gfxAspect    = 0;
+    g_game.isFullscreen = false;
     g_game.audioOffsetMs = 80;  /* 80ms — latência típica de áudio moderna (extensão do port) */
 
     int r = Eeprom_Load();

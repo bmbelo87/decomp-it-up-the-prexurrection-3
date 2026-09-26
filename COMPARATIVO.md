@@ -428,6 +428,15 @@ mesmo número de linhas → a página seguinte é substituída no chart sem mexe
 jogador, ou `velBloco × 0,001 × velJogador` se `velBloco ≠ 0`; mesma rampa ±0,05x/frame.
 1000 em 897 blocos, 0 em 9, 1500 em 2.
 
+### GRAPHICS SETTINGS no Service Menu — extra do port (26/09/2026)
+
+Não existe no original. Item novo no SETUP MENU antes do EXIT (página 11, porque a 9 é o
+EXIT); as demais páginas não mudam. Opções aplicadas na hora e gravadas no `PUMPY.INI`
+(seção `[Graphics]`, junto do `AudioOffset`), sem mexer no formato do `pumpprex3.ini`:
+FULLSCREEN, RESOLUTION (640×480..1600×1200, 4:3), VSYNC, TEXTURE FILTER (SMOOTH/SHARP),
+SHOW FPS, ASPECT (4:3/STRETCH). Vulkan descartado: exigiria reescrever o renderizador
+(OpenGL imediato, como o original).
+
 ### Números do combo — ajustado (26/09/2026)
 
 - Dígitos 5–9 (linha 213–258 do `DEC00.PNG`): o reconstructed cortava `vEnd` em 1,0 e esticava

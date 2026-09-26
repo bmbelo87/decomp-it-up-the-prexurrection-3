@@ -305,6 +305,11 @@ typedef struct {
     int screenHeight;
     bool isFullscreen;
     bool vsync;
+    /* GRAPHICS SETTINGS (extra do port, Service Menu; salvo no PUMPY.INI) */
+    int  gfxResIdx;      /* 0..4 = 640x480, 800x600, 1024x768, 1280x960, 1600x1200 */
+    int  gfxTexFilter;   /* 0 = SMOOTH (GL_LINEAR), 1 = SHARP (GL_NEAREST) */
+    bool gfxShowFps;
+    int  gfxAspect;      /* 0 = 4:3 com bordas, 1 = esticar */
     
     InputState input;
     GameplayStats stats;
@@ -460,6 +465,8 @@ void Window_Destroy(void);
 void Window_SwapBuffers(void);
 bool Window_ProcessMessages(void);
 void Window_ToggleFullscreen(void);
+void Window_ApplyGraphics(void);
+void Window_GetResolution(int idx, int* w, int* h);
 void Window_RequestQuit(void);   /* SDL port: asks the message pump to exit   */
 
 bool Font_Init(void);
@@ -479,6 +486,7 @@ void Font_DrawNumber(int texId, int x, int y, int number, int digits, float scal
 void Font_Shutdown(void);
 
 void Texture_Init(void);
+void Texture_ApplyFilterAll(void);
 int Texture_Load(const char* name);
 int Texture_LoadFromMemory(const uint8_t* buf, uint32_t bufSize, const char* debugName);
 int Texture_LoadFromMemoryColorKey(const uint8_t* buf, uint32_t bufSize, const char* debugName);

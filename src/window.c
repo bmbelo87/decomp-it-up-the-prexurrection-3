@@ -34,6 +34,7 @@ static void Window_UpdateViewport(void) {
         vh = ch;
         vw = (ch * LOGICAL_W) / LOGICAL_H;
     }
+    if (g_game.gfxAspect == 1) { vw = cw; vh = ch; }   /* ASPECT: STRETCH */
     glViewport((cw - vw) / 2, (ch - vh) / 2, vw, vh);
 
     glMatrixMode(GL_PROJECTION);
@@ -145,6 +146,32 @@ void Window_Destroy(void) {
 
 void Window_SwapBuffers(void) {
     if (g_win) SDL_GL_SwapWindow(g_win);
+}
+
+/* GRAPHICS SETTINGS — resoluções 4:3 da página do Service Menu. */
+void Window_GetResolution(int idx, int* w, int* h) {
+    static const int kRes[5][2] = { {640,480}, {800,600}, {1024,768}, {1280,960}, {1600,1200} };
+    if (idx < 0 || idx > 4) idx = 2;
+    *w = kRes[idx][0]; *h = kRes[idx][1];
+}
+
+/* Aplica tela cheia, tamanho da janela, vsync, proporção e filtro na hora. */
+void Window_ApplyGraphics(void) {
+    if (!g_win) return;
+    SDL_SetWindowFullscreen(g_win, g_game.isFullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
+    if (!g_game.isFullscreen) {
+        int w, h;
+        Window_GetResolution(g_game.gfxResIdx, &w, &h);
+        SDL_SetWindowSize(g_win, w, h);
+        SDL_SetWindowPosition(g_win, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
+        g_winW = w; g_winH = h;
+    }
+    SDL_GL_SetSwapInterval(g_game.vsync ? 1 : 0);
+    Window_UpdateViewport();
+    Texture_ApplyFilterAll();
+    Log_Print("Window: graficos fs=%d res=%d vsync=%d filtro=%d aspect=%d\n",
+              (int)g_game.isFullscreen, g_game.gfxResIdx, (int)g_game.vsync,
+              g_game.gfxTexFilter, g_game.gfxAspect);
 }
 
 void Window_ToggleFullscreen(void) {

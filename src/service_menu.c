@@ -87,6 +87,9 @@ static const float SVC_PALETTE[7][3] = {
  *   g_svcAudioIdx  <- DAT_004422d4 (init -1)
  *   g_svcSeIdx     <- DAT_004422d0 (init -1)
  */
+/* GRAPHICS SETTINGS (extra do port): 10 itens no SETUP MENU; página 11. */
+#define SVC_MAIN_COUNT 10
+#define SVC_PAGE_GRAPHICS 11
 static int  g_svcPage;
 static int  g_svcOption;
 static int  g_svcCursor;
@@ -225,7 +228,7 @@ static void svcRenderFooter(void)
     svcText(0.0f,  0.0f, "1999-2003 ANDAMIRO CO., LTD.");
 
     switch (g_svcPage) {
-    case 0: case 4: case 5: case 6: case 7: case 10:
+    case 0: case 4: case 5: case 6: case 7: case 10: case SVC_PAGE_GRAPHICS:
         svcText(236.0f, 36.0f, "MOVE   - TEST    BUTTON");
         svcText(236.0f, 16.0f, "SELECT - SERVICE BUTTON");
         break;
@@ -242,10 +245,16 @@ static void svcRenderFooter(void)
 }
 
 /* ---------------------------------------- ServiceMenu_RenderMain 0x004052e0 */
-static const char* SVC_MAIN_ITEMS[9] = {
+/* static const char* SVC_MAIN_ITEMS[9] = {
     "I/O TEST", "EEPROM TEST", "SCREEN TEST", "GAME OPTION", "COIN OPTION",
     "SOUND TEST", "BOOKEEPING", "STATISTICS", "EXIT"
-    /* "BOOKEEPING" com um K só — typo presente no binário original, preservado */
+}; */
+/* "BOOKEEPING" com um K só — typo presente no binário original, preservado.
+ * "GRAPHICS SETTINGS" é extra deste port (não existe no original): página 11,
+ * porque a página 9 é o EXIT. */
+static const char* SVC_MAIN_ITEMS[SVC_MAIN_COUNT] = {
+    "I/O TEST", "EEPROM TEST", "SCREEN TEST", "GAME OPTION", "COIN OPTION",
+    "SOUND TEST", "BOOKEEPING", "STATISTICS", "GRAPHICS SETTINGS", "EXIT"
 };
 
 static void svcRenderMain(void)
@@ -256,18 +265,21 @@ static void svcRenderMain(void)
     svcColor(SVC_NORMAL);
     svcText(276.0f, 432.0f, "SETUP MENU");
 
-    /* 9 itens a partir de Y=352 descendo 20 */
-    for (i = 0; i < 9; i++) {
+    /* itens a partir de Y=352 descendo 20 */
+    for (i = 0; i < SVC_MAIN_COUNT; i++) {
         svcColorFor(i, g_svcOption);
         svcText(276.0f, (float)(352 - i * 20), SVC_MAIN_ITEMS[i]);
     }
 
     if (hit & SVC_BIT_TEST) {
         g_svcOption++;
-        if (g_svcOption > 8) g_svcOption = 0;
+        if (g_svcOption > SVC_MAIN_COUNT - 1) g_svcOption = 0;
     }
     if (hit & SVC_BIT_SERVICE) {
-        g_svcPage       = g_svcOption + 1;
+        /* 0..7 -> páginas 1..8 (original); 8 -> GRAPHICS (11); 9 -> EXIT (9) */
+        if (g_svcOption == 8)      g_svcPage = SVC_PAGE_GRAPHICS;
+        else if (g_svcOption == 9) g_svcPage = 9;
+        else                       g_svcPage = g_svcOption + 1;
         g_svcCursor     = 0;
         g_svcEepromDone = 0;
     }
@@ -484,6 +496,61 @@ static void svcRenderGameOption(void)
 
     /* O original força ENGLISH quando LANGUAGE cai em 0 (coreano) */
     if (g_game.svcLangOption == 0) g_game.svcLangOption = 1;
+}
+
+/* ------------------------------------------ GRAPHICS SETTINGS (extra do port)
+ * Mesmo padrão da GAME OPTION: TEST move, SERVICE altera. As mudanças valem na
+ * hora (Window_ApplyGraphics); SAVE AND EXIT grava no PUMPY.INI. */
+static const char* SVC_GFX_ITEMS[8] = {
+    "FULLSCREEN", "RESOLUTION", "VSYNC", "TEXTURE FILTER",
+    "SHOW FPS", "ASPECT", "SAVE AND EXIT", "EXIT"
+};
+static const char* SVC_GFX_RES[5] = { "640x480", "800x600", "1024x768", "1280x960", "1600x1200" };
+
+static void svcRenderGraphics(void)
+{
+    int i;
+    uint32_t hit = svcBitsHit();
+
+    svcColor(SVC_NORMAL);
+    svcText(276.0f, 432.0f, "GRAPHICS SETTINGS");
+
+    for (i = 0; i < 8; i++) {
+        float y = (float)(352 - i * 20);
+        svcColorFor(i, g_svcCursor);
+        svcText(196.0f, y, SVC_GFX_ITEMS[i]);
+        switch (i) {
+        case 0: svcText(404.0f, y, g_game.isFullscreen ? "ON" : "OFF"); break;
+        case 1: svcText(404.0f, y, SVC_GFX_RES[(g_game.gfxResIdx >= 0 && g_game.gfxResIdx <= 4) ? g_game.gfxResIdx : 2]); break;
+        case 2: svcText(404.0f, y, g_game.vsync ? "ON" : "OFF"); break;
+        case 3: svcText(404.0f, y, g_game.gfxTexFilter ? "SHARP" : "SMOOTH"); break;
+        case 4: svcText(404.0f, y, g_game.gfxShowFps ? "ON" : "OFF"); break;
+        case 5: svcText(404.0f, y, g_game.gfxAspect ? "STRETCH" : "4:3"); break;
+        default: break;
+        }
+    }
+
+    if (hit & SVC_BIT_TEST) {
+        g_svcCursor++;
+        if (g_svcCursor > 7) g_svcCursor = 0;
+    }
+    if (hit & SVC_BIT_SERVICE) {
+        switch (g_svcCursor) {
+        case 0: g_game.isFullscreen = !g_game.isFullscreen; Window_ApplyGraphics(); break;
+        case 1: g_game.gfxResIdx = (g_game.gfxResIdx + 1) % 5; Window_ApplyGraphics(); break;
+        case 2: g_game.vsync = !g_game.vsync; Window_ApplyGraphics(); break;
+        case 3: g_game.gfxTexFilter = !g_game.gfxTexFilter; Window_ApplyGraphics(); break;
+        case 4: g_game.gfxShowFps = !g_game.gfxShowFps; break;
+        case 5: g_game.gfxAspect = !g_game.gfxAspect; Window_ApplyGraphics(); break;
+        case 6:
+            GameOption_Save();
+            /* fall-through: SAVE AND EXIT salva e sai, como na GAME OPTION */
+        case 7:
+            g_svcPage = 0;
+            break;
+        default: break;
+        }
+    }
 }
 
 /* ---------------------------------- ServiceMenu_RenderCoinOption 0x00405d80 */
@@ -819,6 +886,7 @@ void ServiceMenu_UpdateRender(void)
     case 8:  svcRenderStatistics();       svcRenderFooter(); break;
     case 9:  ServiceMenu_Exit();          svcRenderFooter(); break;
     case 10: svcRenderClearBookkeeping(); svcRenderFooter(); break;
+    case SVC_PAGE_GRAPHICS: svcRenderGraphics(); svcRenderFooter(); break;
     default: svcRenderFooter(); break;
     }
 }

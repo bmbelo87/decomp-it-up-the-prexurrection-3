@@ -18,7 +18,10 @@ static void InitSystems(void) {
      * o Window_UpdateViewport estica o viewport e mantém o glOrtho em 640x480,
      * então subir aqui só amplia a imagem, sem mexer em nenhuma coordenada.
      * 1024x768 é 4:3, o mesmo aspecto, então não entra tarja preta. */
-    if (!Window_Create(NULL, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, false)) {
+    /* if (!Window_Create(NULL, WINDOW_DEFAULT_W, WINDOW_DEFAULT_H, false)) { */
+    int winW, winH;
+    Window_GetResolution(g_game.gfxResIdx, &winW, &winH);   /* GRAPHICS SETTINGS */
+    if (!Window_Create(NULL, winW, winH, g_game.isFullscreen)) {
         Log_Print("FATAL: could not create SDL2/OpenGL window: %s\n", SDL_GetError());
         exit(1);
     }
@@ -681,6 +684,17 @@ void Game_Render(void) {
     Debug_ConsoleRender();
 
     if (g_game.showDebug) Render_StateInfo();
+    else if (g_game.gfxShowFps) {
+        /* SHOW FPS (GRAPHICS SETTINGS): só o contador, no canto inferior direito. */
+        static uint32_t t0 = 0; static int n = 0; static float fps = 0;
+        char fb[32];
+        n++;
+        uint32_t now = timeGetTime();
+        if (now - t0 >= 1000) { fps = n / ((now - t0) / 1000.0f); n = 0; t0 = now; }
+        snprintf(fb, sizeof(fb), "FPS: %.1f", fps);
+        Font_Init();   /* Resource_ClearBGA -> Font_Shutdown desliga a fonte */
+        Font_DrawString(g_game.screenWidth - (int)strlen(fb) * 8 - 8, 20, fb, 1.0f, 1.0f, 0.0f, 1.0f);
+    }
     static int renderLogCount = 0;
     if (g_game.isVSL && renderLogCount < 30) {
         Log_Print("RENDER: state=%d isVSL=%d active=%d globalA=%.2f frame=%d fc=%d\n", g_game.state, g_game.isVSL, g_vsl.active, g_game.globalColorA, g_game.bgaFrame, g_vsl.frameCount);
