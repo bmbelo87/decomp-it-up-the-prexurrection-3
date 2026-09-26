@@ -102,6 +102,19 @@ if(NOT WIN32)
     list(APPEND PLATFORM_SOURCES src/platform_posix.c)
 endif()
 
+# WAVs embutidos no executável (o PUMPY.EXE original os guarda como recursos).
+# tools/embed_waves.py converte WAVE/*.wav num .c com arrays de bytes.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+file(GLOB WAVE_FILES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/WAVE/*.wav")
+set(WAVE_EMBEDDED_C "${CMAKE_CURRENT_BINARY_DIR}/generated/wave_embedded.c")
+add_custom_command(
+    OUTPUT "${WAVE_EMBEDDED_C}"
+    COMMAND Python3::Interpreter "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_waves.py"
+            "${CMAKE_CURRENT_SOURCE_DIR}/WAVE" "${WAVE_EMBEDDED_C}"
+    DEPENDS ${WAVE_FILES} "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed_waves.py"
+    COMMENT "Embutindo WAVE/*.wav"
+    VERBATIM)
+
 add_executable(Pumpy
     src/main.c
     src/window.c
@@ -133,6 +146,7 @@ add_executable(Pumpy
     src/song.c
     src/zlibinflate.c
     ${PLATFORM_SOURCES}
+    ${WAVE_EMBEDDED_C}
 )
 
 target_include_directories(Pumpy PRIVATE include)

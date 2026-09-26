@@ -550,6 +550,10 @@ comportamento:
   falhava nos PNGs do jogo.
 - **Áudio:** mixer SDL2 a 44,1 kHz (buffer de 1024 frames) no lugar do DirectSound /
   DirectMusic; MP3 via `dr_mp3.h`, o que o original não faz.
+- **Sons (WAVE):** o original guarda os WAVs como recursos Win32 dentro do `PUMPY.EXE`.
+  O reconstructed embute a pasta `WAVE/` do repositório como arrays C no build
+  (`tools/embed_waves.py`); `Audio_LoadWaveFile` usa `WAVE/` do disco se existir, senão a
+  cópia embutida. Mesmo resultado, mecanismo portável (Windows e Linux).
 - **Músicas de teste:** a música 100 (sem `100.AUD` / `D100.AUD`) é adição local para
   testes, não existe no original; o aviso "preview silencioso" no log é esperado.
 - **Nomes do combo:** `gameplay.c` já usa `Combo_DrawMain` (`0x00411b40`),

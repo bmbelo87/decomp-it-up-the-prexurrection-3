@@ -32,18 +32,17 @@ jobs:
           PKG="PumpyReconstructed-${TAG}-linux-x86_64"
           mkdir -p "$PKG"
           cp build/Pumpy "$PKG/"
-          cp -r WAVE "$PKG/"
           strip "$PKG/Pumpy" || true
           cat > "$PKG/LEIAME.txt" <<'EOF'
           PumpyReconstructed - Linux (x86_64)
 
           Requer os arquivos do jogo original (Pump It Up The PREX 3): este pacote
-          contém o executável reconstruído e a pasta WAVE (os sons que o original
-          guarda dentro do PUMPY.EXE).
+          contém apenas o executável reconstruído (os sons da pasta WAVE vão
+          embutidos nele, como no PUMPY.EXE original).
 
           1. Instale as bibliotecas de runtime:
                sudo apt install libsdl2-2.0-0 libglu1-mesa zlib1g
-          2. Copie "Pumpy" e a pasta WAVE para a pasta do jogo original (onde ficam BGA/, AUDIO/,
+          2. Copie "Pumpy" para a pasta do jogo original (onde ficam BGA/, AUDIO/,
              STEP/, TITLE/ ...).
           3. Rode a partir dessa pasta:
                chmod +x Pumpy && ./Pumpy
