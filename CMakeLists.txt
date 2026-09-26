@@ -1,5 +1,18 @@
 cmake_minimum_required(VERSION 3.10)
+
+# CMAKE_MSVC_RUNTIME_LIBRARY (runtime estático no build de release) precisa
+# da política CMP0091 antes do project().
+if(POLICY CMP0091)
+    cmake_policy(SET CMP0091 NEW)
+endif()
+
 project(Pumpy C)
+
+# Triplet estático do vcpkg (ex.: x86-windows-static): SDL2, zlib e o runtime
+# do C entram no Pumpy.exe (/MT) -> o release não precisa de nenhuma DLL.
+if(MSVC AND VCPKG_TARGET_TRIPLET MATCHES "static")
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+endif()
 
 if(POLICY CMP0074)
     cmake_policy(SET CMP0074 NEW)
@@ -31,6 +44,9 @@ find_package(ZLIB QUIET)
 set(_have_sdl2 FALSE)
 if(TARGET SDL2::SDL2)
     target_link_libraries(pumpy_deps INTERFACE SDL2::SDL2)
+    set(_have_sdl2 TRUE)
+elseif(TARGET SDL2::SDL2-static)
+    target_link_libraries(pumpy_deps INTERFACE SDL2::SDL2-static)
     set(_have_sdl2 TRUE)
 elseif(SDL2_FOUND AND SDL2_LIBRARIES)
     target_include_directories(pumpy_deps INTERFACE ${SDL2_INCLUDE_DIRS})

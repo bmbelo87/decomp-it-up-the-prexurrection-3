@@ -1,6 +1,10 @@
 #include "pumpy.h"
 #include "vsl.h"
 
+#ifndef GL_BGR_EXT
+#define GL_BGR_EXT 0x80E0  /* dump de debug; alguns gl.h (Linux) so definem GL_BGR */
+#endif
+
 /* Declarado em main.c — reseta todos os cheats (ESC / Game Over) */
 void Game_ResetAllCheats(void);
 

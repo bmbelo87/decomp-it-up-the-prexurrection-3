@@ -1,0 +1,58 @@
+name: release-linux
+
+# Quando um release é publicado no GitHub, compila o binário Linux e anexa
+# PumpyReconstructed-<tag>-linux-x86_64.tar.gz ao mesmo release.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name }}
+
+      - name: Dependências
+        run: sudo apt-get update && sudo apt-get install -y libsdl2-dev libgl-dev libglu1-mesa-dev zlib1g-dev
+
+      - name: Configurar e compilar
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --parallel
+
+      - name: Empacotar
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          PKG="PumpyReconstructed-${TAG}-linux-x86_64"
+          mkdir -p "$PKG"
+          cp build/Pumpy "$PKG/"
+          strip "$PKG/Pumpy" || true
+          cat > "$PKG/LEIAME.txt" <<'EOF'
+          PumpyReconstructed - Linux (x86_64)
+
+          Requer os arquivos do jogo original (Pump It Up The PREX 3): este pacote
+          contém apenas o executável reconstruído, nenhum arquivo do jogo.
+
+          1. Instale as bibliotecas de runtime:
+               sudo apt install libsdl2-2.0-0 libglu1-mesa zlib1g
+          2. Copie "Pumpy" para a pasta do jogo original (onde ficam BGA/, AUDIO/,
+             STEP/, WAVE/, TITLE/ ...).
+          3. Rode a partir dessa pasta:
+               chmod +x Pumpy && ./Pumpy
+
+          Teclas: F11 liga/desliga o modo debug; Alt+Enter alterna tela cheia.
+          EOF
+          sed -i 's/^          //' "$PKG/LEIAME.txt"
+          tar czf "$PKG.tar.gz" "$PKG"
+
+      - name: Anexar ao release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" "PumpyReconstructed-${TAG}-linux-x86_64.tar.gz" --clobber
