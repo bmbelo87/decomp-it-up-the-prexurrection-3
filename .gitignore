@@ -9,6 +9,7 @@
 !/tools
 !/third_party
 !/.github
+!/WAVE
 
 /build
 src/*_REV01.c
