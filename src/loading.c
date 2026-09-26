@@ -6,10 +6,13 @@
 static int g_pnzTexId = -1;
 static int g_loadingSongId = -1;
 static int g_loadingTimer = 0;
-/* PUMPY.EXE: o contador de 240 Hz [0xd35eb4] é zerado em 0x402510, logo após
- * desenhar o título (0x40928f). A init do gameplay (0x410cf0) carrega tudo e
- * então espera em loop até [0xd35eb4] >= 0x3C0 (0x4116b5) = 960 ticks = 4,0 s
- * antes de iniciar a música. Do título à música há, portanto, no mínimo 4 s. */
+/* PUMPY.EXE: a confirmação executa o comando de console "run" -> 0x410cf0,
+ * que carrega tudo e espera [0xd35eb4] >= 0x3C0 (0x4116b5) antes da música.
+ * ATENÇÃO: esse contador conta desde o início do TIME do Song Select
+ * (0x4096bd/0x40aadc), então no original normalmente NÃO há espera — o título
+ * fica congelado só durante a carga (lenta no original: DirectMusic + .DAT).
+ * O piso de 4 s abaixo aproxima esse tempo de carga percebido (validado em jogo);
+ * não é uma regra literal do original. */
 #define LOADING_MIN_TO_MUSIC_MS 4000
 static uint32_t g_loadingStartMs = 0;
 
