@@ -31,7 +31,7 @@ original lida contra o código C). Os demais receberam mapeamento de cobertura.
 <!-- ✓ = exercitado em execução, não só compilado -->
 | Núcleo / App / Estado | Completo | Arquitetura reorganizada, comportamento equivalente |
 | Render / OpenGL | Completo | Shaders do original não são usados (fixed pipeline) |
-| Input | **Parcial** | Teclado via SDL; `PUMPPAD.DLL` analisado mas não carregado (sem hardware) — ver Lacunas |
+| Input | **Parcial** | Teclado via SDL; `PUMPPAD.DLL` fora do escopo (sem hardware) — ver Lacunas |
 | Fonte / Texto | Completo | Crash do `glBitmap(NULL)` corrigido em 25/09/2026 |
 | Textura | Completo | Decodificador PNG próprio + zlib (vcpkg) no lugar da libpng embutida |
 | Sprite SPR / SP2 | Completo | Parsers de tile idênticos |
@@ -372,6 +372,13 @@ Câmera já idêntica: `gluPerspective(73.74, 4/3, 0.01, 15)` e `gluLookAt((0,0,
 `0x20` alpha, nenhum → sem blend) e o clamp (`0x400`/`0x800`). O parser do `.tc` do port não
 lê esse campo (o `d0` lido é outro); todos os materiais usam `REPEAT` e o blend + "color key".
 
+> **Tentativa descartada (25/09/2026):** ler as flags do 1º `u32` após o shininess (o campo
+> que o parser chama de `texWidth`, com valores 0x10/0x20/0x200/0x280/0) e aplicar as regras
+> acima. Em teste na 902 as **cores estouraram** — visivelmente pior que o original. O
+> comportamento atual (REPEAT + blend normal + "color key") foi confirmado pelo usuário como
+> correto. Não reaplicar sem antes confirmar no assembly qual campo do arquivo vai para
+> `+0x20` (a simulação da pilha de `0x416140` ficou inconsistente).
+
 **Debug:** F11 mostra o cronômetro da música e o frame do VSL (`Gameplay_Render`); debug
 começa desligado. `Resource_ClearBGA` → `Font_Shutdown` desligava a fonte de debug no gameplay;
 o bloco chama `Font_Init()` antes de desenhar.
@@ -386,9 +393,12 @@ Levantamento completo do desenho do gameplay em `docs/GAMEPLAY_RENDER.md`.
 | Quadro da animação da seta | `fase_da_batida / 10` (`0x412905`–`0x412930`) → 6 quadros por batida | `(frameCounter / 3) % 6` (20 fps fixos) | `arrowAnimFrame()` |
 | Fim do gameplay | sai no que vier primeiro: chart do jogador acabou (`[0xda24b4] >= [chart+0xd39130]`) **ou** BGM parou (`0x4192a0() == 1`) (`0x414902`–`0x414968`) | só por tempo parado/timeout; `g_hasAudio` nunca atribuída → esperava o chart inteiro (815: 148 s de chart, 95 s de música) | as duas regras do original; `g_hasAudio` definida no `Gameplay_Start` |
 
-**Esperas antes de música ainda não conferidas:** `0x4191a0` (toca a BGM) é chamada em 10
-pontos; conferidos `0x4116dd` (gameplay), `0x40422c` (Staff), `0x40a715`/`0x40a797`
-(preview). Pendentes: `0x40414d`, `0x4044fb`, `0x4046ba`, `0x405fd2`, `0x415a17`, `0x415b0b`.
+**Esperas antes de música — todas conferidas (25/09/2026):** `0x4191a0` (toca a BGM) é
+chamada em 10 pontos. Só há espera no gameplay (`0x4116dd`, 4,0 s) e no Staff (`0x40422c`,
+2,0 s), já corrigidos. Os demais tocam logo após carregar, como o reconstructed:
+`0x40414d` abertura (`03.DAT`/`003.AUD`), `0x4044fb`/`0x4046ba` menu (o segundo reinicia a
+música quando ela acaba), `0x405fd2` teste de áudio do Service Menu, `0x415a17` resultado
+(`83.DAT`/`83.AUD`), `0x415b0b` (`086.DAT`/`086.AUD`), além do preview (`0x40a715`/`0x40a797`).
 
 **Build Release:** o Debug (sem otimização) deixava as trocas de tela mais lentas que o
 original — decodificação de MP3/PNG e XOR dos RES. `PUMPYTESTE_RELEASE.EXE` (+ `SDL2.dll`,
@@ -404,10 +414,11 @@ dois lado a lado. Base: o `PUMPY.EXE` só lê teclado pela WndProc (`0x419ce0`, 
 
 ## Lacunas (sistemas sem implementação)
 
-### PUMPPAD.DLL — analisado, implementação adiada (25/09/2026)
+### PUMPPAD.DLL — analisado, fora do escopo (25/09/2026)
 
 O port SDL2 reduziu `Input_LoadPumpPad()` (`src/input.c`) a um stub que retorna `false`;
-só teclado funciona. Adiado: não há pad Andamiro disponível para testar.
+só teclado funciona. Fora do escopo: o pad Andamiro USB é difícil de conseguir para PC.
+A análise abaixo fica como referência caso isso mude.
 
 **Fatos (assembly):**
 - `PUMPY.EXE` `0x41a308`–`0x41a37e`: `LoadLibraryA("PUMPPAD.DLL")` (duas tentativas; falha →
@@ -501,8 +512,8 @@ Os quatro itens da lista de 14/09/2026 (grade, tipos de nota 2/3/4, `lifeSpeed` 
 arredondamento do MISS) estão resolvidos ou descartados com evidência. Atualizado em
 25/09/2026:
 
-1. **PUMPPAD.DLL** — protocolo documentado; implementação adiada (sem hardware).
+1. **PUMPPAD.DLL** — fora do escopo (sem hardware); protocolo documentado.
 2. **Earthworm** — confirmado em jogo em 25/09/2026 (animação igual ao original).
-3. **Esperas antes de música** — seis chamadas de `0x4191a0` ainda não conferidas (ver acima).
+3. **Esperas antes de música** — conferidas; nenhuma diferença restante.
 4. **Relógio das setas** — o original usa o acumulador de `0x412880`; o reconstructed usa a
    posição do áudio.
