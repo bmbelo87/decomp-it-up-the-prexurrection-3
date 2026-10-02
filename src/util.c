@@ -101,6 +101,12 @@ const char* State_ToString(GameState state) {
         case STATE_SONG_TITLE: return "SONG_TITLE";
         case STATE_SONG_TITLE_OUT: return "SONG_TITLE_OUT";
         case STATE_LOGO_SKIP: return "LOGO_SKIP";
+        case STATE_HIGHSCORE_ENTER: return "HIGHSCORE_ENTER";
+        case STATE_HIGHSCORE_PAGE: return "HIGHSCORE_PAGE";
+        case STATE_HIGHSCORE_LIST: return "HIGHSCORE_LIST";
+        case STATE_NAME_ENTER: return "NAME_ENTER";
+        case STATE_NAME_INTRO: return "NAME_INTRO";
+        case STATE_NAME_INPUT: return "NAME_INPUT";
         case STATE_EXIT: return "EXIT";
         default: return "UNKNOWN";
     }

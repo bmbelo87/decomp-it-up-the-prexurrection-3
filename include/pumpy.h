@@ -105,6 +105,12 @@ typedef enum {
     // Our custom additions (high range to avoid conflicts)
     STATE_LOGO_SKIP       = 0x80,
     STATE_HOWTOPLAY       = 0x86, /* Show Help: 03.DAT + 03.AUD antes da SongSelect */
+    STATE_HIGHSCORE_ENTER = 0x87, /* attract: 084.DAT (MK5 estado 0x1f, 0x408580) */
+    STATE_HIGHSCORE_PAGE  = 0x88, /* MK5 0x20 (0x408660): 8 primeiras linhas */
+    STATE_HIGHSCORE_LIST  = 0x89, /* MK5 0x21 (0x4087e0): lista rolando + fade */
+    STATE_NAME_ENTER      = 0x8A, /* Enter Your Name: 085.DAT (MK5 0x1b, 0x406ce0) */
+    STATE_NAME_INTRO      = 0x8B, /* MK5 0x1c (0x406f90) */
+    STATE_NAME_INPUT      = 0x8C, /* MK5 0x1d (0x407d90) */
     STATE_SONG_SELECT     = 0x81,
     STATE_SONG_SELECT_B   = 0x82,
     STATE_SONG_TITLE      = 0x83,
@@ -390,6 +396,7 @@ typedef struct {
     bool cmdFreedom[2];          /* Freedom ativo por jogador (oculta receptor) */
     bool cmdVanish[2];           /* Vanish ativo por jogador */
     bool cmdNonStep[2];          /* Non-Step ativo por jogador */
+    bool cmdTestBGA[2];          /* Extra do port: starfield (testbga.c) no lugar do BGA */
     int  activePlayerMask; /* 0x1=P1 ativo, 0x2=P2 ativo (ambos=0x3). Default=0x1 */
     bool isBattleMode;    /* true quando BATTLE selecionado (P1+P2, HARD steps em half1 duplicado em half2) */
     bool isVSL;           // true when current song uses 3D VSL instead of BGA
@@ -540,6 +547,10 @@ void BGM_Update(void);   /* por frame: refaz o loop no caminho DirectShow */
 void BGM_Stop(void);
 bool BGM_IsPlaying(void);
 uint32_t BGM_GetPositionMs(void);
+double BGM_ClockAnchorSec(double* nowSec);
+void Gameplay_RefreshClock(void);   /* gameplay.c: relógio das setas no instante do desenho */
+extern bool g_renderTick;           /* bga.c: false no desenho extra entre passos de 60 Hz */
+double BGM_GetPositionMsF(void);
 uint32_t BGM_GetDurationMs(void);
 bool BGM_HasEnded(void);
 bool BGM_IsDSActive(void);
@@ -569,6 +580,29 @@ void Menu_ResetState(void);
 
 void Staff_Enter(void);
 void Staff_Update(float dt);
+
+/* game_option.c — estilo da tela de título (extra do port): true = ARCADE, false = PC */
+extern bool g_arcadeStyle;
+
+/* menu.c — tela de título arcade (sprites do 82W.DAT, layout do MK5 0x408f40) */
+void Menu_ArcadeLoad(void);
+bool Menu_ArcadeHasJoin(void);
+
+/* attract.c — ciclo Logo -> Menu -> Demo -> High Scores (MK5 0x4044b0) */
+void Attract_Next(GameState next);
+void Attract_StartDemo(void);
+bool Attract_IsDemo(void);
+void Attract_UpdateDemo(void);
+bool Attract_MenuTimedOut(void);
+void HighScore_Update(void);
+void HighScore_Render(void);
+
+/* name_entry.c — Enter Your Name (MK5 0x406ce0..0x408550) */
+void NameEntry_ResetTotals(void);
+void NameEntry_AddStageScore(void);
+bool NameEntry_ShouldEnter(void);
+void NameEntry_Update(void);
+void NameEntry_Render(void);
 
 /* ranking.c — tabela de recordes (Var_ e Ranking_ do PUMPY.EXE) */
 void Var_RegisterName(int index, int score, const char* name);  /* 0x00402ca0 */

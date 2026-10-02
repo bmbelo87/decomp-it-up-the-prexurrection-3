@@ -21,7 +21,9 @@
  *   +0x7F8  total de moedas     (u32)             0xd39050
  *   +0x7FC  bookkeeping SERVICE (u32)             0xd39054
  *
- * O restante da imagem (ranking etc.) fica como está: é preservado ao regravar.
+ *   +0x748  ranking: 20 x u32 score               0xd38fa0
+ *   +0x798  ranking: 20 x char[4] nome            0xd38ff0
+ * O restante da imagem fica como está: é preservado ao regravar.
  *
  * Diferença deliberada: o default do COIN 1 é 0 (FREE PLAY) em vez de 5, senão
  * um arquivo novo deixaria o jogo sem crédito num PC sem moedeiro. */
@@ -45,6 +47,9 @@
 #define O_COIN2TOT  0x7F4
 #define O_COINTOT   0x7F8
 #define O_SVCTOT    0x7FC
+#define O_RANKSCORE 0x748   /* 20 x u32 */
+#define O_RANKNAME  0x798   /* 20 x char[4] */
+#define EEP_RANK_N  20
 
 #define EEP_DEFAULT_COIN1  0   /* FREE PLAY (o original vem com 5) */
 
@@ -77,6 +82,36 @@ static void eepStamp(void) {
     eepPut32(EEP_CHKSUM, eepAdler32(&g_eep[EEP_SETTINGS], EEP_SETLEN));
 }
 
+/* Ranking dentro da imagem (scores 0xd38fa0 = +0x748, nomes 0xd38ff0 = +0x798; idem no
+ * PIU32/MK5 em 0xedb3c0/0xedb410). Fora do checksum, que cobre só +0x7E8..+0x7EF. */
+static void eepRankFromGame(void) {
+    for (int i = 0; i < EEP_RANK_N; i++) {
+        const char* n = Ranking_GetName(i);
+        eepPut32(O_RANKSCORE + i * 4, (uint32_t)Ranking_GetScore(i));
+        for (int c = 0; c < 4; c++)
+            g_eep[O_RANKNAME + i * 4 + c] = (uint8_t)(n[c] ? n[c] : ' ');
+    }
+}
+
+static void eepRankToGame(void) {
+    char name[5];
+    int blank = 1;
+    /* Arquivos gravados pelo port antes desta versão têm a área ainda em 0xFF
+     * (eepDefaults): nesse caso usa os defaults do original. */
+    for (int i = O_RANKSCORE; i < O_RANKNAME + EEP_RANK_N * 4; i++)
+        if (g_eep[i] != 0xFF) { blank = 0; break; }
+    if (blank) {
+        Ranking_RegisterDefaults();
+        eepRankFromGame();
+        return;
+    }
+    for (int i = 0; i < EEP_RANK_N; i++) {
+        memcpy(name, &g_eep[O_RANKNAME + i * 4], 4);
+        name[4] = '\0';
+        Var_RegisterName(i, (int)eepGet32(O_RANKSCORE + i * 4), name);
+    }
+}
+
 /* PUMPY.EXE 0x405150: tudo 0xFF, depois os defaults de 0x404f40/0x404fa0 e os totais zerados. */
 static void eepDefaults(void) {
     memset(g_eep, 0xFF, sizeof(g_eep));
@@ -93,6 +128,8 @@ static void eepDefaults(void) {
     eepPut32(O_COINTOT, 0);
     eepPut32(O_SVCTOT, 0);
     eepStamp();
+    Ranking_RegisterDefaults();      /* 0x405150 termina com jmp 0x404fe0 */
+    eepRankFromGame();
 }
 
 static void eepPath(char* out, size_t n) {
@@ -112,6 +149,7 @@ static void eepToGame(void) {
     g_game.svcCoin2Total   = (int)eepGet32(O_COIN2TOT);
     g_game.svcCoinTotal    = (int)eepGet32(O_COINTOT);
     g_game.svcServiceTotal = (int)eepGet32(O_SVCTOT);
+    eepRankToGame();
 }
 
 static void eepFromGame(void) {
@@ -127,6 +165,7 @@ static void eepFromGame(void) {
     eepPut32(O_COIN2TOT, (uint32_t)g_game.svcCoin2Total);
     eepPut32(O_COINTOT,  (uint32_t)g_game.svcCoinTotal);
     eepPut32(O_SVCTOT,   (uint32_t)g_game.svcServiceTotal);
+    eepRankFromGame();
     eepStamp();
 }
 

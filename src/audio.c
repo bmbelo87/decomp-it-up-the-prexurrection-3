@@ -709,11 +709,30 @@ void BGM_Stop(void) {
     if (!g_bgmChan.inUse) return 0;
     return (uint32_t)(g_bgmChan.pos * 1000ull / DEV_RATE);
 } */
+/* Relógio do gameplay: instante (s, no domínio do SDL_GetPerformanceCounter)
+ * em que a amostra 0 da BGM teria saído, medido no último callback.
+ * Devolve -1 se ainda não houve callback. *nowSec = agora no mesmo domínio. */
+double BGM_ClockAnchorSec(double* nowSec) {
+    double f = (double)SDL_GetPerformanceFrequency();
+    if (nowSec) *nowSec = (double)SDL_GetPerformanceCounter() / f;
+    if (!g_bgmChan.inUse || !g_bgmChan.playing || g_bgmCbTicks == 0) return -1.0;
+    if (g_dev) SDL_LockAudioDevice(g_dev);
+    uint64_t basePos = g_bgmCbPos;
+    uint64_t baseTicks = g_bgmCbTicks;
+    if (g_dev) SDL_UnlockAudioDevice(g_dev);
+    return (double)baseTicks / f - (double)basePos / DEV_RATE;
+}
+
 uint32_t BGM_GetPositionMs(void) {
-    if (!g_bgmChan.inUse) return 0;
+    return (uint32_t)BGM_GetPositionMsF();
+}
+
+/* Mesma posição, sem truncar para ms inteiros (usado pelo scroll). */
+double BGM_GetPositionMsF(void) {
+    if (!g_bgmChan.inUse) return 0.0;
     if (!g_bgmChan.playing || g_bgmCbTicks == 0) {
         g_bgmLastMs = 0.0;
-        return (uint32_t)(g_bgmChan.pos * 1000ull / DEV_RATE);
+        return (double)g_bgmChan.pos * 1000.0 / DEV_RATE;
     }
     if (g_dev) SDL_LockAudioDevice(g_dev);
     uint64_t basePos = g_bgmCbPos;
@@ -732,7 +751,7 @@ uint32_t BGM_GetPositionMs(void) {
      * Um salto grande pra trás (BGM_Play/loop) é aceito como reinício. */
     if (ms < g_bgmLastMs && g_bgmLastMs - ms < 100.0) ms = g_bgmLastMs;
     g_bgmLastMs = ms;
-    return (uint32_t)ms;
+    return ms;
 }
 
 bool BGM_HasEnded(void) {

@@ -1,4 +1,5 @@
 #include "pumpy.h"
+#include "testbga.h"
 #include "vsl.h"
 #include <SDL.h>
 
@@ -79,6 +80,8 @@ static void LoadBGAForState(GameState state) {
     case STATE_DANCE_GRADE_DISPLAY: bgaName = "83"; break;
     case STATE_HOWTOPLAY: bgaName = ""; break; /* limpa BGA do menu imediatamente; 03.DAT carrega no stateFrame==1 */
     case STATE_SERVICE_MENU: bgaName = ""; break; /* SETUP MENU desenha sobre fundo preto */
+    case STATE_HIGHSCORE_ENTER: bgaName = "084"; break; /* attract: MK5 0x408580 */
+    case STATE_NAME_ENTER:      bgaName = "085"; break; /* MK5 0x406ce0 */
     default: break;
     }
 
@@ -144,6 +147,7 @@ void Game_ResetAllCheats(void) {
         g_game.cmdFreedom[_p]        = false;
         g_game.cmdVanish[_p]         = false;
         g_game.cmdNonStep[_p]        = false;
+        g_game.cmdTestBGA[_p]        = false;
     }
     Log_Print("CHEATS: reset global (ESC/GameOver)\n");
 }
@@ -193,7 +197,10 @@ void Game_Init(HINSTANCE hInstance) {
     Font_Init();
     Texture_Init();
     Audio_LoadAllWaves();
-    Ranking_RegisterDefaults();  /* Game_InitState faz isso em 0x0040517c */
+    /* Desativado: 0x0040517c é o fim do reset da EEPROM (0x405150), não do boot.
+     * Agora roda em eepDefaults() e o ranking vem de pumpprex3.ini (+0x748/+0x798).
+    Ranking_RegisterDefaults();
+    */
 
     Log_Print("Loading song database...\n");
     char cfgPath[MAX_PATH];
@@ -239,6 +246,8 @@ void Game_Shutdown(void) {
 
 
 
+static bool s_fromStageBreak;   /* Game Over vindo do 083.DAT: sem Enter Your Name */
+
 void Game_Update(float dt) {
     Input_Update();
     BGM_Update();   /* reinicia a faixa quando ela está em loop (ver audio.c) */
@@ -251,7 +260,11 @@ void Game_Update(float dt) {
      * entregues ao console pelo WndProc. O resto do update segue rodando para
      * as animações não congelarem. */
     if (Debug_ConsoleIsActive()) {
+        /* A crase continua visível: sem ela o prevKeys fica zerado e, com a tecla
+         * ainda segurada, o frame seguinte vê um novo "hit" e fecha o console. */
+        bool oem3 = g_game.input.keys[VK_OEM_3];
         memset(g_game.input.keys, 0, sizeof(g_game.input.keys));
+        g_game.input.keys[VK_OEM_3] = oem3;
         memset(g_game.input.padState, 0, sizeof(g_game.input.padState));
     }
 
@@ -320,6 +333,8 @@ void Game_Update(float dt) {
 
     g_game.stateFrame++;
 
+    /* Demo Play do attract: ignora o pad e encerra por tempo/crédito */
+    Attract_UpdateDemo();
 
     if (g_game.bgaPicCount > 0 && g_game.state != STATE_WARNING_END) {
         bool manualBGA = (g_game.state == STATE_GAMEPLAY ||
@@ -328,7 +343,11 @@ void Game_Update(float dt) {
                           g_game.state == STATE_GAMEOPTION_ANIM ||
                           g_game.state == STATE_GAMEOPTION ||
                           g_game.state == STATE_GAMEOPTION_EXIT ||
-                          g_game.state == STATE_STAFF);
+                          g_game.state == STATE_STAFF ||
+                          g_game.state == STATE_HIGHSCORE_PAGE ||
+                          g_game.state == STATE_HIGHSCORE_LIST ||
+                          g_game.state == STATE_NAME_INTRO ||
+                          g_game.state == STATE_NAME_INPUT);
         if (!manualBGA) {
             g_game.bgaTimer += dt;
             if (g_game.bgaTimer >= 1.0f / 60.0f) {
@@ -420,11 +439,20 @@ void Game_Update(float dt) {
             Audio_Play(g_waveSoundIds[SND_7_1], false);
         }
         if (g_game.stateFrame > 2 && !Audio_IsPlaying(g_waveSoundIds[SND_7_1])) {
+            s_fromStageBreak = true;
             Game_ChangeState(STATE_GAMEOVER_ENTER);
         }
         break;
     case STATE_GAMEOVER_ENTER:
+        /* MK5 0x413267: quem entra no Top 20 passa pelo Enter Your Name antes.
+         * O Stage Break (083.DAT) vai direto ao Game Over, como em 0x412410. */
+        if (g_game.stateFrame == 1 && !s_fromStageBreak && NameEntry_ShouldEnter()) {
+            Game_ChangeState(STATE_NAME_ENTER);
+            break;
+        }
         if (g_game.stateFrame == 1) {
+            s_fromStageBreak = false;
+            Eeprom_Save();   /* o Game Over grava a EEPROM (0x412520 -> 0x405190) */
             BGM_Stop();
             Game_ResetAllCheats(); /* Game Over: zera todos os cheats (centralizado) */
             Render_SetGlobalColor(0, 0, 0, 0);
@@ -486,6 +514,16 @@ void Game_Update(float dt) {
                 Game_ChangeState(STATE_SONG_SELECT);
             }
         }
+        break;
+    case STATE_HIGHSCORE_ENTER:
+    case STATE_HIGHSCORE_PAGE:
+    case STATE_HIGHSCORE_LIST:
+        HighScore_Update();
+        break;
+    case STATE_NAME_ENTER:
+    case STATE_NAME_INTRO:
+    case STATE_NAME_INPUT:
+        NameEntry_Update();
         break;
     case STATE_RESET_WARNING:
     Game_ChangeState(STATE_LOGO_ENTER);
@@ -577,6 +615,7 @@ static void Render_StateInfo(void) {
 }
 
 void Game_Render(void) {
+    Gameplay_RefreshClock();
     /* Rendering subsystems such as VSL may leave either matrix selected.
      * Re-establish the fixed 640x480 2D transform for every frame. */
     glMatrixMode(GL_PROJECTION);
@@ -621,7 +660,10 @@ void Game_Render(void) {
         glColor4f(1, 1, 1, 1);
     }
 
-    if (g_game.isVSL && g_vsl.active) {
+    if ((g_game.cmdTestBGA[0] || g_game.cmdTestBGA[1]) &&
+               (g_game.state == STATE_GAMEPLAY || g_game.state == STATE_GAMEPLAY_BEGIN)) {
+        DrawStar(); /* Extra do port: BGA Off (TestBGA) substitui o BGA/VSL da música */
+    } else if (g_game.isVSL && g_vsl.active) {
         VSL_Render(g_game.bgaFrame);
     } else if (g_game.bgaPicCount > 0 &&
         g_game.state != STATE_LOGO_SKIP &&
@@ -631,7 +673,13 @@ void Game_Render(void) {
         g_game.state != STATE_GAMEOPTION &&
         g_game.state != STATE_GAMEOPTION_EXIT &&
         g_game.state != STATE_SONG_SELECT &&
-        g_game.state != STATE_SONG_SELECT_B) {
+        g_game.state != STATE_SONG_SELECT_B &&
+        g_game.state != STATE_HIGHSCORE_ENTER &&
+        g_game.state != STATE_HIGHSCORE_PAGE &&
+        g_game.state != STATE_HIGHSCORE_LIST &&
+        g_game.state != STATE_NAME_ENTER &&
+        g_game.state != STATE_NAME_INTRO &&
+        g_game.state != STATE_NAME_INPUT) {
         BGA_Render(0, g_game.bgaFrame);
     }
 
@@ -675,6 +723,14 @@ void Game_Render(void) {
         break;
     case STATE_SERVICE_MENU:
         ServiceMenu_UpdateRender();
+        break;
+    case STATE_HIGHSCORE_PAGE:
+    case STATE_HIGHSCORE_LIST:
+        HighScore_Render();
+        break;
+    case STATE_NAME_INTRO:
+    case STATE_NAME_INPUT:
+        NameEntry_Render();
         break;
     default:
         break;
@@ -754,8 +810,17 @@ void Game_MainLoop(void) {
         if (steps == MAX_CATCHUP)
             accumulator = 0.0;   /* desistiu de alcançar: não acumula dívida */
 
-        if (steps > 0) {
+        /* era: só desenhava com steps > 0. Igual à NX: com vsync desenha em
+         * TODO refresh no gameplay (o swap bloqueia e dá o ritmo) e as setas
+         * pegam o relógio da música no momento do desenho
+         * (Gameplay_RefreshClock). Nos desenhos extras g_renderTick = false e
+         * as cenas do BGA não avançam: animações, judge e spark seguem a 60 Hz.
+         * Fora do gameplay continua no ritmo de 60 Hz. */
+        bool extra = g_game.vsync && g_game.state == STATE_GAMEPLAY;
+        if (steps > 0 || extra) {
+            g_renderTick = (steps > 0);
             Game_Render();       /* o swap com vsync bloqueia até o refresh */
+            g_renderTick = true;
         } else {
             Sleep(1);            /* nada a fazer neste giro */
         }

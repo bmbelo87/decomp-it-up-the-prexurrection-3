@@ -123,6 +123,9 @@ add_executable(Pumpy
     src/menu.c
     src/song_select.c
     src/staff.c
+    src/testbga.c
+    src/attract.c
+    src/name_entry.c
     src/service_menu.c
     src/coin.c
     src/debug_console.c

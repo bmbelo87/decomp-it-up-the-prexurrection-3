@@ -501,9 +501,9 @@ static void svcRenderGameOption(void)
 /* ------------------------------------------ GRAPHICS SETTINGS (extra do port)
  * Mesmo padrão da GAME OPTION: TEST move, SERVICE altera. As mudanças valem na
  * hora (Window_ApplyGraphics); SAVE AND EXIT grava no PUMPY.INI. */
-static const char* SVC_GFX_ITEMS[8] = {
+static const char* SVC_GFX_ITEMS[9] = {
     "FULLSCREEN", "RESOLUTION", "VSYNC", "TEXTURE FILTER",
-    "SHOW FPS", "ASPECT", "SAVE AND EXIT", "EXIT"
+    "SHOW FPS", "ASPECT", "GAME STYLE", "SAVE AND EXIT", "EXIT"
 };
 static const char* SVC_GFX_RES[5] = { "640x480", "800x600", "1024x768", "1280x960", "1600x1200" };
 
@@ -515,7 +515,7 @@ static void svcRenderGraphics(void)
     svcColor(SVC_NORMAL);
     svcText(276.0f, 432.0f, "GRAPHICS SETTINGS");
 
-    for (i = 0; i < 8; i++) {
+    for (i = 0; i < 9; i++) {
         float y = (float)(352 - i * 20);
         svcColorFor(i, g_svcCursor);
         svcText(196.0f, y, SVC_GFX_ITEMS[i]);
@@ -526,13 +526,14 @@ static void svcRenderGraphics(void)
         case 3: svcText(404.0f, y, g_game.gfxTexFilter ? "SHARP" : "SMOOTH"); break;
         case 4: svcText(404.0f, y, g_game.gfxShowFps ? "ON" : "OFF"); break;
         case 5: svcText(404.0f, y, g_game.gfxAspect ? "STRETCH" : "4:3"); break;
+        case 6: svcText(404.0f, y, g_arcadeStyle ? "ARCADE" : "PC"); break;
         default: break;
         }
     }
 
     if (hit & SVC_BIT_TEST) {
         g_svcCursor++;
-        if (g_svcCursor > 7) g_svcCursor = 0;
+        if (g_svcCursor > 8) g_svcCursor = 0;
     }
     if (hit & SVC_BIT_SERVICE) {
         switch (g_svcCursor) {
@@ -542,10 +543,11 @@ static void svcRenderGraphics(void)
         case 3: g_game.gfxTexFilter = !g_game.gfxTexFilter; Window_ApplyGraphics(); break;
         case 4: g_game.gfxShowFps = !g_game.gfxShowFps; break;
         case 5: g_game.gfxAspect = !g_game.gfxAspect; Window_ApplyGraphics(); break;
-        case 6:
+        case 6: g_arcadeStyle = !g_arcadeStyle; break;   /* ARCADE / PC (extra do port) */
+        case 7:
             GameOption_Save();
             /* fall-through: SAVE AND EXIT salva e sai, como na GAME OPTION */
-        case 7:
+        case 8:
             g_svcPage = 0;
             break;
         default: break;

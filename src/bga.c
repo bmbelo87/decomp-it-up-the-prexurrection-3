@@ -1,5 +1,8 @@
 #include "pumpy.h"
 
+bool g_renderTick = true;   /* false nos desenhos extras (> 60 Hz): só desenha, não avança */
+
+
 extern int g_menuSelection;
 static int bga_activePic = -1;
 
@@ -662,6 +665,8 @@ void BGA_Render(int bgaIndex, int frame) {
                    g_game.state == STATE_MENU_INPUT);
 
     if (isMenu) {
+        /* Título ARCADE: desenhado uma vez só, pelo switch do Game_Render */
+        if (g_arcadeStyle) return;
         Gamestate_RenderMenu(bgaIndex, frame);
     } else {
         BGA_SetEventFrame(bgaIndex, frame);

@@ -32,6 +32,7 @@ static bool loadIni(bool all)
         if (sscanf(line, "TexFilter=%d",   &v) == 1) g_game.gfxTexFilter = (v != 0);
         if (sscanf(line, "ShowFPS=%d",     &v) == 1) g_game.gfxShowFps   = (v != 0);
         if (sscanf(line, "Aspect=%d",      &v) == 1) g_game.gfxAspect    = (v != 0);
+        if (sscanf(line, "GameStyle=%d",   &v) == 1) g_arcadeStyle       = (v != 0);
         if (!all) continue;
         if (sscanf(line, "Difficulty=%d",  &v) == 1) g_game.optionDifficulty = v;
         if (sscanf(line, "StageBreak=%d",  &v) == 1) g_game.optionToggle1    = v;
@@ -50,6 +51,10 @@ static bool loadIni(bool all)
     return true;
 }
 
+/* Estilo da tela de título (extra do port): ARCADE = insert coin / press center
+ * (layout do MK5 com os sprites do 82W.DAT); PC = menu START/OPTIONS/STAFF/EXIT. */
+bool g_arcadeStyle = true;
+
 void GameOption_Save(void)
 {
     Eeprom_Save();
@@ -67,6 +72,7 @@ void GameOption_Save(void)
         fprintf(f, "TexFilter=%d\n", g_game.gfxTexFilter);
         fprintf(f, "ShowFPS=%d\n", (int)g_game.gfxShowFps);
         fprintf(f, "Aspect=%d\n", g_game.gfxAspect);
+        fprintf(f, "GameStyle=%d\n", g_arcadeStyle ? 1 : 0);   /* 1 = ARCADE, 0 = PC */
         fclose(f);
     }
     Log_Print("GameOption: saved (diff=%d sb=%d help=%d audio=%dms)\n",

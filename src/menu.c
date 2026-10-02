@@ -13,10 +13,234 @@ void Menu_ResetState(void) {
     g_game.stageCount = 3;
     g_game.bonusStage = true;
     g_game.isBonusSong = false;
+    NameEntry_ResetTotals();   /* novo crédito: zera o score acumulado */
 }
 
 static bool padHit(int player, PadButton btn) {
     return Input_IsPadHit(player, btn);
+}
+
+/* ─────────────────────────── Tela de título ARCADE (extra do port) ──────────
+ * Layout e lógica do PREX3-MK5 (PIU32.EXE, estado 0xb = 0x408f40), com os
+ * sprites e texturas do 82W.DAT (o 82.DAT extraído só tem PNGs vazios):
+ *   - fundo: todos os layers no frame f % 415 (0x409021), sem as camadas do menu
+ *   - por jogador ainda fora: sem crédito -> "insert coin" piscando;
+ *     com crédito -> "press center step" + painel animado (MAH01)
+ *   - centro com crédito entra (0x409292) e consome o crédito (0x4054d0);
+ *     60 frames depois (0xed5088 > 0x3c) ou com os dois dentro -> seleção
+ *   - contador de créditos do MK5 (0x40507c), com os glifos do texts.png
+ * Posições do P1: as naturais dos .spr; P2: espelho +320 (insert2* já vêm
+ * na posição do P2). */
+static int  s_arcTile[16];      /* índices em g_game.sprTiles, -1 = ausente */
+static int  s_arcMahCount;
+static int  s_arcTexts = -1;    /* texts.tga */
+static int  s_arcJoin;          /* 0x43ff38 */
+static int  s_arcJoinTimer;     /* 0xed5088 */
+static int  s_arcFade;          /* 0xed5084 */
+enum { ARC_INS1A, ARC_INS1B, ARC_INS1C, ARC_INS2A, ARC_INS2B, ARC_INS2C,
+       ARC_PRESS, ARC_PRESSB, ARC_MAH, ARC_COUNT };
+
+bool Menu_ArcadeHasJoin(void) { return g_arcadeStyle && s_arcJoin != 0; }
+
+static int arcLoad(const char* path, const char* spr, int* count)
+{
+    int before = g_game.sprTileCount;
+    int n = Resource_LoadSPR(path, spr);
+    if (count) *count = n;
+    return n > 0 ? before : -1;
+}
+
+void Menu_ArcadeLoad(void)
+{
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "%s/BGA/82W.DAT", g_game.currentDirectory);
+    s_arcTile[ARC_INS1A]  = arcLoad(path, "insert1a.spr", NULL);
+    s_arcTile[ARC_INS1B]  = arcLoad(path, "insert1b.spr", NULL);
+    s_arcTile[ARC_INS1C]  = arcLoad(path, "insert1c.spr", NULL);
+    s_arcTile[ARC_INS2A]  = arcLoad(path, "insert2a.spr", NULL);
+    s_arcTile[ARC_INS2B]  = arcLoad(path, "insert2b.spr", NULL);
+    s_arcTile[ARC_INS2C]  = arcLoad(path, "insert2c.spr", NULL);
+    s_arcTile[ARC_PRESS]  = arcLoad(path, "press.spr", NULL);
+    s_arcTile[ARC_PRESSB] = arcLoad(path, "press-b.spr", NULL);
+    s_arcTile[ARC_MAH]    = arcLoad(path, "MAH01.spr", &s_arcMahCount);
+    s_arcTexts = Resource_LoadTextureFromDAT(path, "texts.tga");
+
+    /* Layout do 82.BGA (arcade) sobre as camadas do 82W.BGA: os dois são iguais
+     * exceto por três camadas (comparação keyframe a keyframe, 29/09/2026):
+     *   logo.spr  y = +3 em todos os keyframes (82W: -33)
+     *   01.spr    último keyframe no frame 300, type 0 (82W: 415)
+     *   02.spr    último keyframe no frame 300, type 1 (82W: 415, type 0)
+     *   FORPC.SPR não existe no 82.BGA
+     * As texturas continuam as do 82W.DAT (os PNGs do 82.DAT extraído estão vazios). */
+    if (g_game.bgaPicCount > 0) {
+        BGAPicture* pic = &g_game.bgaPics[0];
+        for (int i = 0; i < pic->layerCount; i++) {
+            BGALayer* L = &pic->layers[i];
+            if (_stricmp(L->filename, "logo.spr") == 0) {
+                for (int k = 0; k < L->kfCount; k++) L->keyframes[k].y = 3.0f;
+            } else if (_stricmp(L->filename, "01.spr") == 0 && L->kfCount == 2) {
+                L->keyframes[1].frame = 300; L->keyframes[1].type = 0;
+            } else if (_stricmp(L->filename, "02.spr") == 0 && L->kfCount == 2) {
+                L->keyframes[1].frame = 300; L->keyframes[1].type = 1;
+            } else if (_stricmp(L->filename, "FORPC.SPR") == 0) {
+                L->kfCount = 0;
+            }
+        }
+    }
+    s_arcJoin = 0; s_arcJoinTimer = 0; s_arcFade = 0;
+    Log_Print("MENU ARCADE: ins1a=%d press=%d mah=%d(%d) texts=%d\n",
+              s_arcTile[ARC_INS1A], s_arcTile[ARC_PRESS], s_arcTile[ARC_MAH],
+              s_arcMahCount, s_arcTexts);
+}
+
+/* Tile na posição natural do .spr (+dx para o P2). Centro em Y-down. */
+static void arcDrawTile(int tile, float dx, float dy, float alpha)
+{
+    if (tile < 0 || tile >= g_game.sprTileCount) return;
+    float sx = (float)g_game.sprTiles[tile].srcX;
+    float sy = (float)g_game.sprTiles[tile].srcY;
+    float sw = (float)g_game.sprTiles[tile].srcW;
+    float sh = (float)g_game.sprTiles[tile].srcH;
+    Sprite_DrawTile(tile, sx + sw / 2.0f + dx, sy + sh / 2.0f + dy, 1.0f, 1.0f, alpha);
+}
+
+/* Região do texts.png com o canto inferior esquerdo em (x, y) Y-up */
+static void arcDrawTexts(float x, float y, int u0, int v0, int u1, int v1)
+{
+    if (s_arcTexts < 0) return;
+    float w = (float)(u1 - u0), h = (float)(v1 - v0);
+    Texture_DrawUV(s_arcTexts, x, 480.0f - y - h, w, h, (float)u0, (float)v0,
+                   (float)u1, (float)v1, 1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+/* Contador de créditos: fonte do 00.DAT (FONT.PNG, 4ª e 5ª linha).
+ * Linha 4 (y 48..59): "CREDIT(S)" e os dígitos 0..9; linha 5 (y 61..72): [ / ]. */
+static const int kFontDigitX[10][2] = {
+    { 81, 90 }, { 95, 101 }, { 106, 115 }, { 121, 128 }, { 134, 144 },
+    { 149, 158 }, { 164, 172 }, { 178, 186 }, { 192, 201 }, { 207, 216 }
+};
+
+static void arcDrawFont(float x, float y, int u0, int v0, int u1, int v1)
+{
+    if (g_fontTexId < 0) return;
+    float w = (float)(u1 - u0), h = (float)(v1 - v0);
+    Texture_DrawUV(g_fontTexId, x, 480.0f - y - h, w, h, (float)u0, (float)v0,
+                   (float)u1, (float)v1, 1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+static void arcDrawNumber(float x, float y, int n)   /* 0x405260 */
+{
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%d", n < 0 ? 0 : n);
+    for (const char* c = buf; *c; c++) {
+        const int* dx = kFontDigitX[*c - '0'];
+        arcDrawFont(x, y, dx[0], 48, dx[1], 59);
+        x += 11.0f;
+    }
+}
+
+/* 0x404f20/0x40507c: CREDIT(S) créditos [ resto / moedas ] — colado na base
+ * da tela; x do MK5 */
+static void arcDrawCredits(void)
+{
+    if (Coin_IsFreePlay()) return;          /* o MK5 desenha um sprite FREE PLAY que o PREX3 não tem */
+    int coin1 = g_game.svcCoin1 > 0 ? g_game.svcCoin1 : 1;
+    const float y = 2.0f;
+    arcDrawFont(235.0f, y, 3, 48, 72, 59);                       /* CREDIT(S) */
+    arcDrawNumber(326.0f, y, g_game.svcCoinTotal / coin1);
+    arcDrawFont(342.0f, y, 3, 61, 9, 72);                        /* [ */
+    arcDrawNumber(352.0f, y, g_game.svcCoinTotal % coin1);
+    arcDrawFont(364.0f, y, 19, 61, 30, 72);                      /* / */
+    if (coin1 >= 10) {
+        arcDrawNumber(391.0f, y, coin1);
+        arcDrawFont(413.0f, y, 35, 61, 42, 72);                  /* ] */
+    } else {
+        arcDrawNumber(380.0f, y, coin1);
+        arcDrawFont(392.0f, y, 35, 61, 42, 72);
+    }
+}
+
+static void Menu_RenderArcade(int bgaIndex)
+{
+    int f = (int)g_game.stateFrame;
+    /* 0x409021: layers no frame f % 415 — exceto as camadas do menu do PC
+     * (04_x, 05..07, 10..13, 15, 16, todas BA01/BA02). 01.spr e 02.spr (BA02)
+     * aparecem: no 82.BGA elas ficam visíveis nos frames 0..300. */
+    {
+        BGAPicture* pic = &g_game.bgaPics[bgaIndex];
+        for (int i = 0; i < pic->layerCount; i++) {
+            const char* fn = pic->layers[i].filename;
+            if (fn[0] >= '0' && fn[0] <= '9' &&
+                _stricmp(fn, "01.spr") != 0 && _stricmp(fn, "02.spr") != 0) continue;
+            BGA_SetEventLayer(bgaIndex, f % 0x19f, i);
+        }
+    }
+
+    bool credit = Coin_GetCredits() > 0;                         /* 0x405480 */
+    for (int p = 0; p < 2; p++) {
+        if (s_arcJoin & (1 << p)) continue;
+        float dx = p ? 320.0f : 0.0f;
+        if (credit) {
+            /* press center step: balão + texto + painel pisando (6 quadros) */
+            int ph = f % 26;
+            if (s_arcTile[ARC_MAH] >= 0 && s_arcMahCount > 0)
+                arcDrawTile(s_arcTile[ARC_MAH] + ph * s_arcMahCount / 26, dx, 0.0f, 1.0f);
+            /* Balão do MAH01.PNG sobre o sprite amarelo (centro x~130, topo y~394):
+             * cinza (91,138)-(237,184) 146x46 e contorno branco (8,196)-(168,254)
+             * 160x58, alternando como as pílulas do insert coin; texto do press.spr
+             * dentro. (O press-b do texts.png não é usado.) */
+            if (s_arcTile[ARC_MAH] >= 0) {
+                int mt = g_game.sprTiles[s_arcTile[ARC_MAH]].texId;
+                if ((f % 26) < 13)
+                    Texture_DrawUV(mt, dx + 50.0f, 342.0f, 160.0f, 58.0f,
+                                   8.0f, 196.0f, 168.0f, 254.0f, 1, 1, 1, 1.0f);
+                else
+                    Texture_DrawUV(mt, dx + 57.0f, 348.0f, 146.0f, 46.0f,
+                                   91.0f, 138.0f, 237.0f, 184.0f, 1, 1, 1, 1.0f);
+            }
+            /* press.spr: posição natural (0,5) -> texto no corpo do balão */
+            arcDrawTile(s_arcTile[ARC_PRESS], dx + 74.0f, 349.0f, 1.0f);
+        } else {
+            /* insert coin: pílula branca/cinza alternando a cada 13 frames + texto */
+            bool white = (f % 26) < 13;
+            int a = p ? ARC_INS2A : ARC_INS1A;
+            arcDrawTile(s_arcTile[white ? a + 2 : a + 1], 0.0f, 0.0f, 1.0f);
+            arcDrawTile(s_arcTile[a], 0.0f, 0.0f, 1.0f);
+        }
+    }
+    arcDrawCredits();
+    glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
+}
+
+/* Atualização da tela arcade. Devolve true se tratou o frame. */
+static bool Menu_UpdateArcade(void)
+{
+    if (s_arcJoin) { s_arcFade++; s_arcJoinTimer++; }
+    else if (g_game.stateFrame >= 0x780 && Coin_GetMaxCredits() == 0)
+        s_arcFade++;                                              /* 0x408faf: fade do attract */
+
+    /* 0x4090d6: nos últimos 30 dos 60 frames a tela escurece */
+    if (s_arcFade > 30) {
+        float a = 1.0f - (60 - s_arcFade) / 30.0f;
+        Render_SetGlobalColor(0, 0, 0, a > 1.0f ? 1.0f : a);
+    }
+
+    if (s_arcJoin && (s_arcJoinTimer > 0x3c || s_arcJoin == 3)) {  /* 0x408f84 */
+        g_game.activePlayerMask = s_arcJoin;
+        GameState target = g_game.optionToggle2 ? STATE_HOWTOPLAY : STATE_SONG_SELECT;
+        Log_Print("MENU ARCADE: start mask=%d -> %s\n", s_arcJoin, State_ToString(target));
+        Game_ChangeState(target);
+        return true;
+    }
+    for (int p = 0; p < 2; p++) {                                 /* 0x409283 */
+        if ((s_arcJoin & (1 << p)) || !padHit(p, PAD_C)) continue;
+        if (!Coin_HasCredit()) continue;
+        Coin_ConsumeCredit();                                     /* 0x4054d0 */
+        s_arcJoin |= 1 << p;
+        Audio_Play(g_waveSoundIds[SND_2_1], false);
+        Log_Print("MENU ARCADE: P%d entrou\n", p + 1);
+    }
+    return true;
 }
 
 static void subEnter(GameState state) {
@@ -30,6 +254,7 @@ void Gamestate_UpdateMenu(float dt) {
     case STATE_MENU_ENTER:
         Menu_ResetState();
         Font_LoadFontOnly();
+        if (g_arcadeStyle) Menu_ArcadeLoad();
         g_game.state = STATE_MENU_INPUT;
         break;
     case STATE_MENU_INPUT:
@@ -58,6 +283,15 @@ void Gamestate_UpdateMenu(float dt) {
                     Game_ChangeState(target);
                 }
             }
+            return;
+        }
+        /* Attract: 1980 frames sem crédito e sem player -> Demo Play (0x404687) */
+        if (Attract_MenuTimedOut()) {
+            Attract_StartDemo();
+            return;
+        }
+        if (g_arcadeStyle) {
+            Menu_UpdateArcade();
             return;
         }
         /* ── P2 input: navega igual P1; UL×2 confirma Start como P2-only ──── */
@@ -157,6 +391,11 @@ void Gamestate_RenderMenu(int bgaIndex, int frame) {
     if (bgaIndex < 0 || bgaIndex >= g_game.bgaPicCount) return;
     if (g_game.state != STATE_MENU_ENTER && g_game.state != STATE_MENU_INPUT &&
         g_game.state != STATE_EXIT) return;
+
+    if (g_arcadeStyle) {
+        Menu_RenderArcade(bgaIndex);
+        return;
+    }
 
     BGAPicture* pic = &g_game.bgaPics[bgaIndex];
     int sel = g_menuSelection;

@@ -66,7 +66,7 @@ static void judgeWindows(int lvl, double bpm, double early[4], double late[4])
  * o life inicial (500) aparece como MEIA barra. Antes o port usava life/500 (barra cheia no início). */
 #define LIFE_BAR_SCALE      0.001f
 /* PUMPY.EXE compara life < 0xB4 (180) nos 4 pontos de desenho da barra (0x411ed2, 0x412102, 0x41223c, 0x41239f) */
-#define LIFE_DANGER         180
+#define LIFE_DANGER         334   /* X1Rus DrawGauge: (int)(life/1000*33) <= 10 -> life <= 333 (era 180) */
 /* Substituídos pelas tabelas k_lifeSpeedInit/Min/Max (ver applyLife): no
  * original estes três valores variam por nível de dificuldade, e fixá-los aqui
  * deixava NORMAL e HARD com a curva do EASY.
@@ -510,6 +510,9 @@ static int sprTileCount(int startIdx) {
     return c;
 }
 
+static double g_clkAnchor;          /* relógio do gameplay: âncora congelada */
+static bool   g_clkHave, g_clkLocked;
+
 static bool loadChartForSong(int songId, int diffTier, const char* modeName)
 {
     g_songLoaded = false;
@@ -536,6 +539,7 @@ static bool loadChartForSong(int songId, int diffTier, const char* modeName)
 
     g_chart = &g_playSong.charts[g_chartIdx];
     g_songTime = 0.0;
+    g_clkHave = g_clkLocked = false;
     g_maxSongTime = 0.0;
     g_stagnantFrames = 0;
     g_lastPosMs = 0;
@@ -570,6 +574,19 @@ static bool loadChartForSong(int songId, int diffTier, const char* modeName)
         g_totalSongSeconds = total;
     }
     g_autoplay = g_game.input.autoplay;
+    {
+        /* Demo Play: -demo liga o autoplay dos dois players (0x402951: |= 0x1f1f).
+         * Ao voltar a um jogo normal, desliga o que o demo ligou. */
+        static bool s_demoAuto = false;
+        if (Attract_IsDemo()) {
+            for (int a = 0; a < 10; a++) g_autoPanel[a] = true;
+            g_autoplay = true;
+            s_demoAuto = true;
+        } else if (s_demoAuto) {
+            for (int a = 0; a < 10; a++) g_autoPanel[a] = false;
+            s_demoAuto = false;
+        }
+    }
 
     /* Aplica multiplicador de velocidade do Command — por player. */
     for (int _ip = 0; _ip < 2; _ip++) {
@@ -1653,8 +1670,8 @@ void Gameplay_Start(int songId)
 {
     g_stageBreakFreezeTimer = -1.0f;
     memset(&g_game.stats, 0, sizeof(g_game.stats));
-    g_game.stats.life[0]      = 224; /* baseline visual: 11+2/3 de 26 retangulos ao inicio da musica. */
-    g_game.stats.life[1]      = 224;
+    g_game.stats.life[0]      = 500; /* baseline visual: 11+2/3 de 26 retangulos ao inicio da musica. */
+    g_game.stats.life[1]      = 500;
     /* lifeSpeed inicial varia por nível (GameInit 0x00411381):
      * easy=500, normal=300, hard=100. Antes era fixo em 500, o perfil do easy. */
     g_game.stats.lifeSpeed[0] = k_lifeSpeedInit[lifeLevel()];
@@ -1740,6 +1757,19 @@ void Gameplay_Exit(void)
     g_visualRow = NULL;
     g_visualRowCount = 0;
     Log_Print("Gameplay: exit\n");
+}
+
+/* Chamado antes de cada desenho: com a âncora já congelada, põe g_songTime no
+ * instante atual (contador de alta resolução), para a rolagem ficar lisa em
+ * qualquer refresh. Só avança (nunca volta) e não mexe na âncora. */
+void Gameplay_RefreshClock(void)
+{
+    if (g_game.state != STATE_GAMEPLAY || !g_songLoaded || !g_clkLocked) return;
+    if (!BGM_IsDSActive() || g_stageBreakFreezeTimer >= 0.0f) return;
+    double now;
+    if (BGM_ClockAnchorSec(&now) < 0.0) return;
+    double t = (now - g_clkAnchor) - (g_game.audioOffsetMs / 1000.0);
+    if (t > g_songTime) g_songTime = t;
 }
 
 void Gameplay_Update(float dt)
@@ -1880,12 +1910,49 @@ void Gameplay_Update(float dt)
         }
     }
 
+    /* era:
+     *     if (BGM_IsDSActive()) {
+     *         /* era: g_songTime = posMs/1000 - offset todo frame (ms inteiros +
+     *          * clamps do callback = delta irregular por frame → setas trepidando).
+     *          * Agora avança por dt e só puxa suavemente pro relógio do áudio. * /
+     *         double posMs = BGM_GetPositionMsF();
+     *         g_songTime += dt;
+     *         if (posMs > 100.0) { // ignore first 100ms (startup)
+     *             double audioT = posMs / 1000.0 - (g_game.audioOffsetMs / 1000.0); /* offset configuravel em PUMPY.INI (AudioOffset=X ms) * /
+     *             double err = audioT - g_songTime;
+     *             if (err > 0.05 || err < -0.05)
+     *                 g_songTime = audioT;          /* desvio grande: ressincroniza * /
+     *             else
+     *                 g_songTime += err * 0.1;      /* desvio pequeno: corrige suave * /
+     *         }
+     *     } else {
+     *         g_songTime += dt;
+     *     }
+     */
     if (BGM_IsDSActive()) {
-        uint32_t posMs = BGM_GetPositionMs();
-        if (posMs > 100) // ignore first 100ms (startup)
-            g_songTime = posMs / 1000.0 - (g_game.audioOffsetMs / 1000.0); /* offset configuravel em PUMPY.INI (AudioOffset=X ms) */
-        else
+        /* Relógio fixo da NX (sem ajuste de ms durante a música):
+         *   âncora = instante em que a amostra 0 saiu, medida a cada callback.
+         *   Callbacks atrasados dão âncora maior, então no 1º segundo fica a
+         *   MENOR; depois ela congela e g_songTime = agora - âncora, avançando
+         *   pelo contador de alta resolução, sem tremer nem ser corrigido.
+         *   Só reancora num desvio real (> 100 ms: travada do áudio/loop). */
+        double now, anc = BGM_ClockAnchorSec(&now);
+        if (anc >= 0.0) {
+            if (!g_clkLocked) {
+                if (!g_clkHave || anc < g_clkAnchor) g_clkAnchor = anc;
+                g_clkHave = true;
+                if (now - g_clkAnchor >= 1.0) g_clkLocked = true;
+            } else {
+                double d = anc - g_clkAnchor;
+                if (d > 0.1 || d < -0.1) {
+                    Log_Print("GP: relogio reancorado (desvio %.1f ms)\n", d * 1000.0);
+                    g_clkAnchor = anc;
+                }
+            }
+            g_songTime = (now - g_clkAnchor) - (g_game.audioOffsetMs / 1000.0); /* offset configuravel em PUMPY.INI (AudioOffset=X ms) */
+        } else {
             g_songTime += dt;
+        }
     } else {
         g_songTime += dt;
     }

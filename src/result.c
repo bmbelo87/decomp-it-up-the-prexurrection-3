@@ -151,6 +151,7 @@ GameState Result_GetNextState(void) {
 
 void Result_Enter(void) {
     g_resultFrame = 0;
+    NameEntry_AddStageScore();   /* MK5 0x4125b0: soma o stage ao total do crédito */
     g_lastDigitSoundCount = 0;
     g_lastSoundFrame = -100;
     g_gradeSoundPlayed = false;
